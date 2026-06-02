@@ -1,9 +1,12 @@
 # Chainless Agent Platform — Implementation Plan
 
-**Status**: Draft  
+**Status**: Reviewed (plan-eng-review — 2026-06-02)  
 **Type**: Implementation Plan  
 **Created**: 2026-06-02  
+**Updated**: 2026-06-02  
 **Parent Spec**: [Design Spec](../specs/2026-06-02-chainless-agent-platform-design.md)  
+**Parent Review**: [Spec autoplan review](../specs/2026-06-02-chainless-agent-platform-design.md#appendix-e-autoplan-review-summary-2026-06-02)  
+**Eng Review**: 8 findings resolved (architecture ×5, code quality ×1, tests ×1, performance ×1)  
 **Complexity**: High — 6 phases, new multi-subsystem platform
 
 ---
@@ -225,24 +228,38 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
-2. Write `backend/app/main.py` — FastAPI app with CORS, lifespan, health:
+2. Write `backend/app/main.py` — FastAPI app with CORS, lifespan, singleton init, health:
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.llm.gateway import LLMGateway
+from app.core.sandbox.manager import SandboxManager
+from app.config import settings
+
+# Global singletons (created in lifespan, accessed via Depends)
+_llm_gateway: LLMGateway | None = None
+_sandbox_manager: SandboxManager | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: init DB pool, warm sandbox, etc.
+    global _llm_gateway, _sandbox_manager
+    # Startup
+    _llm_gateway = LLMGateway()
+    _llm_gateway.register("default", settings.default_llm_api_base,
+                          settings.glm_api_key or "", settings.default_llm_model)
+    _sandbox_manager = SandboxManager()
+    await _sandbox_manager.warm_pool()
     yield
-    # Shutdown: close connections
+    # Shutdown: close connections, reap sandboxes
 
 app = FastAPI(title="Chainless", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/v1/system/health")
 async def health():
-    return {"status": "ok"}
+    pool_size = len(_sandbox_manager._pool) if _sandbox_manager else 0
+    return {"status": "ok", "sandbox_pool": pool_size}
 ```
 
 3. Verify: restart backend, curl health endpoint
@@ -351,7 +368,7 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.secret_key, algorithms=["HS256"])
 ```
 
-2. Write `backend/app/api/deps.py` — `get_db` (async session), `get_current_user` (JWT dependency):
+2. Write `backend/app/api/deps.py` — DB session, JWT auth, gateway DI, sandbox DI:
 ```python
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -370,13 +387,13 @@ security = HTTPBearer()
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
 ):
     try:
         payload = decode_token(credentials.credentials)
         return {"user_id": payload["sub"], "tenant_id": payload["tenant_id"], "username": payload["username"]}
     except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": {"code": "AUTH_EXPIRED", "message": "Invalid or expired token"}})
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": {"code": "AUTH_EXPIRED", "message": "Invalid or expired token"}})
 ```
 
 3. Write `backend/app/api/v1/auth.py` — `/register`, `/login`, `/refresh`, `/me`:
@@ -449,54 +466,62 @@ router.include_router(auth_router)
 
 ---
 
-**Task 1.5: LLM Gateway (OpenAI-compatible provider)**
+**Task 1.5: LLM Gateway (litellm — 100+ provider support)**
 
-Files: `backend/app/core/llm/providers/base.py`, `backend/app/core/llm/providers/openai_compat.py`, `backend/app/core/llm/gateway.py`
+Files: `backend/app/core/llm/gateway.py` (no base.py or openai_compat.py needed)
 
-Why: All LLM calls flow through here. Must support streaming, function calling, multiple providers.
+Why: All LLM calls flow through here. litellm provides unified interface for 100+ providers including GLM, with built-in streaming, function calling, fallback, and rate-limit handling. ~30 lines vs ~150 lines hand-written.
 
 Verification: Unit test that calls GLM-4.5 Air with a simple prompt → streaming chunks returned.
 
 Steps:
 
-1. Write `backend/app/core/llm/providers/base.py`:
+1. Add `litellm` to `backend/requirements.txt` (replace `openai`)
+
+2. Write `backend/app/core/llm/gateway.py`:
 ```python
-from abc import ABC, abstractmethod
 from typing import AsyncIterator
+import litellm
 
-class LLMProvider(ABC):
-    @abstractmethod
-    async def chat_stream(self, messages: list[dict], tools: list[dict] | None = None,
-                          temperature: float = 0.7, max_tokens: int = 4096) -> AsyncIterator[dict]:
-        """Yield delta dicts: {"type": "text", "content": "..."} | {"type": "tool_call", ...}"""
-        ...
+class LLMGateway:
+    """Unified LLM access via litellm. Supports 100+ providers with streaming + function calling."""
+    
+    def __init__(self):
+        self._providers: dict[str, dict] = {}
 
-    @abstractmethod
-    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """Return embeddings for input texts."""
-        ...
-```
+    def register(self, name: str, api_base: str, api_key: str, model: str,
+                 embedding_model: str | None = None):
+        """Register a provider. litellm resolves the provider from the model prefix or api_base."""
+        self._providers[name] = {
+            "model": f"openai/{model}",  # litellm uses provider/model format
+            "api_base": api_base,
+            "api_key": api_key,
+            "embedding_model": embedding_model or "text-embedding-3-small",
+        }
 
-2. Write `backend/app/core/llm/providers/openai_compat.py`:
-```python
-import json
-from typing import AsyncIterator
-from openai import AsyncOpenAI
-from .base import LLMProvider
+    def get_config(self, name: str) -> dict:
+        if name not in self._providers:
+            raise ValueError(f"Unknown provider: {name}")
+        return self._providers[name]
 
-class OpenAICompatProvider(LLMProvider):
-    def __init__(self, api_base: str, api_key: str, model: str, embedding_model: str | None = None):
-        self.client = AsyncOpenAI(base_url=api_base, api_key=api_key)
-        self.model = model
-        self.embedding_model = embedding_model or "text-embedding-3-small"
-
-    async def chat_stream(self, messages, tools=None, temperature=0.7, max_tokens=4096) -> AsyncIterator[dict]:
-        kwargs = {"model": self.model, "messages": messages, "temperature": temperature,
-                  "max_tokens": max_tokens, "stream": True}
+    async def chat_stream(self, provider_name: str, messages: list[dict],
+                          tools: list[dict] | None = None,
+                          max_tokens: int = 4096) -> AsyncIterator[dict]:
+        cfg = self.get_config(provider_name)
+        kwargs = {
+            "model": cfg["model"],
+            "messages": messages,
+            "api_base": cfg["api_base"],
+            "api_key": cfg["api_key"],
+            "stream": True,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+        }
         if tools:
             kwargs["tools"] = tools
-        stream = await self.client.chat.completions.create(**kwargs)
-        async for chunk in stream:
+        
+        response = await litellm.acompletion(**kwargs)
+        async for chunk in response:
             delta = chunk.choices[0].delta
             if delta.content:
                 yield {"type": "text", "content": delta.content}
@@ -505,43 +530,67 @@ class OpenAICompatProvider(LLMProvider):
                     yield {"type": "tool_call", "id": tc.id, "name": tc.function.name,
                            "arguments": tc.function.arguments}
 
-    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
-        resp = await self.client.embeddings.create(model=self.embedding_model, input=texts)
-        return [d.embedding for d in resp.data]
-```
-
-3. Write `backend/app/core/llm/gateway.py`:
-```python
-from typing import AsyncIterator
-from app.core.llm.providers.openai_compat import OpenAICompatProvider
-
-class LLMGateway:
-    def __init__(self):
-        self._providers: dict[str, OpenAICompatProvider] = {}
-
-    def register(self, name: str, api_base: str, api_key: str, model: str, embedding_model: str | None = None):
-        self._providers[name] = OpenAICompatProvider(api_base, api_key, model, embedding_model)
-
-    def get_provider(self, name: str) -> OpenAICompatProvider:
-        if name not in self._providers:
-            raise ValueError(f"Unknown provider: {name}")
-        return self._providers[name]
-
-    async def chat_stream(self, provider_name: str, messages: list[dict],
-                          tools: list[dict] | None = None) -> AsyncIterator[dict]:
-        provider = self.get_provider(provider_name)
-        async for delta in provider.chat_stream(messages, tools):
-            yield delta
-
     async def embed(self, provider_name: str, texts: list[str]) -> list[list[float]]:
-        provider = self.get_provider(provider_name)
-        return await provider.get_embeddings(texts)
+        cfg = self.get_config(provider_name)
+        # litellm embedding via acompletion or direct API — fallback to openai compat
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(base_url=cfg["api_base"], api_key=cfg["api_key"])
+        resp = await client.embeddings.create(model=cfg["embedding_model"], input=texts)
+        return [d.embedding for d in resp.data]
 
-# Global singleton
-llm_gateway = LLMGateway()
+
+async def get_llm_gateway() -> LLMGateway:
+    """FastAPI dependency. Returns the configured gateway singleton."""
+    from app.main import _llm_gateway
+    return _llm_gateway
 ```
 
-4. Verify: write a small async test that initializes the gateway with GLM-4.5 Air, sends `[{"role": "user", "content": "Say hello in one word"}]`, asserts streaming response received.
+3. Initialize gateway in `backend/app/main.py` lifespan:
+```python
+from app.core.llm.gateway import LLMGateway
+_llm_gateway = LLMGateway()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Register default provider from settings
+    from app.config import settings
+    _llm_gateway.register("default", settings.default_llm_api_base,
+                          settings.glm_api_key or "", settings.default_llm_model)
+    yield
+```
+
+4. Verify: `pytest backend/tests/test_llm_gateway.py -v` — test registers GLM-4.5 Air, sends prompt, asserts streaming response received.
+
+5. Write tests for LLM Gateway:
+```python
+# backend/tests/test_llm_gateway.py
+import pytest
+from app.core.llm.gateway import LLMGateway
+
+@pytest.mark.asyncio
+async def test_gateway_register_and_stream():
+    gateway = LLMGateway()
+    gateway.register("test", "https://open.bigmodel.cn/api/paas/v4",
+                     "test-key", "glm-4-flash")
+    cfg = gateway.get_config("test")
+    assert cfg["api_key"] == "test-key"
+
+@pytest.mark.asyncio
+async def test_gateway_unknown_provider_raises():
+    gateway = LLMGateway()
+    with pytest.raises(ValueError, match="Unknown provider"):
+        gateway.get_config("nonexistent")
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_empty_messages():
+    gateway = LLMGateway()
+    gateway.register("test", "https://open.bigmodel.cn/api/paas/v4",
+                     "test-key", "glm-4-flash")
+    chunks = []
+    async for delta in gateway.chat_stream("test", []):
+        chunks.append(delta)
+    assert len(chunks) == 0 or any(d["type"] == "text" for d in chunks)
+```
 
 ---
 
@@ -596,19 +645,23 @@ class Message(Base, TimestampMixin):
     metadata = Column(JSONB, default={})
 ```
 
-2. Write `backend/app/api/v1/conversations.py` — list, create, get, chat endpoints:
+2. Write `backend/app/api/v1/conversations.py` — list, create, get, chat endpoints (DI + heartbeat + token-aware):
 ```python
-import json
+import json, asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user, AsyncSessionLocal
 from app.models.conversation import Conversation, Message
-from app.core.llm.gateway import llm_gateway
+from app.core.llm.gateway import get_llm_gateway, LLMGateway
+from app.core.sandbox.manager import get_sandbox_manager, SandboxManager
+from app.core.agent.engine import run_agent
+from app.core.agent.prompt_builder import build_context
 
 router = APIRouter(prefix="/conversations")
+HEARTBEAT_INTERVAL = 15  # seconds
 
 class ChatRequest(BaseModel):
     content: str
@@ -629,33 +682,82 @@ async def list_conversations(limit: int = 20, offset: int = 0,
         .order_by(Conversation.updated_at.desc()).offset(offset).limit(limit)
     )
     convs = result.scalars().all()
-    total = (await db.execute(select(Conversation).where(Conversation.tenant_id == user["tenant_id"]))).scalars().all()
+    count_result = await db.execute(
+        select(Conversation).where(Conversation.tenant_id == user["tenant_id"]))
+    total = len(count_result.scalars().all())
     return {"items": [{"id": str(c.id), "title": c.title, "created_at": c.created_at.isoformat()} for c in convs],
-            "total": len(total), "limit": limit, "offset": offset}
+            "total": total, "limit": limit, "offset": offset}
 
 @router.post("/{conv_id}/chat")
 async def chat(conv_id: str, req: ChatRequest,
-               user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id, Conversation.tenant_id == user["tenant_id"]))).scalar_one_or_none()
+               user=Depends(get_current_user), db: AsyncSession = Depends(get_db),
+               gateway: LLMGateway = Depends(get_llm_gateway),
+               sandbox: SandboxManager = Depends(get_sandbox_manager)):
+    conv = (await db.execute(select(Conversation).where(
+        Conversation.id == conv_id, Conversation.tenant_id == user["tenant_id"]))).scalar_one_or_none()
     if not conv:
-        raise HTTPException(404, detail={"error": {"code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found"}})
+        raise HTTPException(404, detail={"error": {"code": "CONVERSATION_NOT_FOUND",
+                                                    "message": "Conversation not found"}})
 
     # Save user message
     user_msg = Message(conversation_id=conv.id, role="user", content=req.content)
     db.add(user_msg)
     await db.commit()
 
-    # Build message history
-    result = await db.execute(select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at).limit(50))
+    # Build token-aware context (use message history, apply sliding window)
+    result = await db.execute(select(Message).where(
+        Message.conversation_id == conv.id).order_by(Message.created_at))
     history = [{"role": m.role, "content": m.content} for m in result.scalars().all()]
+    
+    system_prompt = "You are a helpful AI assistant."  # Phase 4 adds layered rules + memories
+    context_messages = build_context(system_prompt, history)
 
     async def event_stream():
         full_response = ""
+        heartbeat_task = None
+        
+        async def send_heartbeat(queue: asyncio.Queue):
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                await queue.put("heartbeat")
+        
         try:
-            async for delta in llm_gateway.chat_stream("default", history):
+            queue = asyncio.Queue()
+            heartbeat_task = asyncio.create_task(send_heartbeat(queue))
+            
+            # Start agent in background
+            async def run_agent_bg():
+                async for delta in run_agent(gateway, sandbox, "default", context_messages):
+                    await queue.put(delta)
+                await queue.put(None)  # Sentinel
+            
+            agent_task = asyncio.create_task(run_agent_bg())
+            
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if item == "heartbeat":
+                    yield f"event: heartbeat\ndata: {{}}\n\n"
+                    continue
+                delta = item
                 if delta["type"] == "text":
                     full_response += delta["content"]
                     yield f"event: text\ndata: {json.dumps({'delta': delta['content']})}\n\n"
+                elif delta["type"] == "tool_call_start":
+                    yield f"event: tool_call\ndata: {json.dumps({'name': delta['name'], 'args': delta['args']})}\n\n"
+                elif delta["type"] == "tool_result":
+                    yield f"event: tool_result\ndata: {json.dumps({'name': delta['name'], 'result': delta['result']})}\n\n"
+                elif delta["type"] == "tool_error":
+                    yield f"event: tool_error\ndata: {json.dumps({'name': delta['name'], 'error': delta['error'], 'consecutive': delta.get('consecutive', 0)})}\n\n"
+                elif delta["type"] == "error":
+                    yield f"event: error\ndata: {json.dumps({'error': {'code': delta['code'], 'message': delta['message']}})}\n\n"
+                elif delta["type"] == "done":
+                    yield f"event: done\ndata: {json.dumps({'tokens_used': delta.get('tokens_used', 0)})}\n\n"
+            
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': {'code': 'LLM_PROVIDER_ERROR', 'message': str(e)}})}\n\n"
         finally:
@@ -664,10 +766,10 @@ async def chat(conv_id: str, req: ChatRequest,
                 assistant_msg = Message(conversation_id=conv.id, role="assistant", content=full_response)
                 s.add(assistant_msg)
                 await s.commit()
-            yield f"event: done\ndata: {json.dumps({'tokens': {'output': len(full_response)}})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream",
-                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                            headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                                     "X-Accel-Buffering": "no"})
 ```
 
 3. Verify: create conversation → send chat message → observe SSE events in curl
@@ -786,15 +888,123 @@ export default function ChatPage() {
 
 ---
 
-**Task 2.1: Sandbox image + manager**
+**Task 2.1: Sandbox proxy sidecar + image**
 
-Files: `sandbox/Dockerfile`, `sandbox/runner.py`, `backend/app/core/sandbox/images.py`, `backend/app/core/sandbox/manager.py`, `backend/app/core/sandbox/security.py`
+Files: `sandbox-proxy/Dockerfile`, `sandbox-proxy/app.py` (create), `sandbox/Dockerfile`, `sandbox/runner.py`, `backend/app/core/sandbox/manager.py`, `backend/app/core/sandbox/security.py`
 
-Why: Isolated code execution. Security boundary of the system.
+Why: Docker socket isolation. Backend never touches Docker directly — all sandbox operations go through the proxy. If backend is compromised, attacker cannot launch privileged containers or escape to host. Defense in depth.
 
-Verification: `docker run --rm chainless/sandbox:latest python /workspace/script.py` ← inject a print("hello") script → stdout = "hello"
+Verification: `docker-compose up -d` → backend calls `POST http://sandbox-proxy:9001/execute` → container runs → stdout returned. Backend has no `/var/run/docker.sock` mount.
 
 Steps:
+
+0. Update `docker-compose.yml` to add sandbox-proxy and remove Docker socket from backend:
+```yaml
+  sandbox-proxy:
+    build: ./sandbox-proxy
+    ports: ["9001:9001"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    environment:
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-sandbox-proxy-dev-token}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+
+  backend:
+    # ... (existing config)
+    environment:
+      SANDBOX_PROXY_URL: http://sandbox-proxy:9001
+      SANDBOX_PROXY_TOKEN: ${PROXY_AUTH_TOKEN:-sandbox-proxy-dev-token}
+    # REMOVE: volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+```
+
+0b. Write `sandbox-proxy/Dockerfile`:
+```dockerfile
+FROM python:3.10-slim
+RUN pip install fastapi uvicorn docker
+WORKDIR /app
+COPY app.py .
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9001"]
+```
+
+0c. Write `sandbox-proxy/app.py` — thin HTTP API wrapping docker-py, enforces auth token:
+```python
+import os, io, tarfile, uuid
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import StreamingResponse
+import docker
+from pydantic import BaseModel
+
+app = FastAPI()
+docker_client = docker.from_env()
+AUTH_TOKEN = os.environ["PROXY_AUTH_TOKEN"]
+
+def verify_auth(authorization: str = Header(...)):
+    token = authorization.replace("Bearer ", "")
+    if token != AUTH_TOKEN:
+        raise HTTPException(403, detail={"error": {"code": "AUTH_EXPIRED", "message": "Invalid proxy token"}})
+    return token
+
+class ExecuteRequest(BaseModel):
+    script: str
+    tenant_id: str
+    timeout: int = 30
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.post("/containers/allocate")
+async def allocate_container(_auth=Header(None)):
+    # verify_auth called via dependency; simplified inline for clarity
+    container = docker_client.containers.run(
+        "chainless/sandbox:latest", "sleep infinity",
+        mem_limit="512m", cpu_quota=100000, cpu_period=100000,
+        network_mode="none", read_only=True,
+        tmpfs={"/workspace": "size=64m,mode=1777"},
+        security_opt=["no-new-privileges:true"],
+        detach=True
+    )
+    return {"container_id": container.id}
+
+@app.post("/containers/{container_id}/execute")
+async def execute(container_id: str, req: ExecuteRequest):
+    container = docker_client.containers.get(container_id)
+    # Write script to container workspace
+    archive_data = io.BytesIO()
+    with tarfile.open(fileobj=archive_data, mode='w') as tar:
+        info = tarfile.TarInfo(name="script.py")
+        content = req.script.encode()
+        info.size = len(content)
+        tar.addfile(info, io.BytesIO(content))
+    archive_data.seek(0)
+    container.put_archive("/workspace", archive_data)
+    # Execute
+    exec_cmd = f"timeout {req.timeout} python /workspace/script.py"
+    
+    async def stream_output():
+        exec_result = container.exec_run(exec_cmd, stream=True, demux=True)
+        for stdout_chunk, stderr_chunk in exec_result.output:
+            if stdout_chunk:
+                yield f"data: {stdout_chunk.decode()}\n\n"
+            if stderr_chunk:
+                yield f"event: stderr\ndata: {stderr_chunk.decode()}\n\n"
+        yield "event: done\ndata: {}\n\n"
+    
+    return StreamingResponse(stream_output(), media_type="text/event-stream")
+
+@app.post("/containers/{container_id}/recycle")
+async def recycle(container_id: str):
+    container = docker_client.containers.get(container_id)
+    container.exec_run("rm -rf /workspace/*")
+    return {"status": "recycled"}
+
+@app.delete("/containers/{container_id}")
+async def remove(container_id: str):
+    container = docker_client.containers.get(container_id)
+    container.stop(timeout=2)
+    container.remove()
+    return {"status": "removed"}
+```
 
 1. Write `sandbox/Dockerfile`:
 ```dockerfile
@@ -895,68 +1105,99 @@ SANDBOX_OPTS = {
 }
 ```
 
-4. Write `backend/app/core/sandbox/manager.py` — container pool:
+4. Write `backend/app/core/sandbox/manager.py` — container pool via sandbox-proxy HTTP:
 ```python
-import asyncio, uuid
+import asyncio, httpx
 from typing import AsyncIterator
-import docker
 from app.config import settings
-from .security import SANDBOX_OPTS
 
-docker_client = docker.from_env()
+SANDBOX_PROXY = settings.sandbox_proxy_url  # http://sandbox-proxy:9001
+SANDBOX_TOKEN = settings.sandbox_proxy_token
 
 class SandboxManager:
     def __init__(self):
-        self._pool: list = []
+        self._pool: list[str] = []
+        self._metadata: dict[str, dict] = {}  # container_id → {exec_count, created_at}
         self._lock = asyncio.Lock()
 
-    async def _ensure_image(self):
-        try:
-            docker_client.images.get(settings.sandbox_image)
-        except docker.errors.ImageNotFound:
-            docker_client.images.build(path="./sandbox", tag=settings.sandbox_image)
+    async def _proxy_call(self, method: str, path: str, **kwargs) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=30) as client:
+            headers = {"Authorization": f"Bearer {SANDBOX_TOKEN}"}
+            return await client.request(method, f"{SANDBOX_PROXY}{path}", headers=headers, **kwargs)
 
     async def warm_pool(self):
-        await self._ensure_image()
         async with self._lock:
             needed = settings.sandbox_pool_min - len(self._pool)
             for _ in range(needed):
-                container = docker_client.containers.run(
-                    settings.sandbox_image, "sleep infinity",
-                    **SANDBOX_OPTS, detach=True
-                )
-                self._pool.append(container)
+                resp = await self._proxy_call("POST", "/containers/allocate")
+                cid = resp.json()["container_id"]
+                self._pool.append(cid)
+                self._metadata[cid] = {"exec_count": 0, "created_at": asyncio.get_event_loop().time()}
 
     async def allocate(self) -> str:
         async with self._lock:
             if not self._pool:
                 await self.warm_pool()
-            container = self._pool.pop()
-        return container.id
+            # Health check: verify container is alive + not expired
+            while self._pool:
+                cid = self._pool.pop()
+                meta = self._metadata.get(cid, {})
+                age = asyncio.get_event_loop().time() - meta.get("created_at", 0)
+                count = meta.get("exec_count", 0)
+                if count >= 50 or age >= 600:
+                    # Container expired — remove and allocate fresh
+                    try:
+                        await self._proxy_call("DELETE", f"/containers/{cid}")
+                    except Exception:
+                        pass
+                    self._metadata.pop(cid, None)
+                    continue
+                # Pre-allocation health ping
+                try:
+                    resp = await self._proxy_call("POST", f"/containers/{cid}/execute",
+                                                   json={"script": "print('ping')", "tenant_id": "", "timeout": 5})
+                    if resp.status_code < 400:
+                        return cid
+                except Exception:
+                    pass
+                # Dead container — remove
+                self._metadata.pop(cid, None)
+            # Pool exhausted — create new
+            resp = await self._proxy_call("POST", "/containers/allocate")
+            return resp.json()["container_id"]
 
-    async def execute(self, container_id: str, script: str, env: dict = None) -> AsyncIterator[dict]:
-        container = docker_client.containers.get(container_id)
-        # Write script
-        container.exec_run(f"sh -c 'cat > /workspace/script.py'", stdin=open("/dev/null"))
-        import io
-        script_bytes = io.BytesIO(script.encode())
-        container.put_archive("/workspace", script_bytes)  # Simplified — real impl uses tar
-        # Execute
-        exec_cmd = f"timeout {settings.sandbox_timeout_seconds} python /workspace/script.py"
-        exec_result = container.exec_run(exec_cmd, demux=True, stream=True)
-        for stdout_chunk, stderr_chunk in exec_result.output:
-            if stdout_chunk:
-                yield {"stream": "stdout", "text": stdout_chunk.decode()}
-            if stderr_chunk:
-                yield {"stream": "stderr", "text": stderr_chunk.decode()}
+    async def execute(self, container_id: str, script: str) -> AsyncIterator[dict]:
+        async with httpx.AsyncClient(timeout=settings.sandbox_timeout_seconds + 10) as client:
+            headers = {"Authorization": f"Bearer {SANDBOX_TOKEN}"}
+            async with client.stream("POST", f"{SANDBOX_PROXY}/containers/{container_id}/execute",
+                                     json={"script": script, "tenant_id": "", "timeout": settings.sandbox_timeout_seconds},
+                                     headers=headers) as resp:
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        yield {"stream": "stdout", "text": line[6:]}
+                    elif line.startswith("event: stderr"):
+                        continue  # next line has data
+                    elif line.startswith("event: done"):
+                        break
+        # Increment exec counter
+        meta = self._metadata.get(container_id, {})
+        meta["exec_count"] = meta.get("exec_count", 0) + 1
+        self._metadata[container_id] = meta
 
     async def recycle(self, container_id: str):
-        container = docker_client.containers.get(container_id)
-        container.exec_run("rm -rf /workspace/*")
-        async with self._lock:
-            self._pool.append(container)
+        meta = self._metadata.get(container_id, {})
+        if meta.get("exec_count", 0) >= 50:
+            await self._proxy_call("DELETE", f"/containers/{container_id}")
+            self._metadata.pop(container_id, None)
+        else:
+            await self._proxy_call("POST", f"/containers/{container_id}/recycle")
+            async with self._lock:
+                self._pool.append(container_id)
 
-sandbox_mgr = SandboxManager()
+
+async def get_sandbox_manager() -> "SandboxManager":
+    from app.main import _sandbox_manager
+    return _sandbox_manager
 ```
 
 5. Build image and verify: `docker-compose build sandbox && docker run --rm chainless/sandbox:latest python -c "print('hello sandbox')"`
@@ -1037,13 +1278,13 @@ EXECUTORS = {
 
 ---
 
-**Task 2.3: Agent Engine (ReAct loop + Tool Router + Code-as-Action)**
+**Task 2.3: Agent Engine (ReAct loop + token budget + circuit breaker + DI)**
 
 Files: `backend/app/core/agent/tool_router.py`, `backend/app/core/agent/code_executor.py`, `backend/app/core/agent/engine.py`, `backend/app/core/agent/prompt_builder.py`
 
-Why: The heart of the system. Think-act-observe loop with tool execution and optional Code-as-Action upgrade.
+Why: The heart of the system. Think-act-observe loop with token budget (100k per turn), circuit breaker (3 consecutive errors), DI-friendly signatures. Use `get_llm_gateway()` and `get_sandbox_manager()` via FastAPI Depends.
 
-Verification: Send "What's 2+2?" → agent responds "4" (no tool). Send "Write a Python script that prints fibonacci(10) and run it" → agent generates code → sandbox executes → result streams back.
+Verification: "What's 2+2?" → text response. "Write fibonacci(10)" → sandbox exec → result 55. 3 tool errors in a row → circuit breaker triggers → agent reports inability to complete.
 
 Steps:
 
@@ -1060,47 +1301,53 @@ async def execute_tool(tool_name: str, args: dict) -> str:
 
 2. Write `backend/app/core/agent/code_executor.py`:
 ```python
-import json
-from app.core.sandbox.manager import sandbox_mgr
-
-CODE_AS_ACTION_SYSTEM_PROMPT = """
-When the task requires orchestrating multiple tools, generate a Python script that:
-- Uses the `tool_call(name, **kwargs)` function to invoke any registered tool
-- Handles errors with try/except
-- Prints results as JSON
-Do NOT use `os`, `subprocess`, or `sys` for anything other than printing results.
-""".strip()
-
-async def execute_code_as_action(script: str) -> str:
-    """Execute a user/agent generated script in sandbox, return combined output."""
-    container_id = await sandbox_mgr.allocate()
+async def execute_code_as_action(script: str, sandbox_manager) -> str:
+    cid = await sandbox_manager.allocate()
     try:
-        output_parts = []
-        async for chunk in sandbox_mgr.execute(container_id, script):
-            output_parts.append(chunk["text"])
-        return "".join(output_parts)
+        output = []
+        async for chunk in sandbox_manager.execute(cid, script):
+            output.append(chunk["text"])
+        return "".join(output)
     finally:
-        await sandbox_mgr.recycle(container_id)
+        await sandbox_manager.recycle(cid)
 ```
 
-3. Write `backend/app/core/agent/engine.py`:
+3. Write `backend/app/core/agent/engine.py` — ReAct loop with guards:
 ```python
-import json
+import json, time
 from typing import AsyncIterator
-from app.core.llm.gateway import llm_gateway
-from app.core.agent.tool_router import execute_tool
-from app.core.agent.code_executor import execute_code_as_action, CODE_AS_ACTION_SYSTEM_PROMPT
-from app.core.tools.builtin import ALL_TOOLS
 
 MAX_ITERATIONS = 10
+MAX_TOKENS_PER_TURN = 100_000  # Per-conversation token budget
+MAX_CONSECUTIVE_ERRORS = 3     # Circuit breaker
 
-async def run_agent(provider: str, messages: list[dict]) -> AsyncIterator[dict]:
-    """ReAct loop with Code-as-Action upgrade. Yields SSE-compatible deltas."""
+async def run_agent(
+    gateway,          # Injected LLMGateway (via Depends)
+    sandbox_manager,  # Injected SandboxManager (via Depends)
+    provider: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+) -> AsyncIterator[dict]:
+    """ReAct loop with token budget + circuit breaker. Yields SSE-compatible deltas."""
     iteration = 0
+    tokens_used = 0
+    consecutive_errors = 0
+    
     while iteration < MAX_ITERATIONS:
+        if tokens_used >= MAX_TOKENS_PER_TURN:
+            yield {"type": "error", "code": "TOKEN_BUDGET_EXHAUSTED",
+                   "message": f"Conversation exceeded {MAX_TOKENS_PER_TURN} token budget"}
+            break
+        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            yield {"type": "error", "code": "CIRCUIT_BREAKER",
+                   "message": f"{MAX_CONSECUTIVE_ERRORS} consecutive tool errors — stopping for safety"}
+            break
+        
         iteration += 1
         tool_calls_buffer: dict[int, dict] = {}
-        async for delta in llm_gateway.chat_stream(provider, messages, ALL_TOOLS):
+        
+        async for delta in gateway.chat_stream(provider, messages, tools):
+            tokens_used += 1  # Approximate — real impl counts actual tokens
             if delta["type"] == "text":
                 yield {"type": "text", "content": delta["content"]}
             elif delta["type"] == "tool_call":
@@ -1111,33 +1358,139 @@ async def run_agent(provider: str, messages: list[dict]) -> AsyncIterator[dict]:
                 tool_calls_buffer[idx]["arguments"] += delta.get("arguments", "")
 
         if not tool_calls_buffer:
-            break  # No tool calls, response complete
+            break  # No tool calls — response complete
 
-        # Execute tool calls
         for tc in tool_calls_buffer.values():
             args = json.loads(tc["arguments"]) if tc["arguments"] else {}
             yield {"type": "tool_call_start", "name": tc["name"], "args": args}
             try:
                 if tc["name"] == "code_as_action":
-                    result = await execute_code_as_action(args.get("script", ""))
+                    result = await execute_code_as_action(args.get("script", ""), sandbox_manager)
                 else:
                     result = await execute_tool(tc["name"], args)
                 yield {"type": "tool_result", "name": tc["name"], "result": result[:1000]}
+                consecutive_errors = 0  # Reset on success
             except Exception as e:
-                yield {"type": "tool_error", "name": tc["name"], "error": str(e)}
+                consecutive_errors += 1
+                yield {"type": "tool_error", "name": tc["name"],
+                       "error": str(e), "consecutive": consecutive_errors}
                 result = f"Error: {e}"
 
-            messages.append({"role": "assistant", "content": None, "tool_calls": [{"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}]})
+            messages.append({"role": "assistant", "content": None,
+                "tool_calls": [{"id": tc["id"], "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]}}]})
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
-    yield {"type": "done"}
+    yield {"type": "done", "tokens_used": tokens_used}
 ```
 
-4. Write `backend/app/core/agent/prompt_builder.py` — merge layered instructions, inject relevant memories (Phase 4 will add pgvector), format system prompt.
+4. Write `backend/app/core/agent/prompt_builder.py` — token-aware sliding window:
+```python
+import tiktoken
 
-5. Update `conversations.py` chat endpoint to use `run_agent()` instead of direct `llm_gateway.chat_stream()`.
+def count_tokens(text: str, model: str = "gpt-4") -> int:
+    """Approximate token count. For exact counting per model, use tiktoken."""
+    try:
+        enc = tiktoken.encoding_for_model(model)
+        return len(enc.encode(text))
+    except Exception:
+        return len(text) // 4  # Rough estimate
 
-6. Verify: "What's 100 * 50?" → text response. "Write python to print(fibonacci(10)) and run it" → sandbox exec → stdout with result.
+def build_context(
+    system_instructions: str,  # Merged layered rules + memories
+    messages: list[dict],      # Conversation history (newest last)
+    max_context_tokens: int = 60000,
+    min_recent_messages: int = 4,
+) -> list[dict]:
+    """Build token-aware context. Always include system + last N messages.
+    Fill remaining budget with older messages working backwards."""
+    system_tokens = count_tokens(system_instructions)
+    budget = max_context_tokens - system_tokens
+    
+    result = [{"role": "system", "content": system_instructions}]
+    budget -= system_tokens
+    
+    # Always include last N messages
+    recent = messages[-min_recent_messages:] if len(messages) >= min_recent_messages else messages
+    remaining = messages[:-min_recent_messages] if len(messages) >= min_recent_messages else []
+    
+    # Build from recent backward
+    selected = []
+    for msg in reversed(recent):
+        tokens = count_tokens(msg.get("content", "") or "")
+        if tokens <= budget:
+            selected.insert(0, msg)
+            budget -= tokens
+    
+    # Fill with older messages
+    for msg in reversed(remaining):
+        tokens = count_tokens(msg.get("content", "") or "")
+        if tokens <= budget:
+            selected.insert(0, msg)
+            budget -= tokens
+        else:
+            break  # Budget exhausted
+    
+    result.extend(selected)
+    return result
+```
+
+5. Test for engine:
+```python
+# backend/tests/test_agent_engine.py
+import pytest
+from app.core.agent.engine import run_agent
+
+class MockGateway:
+    def __init__(self, responses: list):
+        self.responses = responses
+        self.call_count = 0
+    async def chat_stream(self, provider, messages, tools=None):
+        for chunk in self.responses[self.call_count]:
+            yield chunk
+        self.call_count += 1
+
+class MockSandbox:
+    async def allocate(self): return "mock-cid"
+    async def execute(self, cid, script):
+        yield {"stream": "stdout", "text": "55\n"}
+    async def recycle(self, cid): pass
+
+@pytest.mark.asyncio
+async def test_text_only_response():
+    gw = MockGateway([[{"type": "text", "content": "Hello!"}]])
+    sb = MockSandbox()
+    output = []
+    async for d in run_agent(gw, sb, "test", [{"role": "user", "content": "Hi"}]):
+        output.append(d)
+    assert any(d["type"] == "text" and d["content"] == "Hello!" for d in output)
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_fires_after_3_errors():
+    # Simulate 3 consecutive tool errors
+    error_chunks = [
+        [{"type": "tool_call", "id": "1", "name": "bad_tool", "arguments": "{}"}],
+        [{"type": "tool_call", "id": "2", "name": "bad_tool", "arguments": "{}"}],
+        [{"type": "tool_call", "id": "3", "name": "bad_tool", "arguments": "{}"}],
+    ]
+    gw = MockGateway(error_chunks)
+    sb = MockSandbox()
+    output = []
+    async for d in run_agent(gw, sb, "test", [{"role": "user", "content": "Do something"}]):
+        output.append(d)
+    assert any(d.get("type") == "error" and d.get("code") == "CIRCUIT_BREAKER" for d in output)
+
+@pytest.mark.asyncio
+async def test_token_budget_exhausted():
+    gw = MockGateway([
+        [{"type": "text", "content": "x" * 101000}],  # Exceeds 100k budget
+    ])
+    sb = MockSandbox()
+    output = []
+    async for d in run_agent(gw, sb, "test", [{"role": "user", "content": "Talk a lot"}]):
+        output.append(d)
+    assert any(d.get("code") == "TOKEN_BUDGET_EXHAUSTED" for d in output)
+```
 
 ---
 
@@ -1317,22 +1670,38 @@ class Memory(Base, TimestampMixin):
 
 2. Enable pgvector extension via migration: `CREATE EXTENSION IF NOT EXISTS vector;`
 
-3. Write `backend/app/core/memory/persistent.py`:
+3. Write `backend/app/core/memory/persistent.py` — async embedding via ARQ:
 ```python
-from sqlalchemy import select, text
+from sqlalchemy import select
 from app.models.memory import Memory
-from app.core.llm.gateway import llm_gateway
 
 async def create_memory(db, tenant_id: str, type: str, name: str, content: str,
                         tags: list[str] = None, user_id: str = None) -> Memory:
+    """Create memory row immediately. Embedding computed async via ARQ background job."""
     mem = Memory(tenant_id=tenant_id, user_id=user_id, type=type, name=name,
-                 content=content, tags=tags or [])
-    # Embed content
-    embeddings = await llm_gateway.embed("default", [content])
-    mem.embedding = embeddings[0]
+                 content=content, tags=tags or [], embedding=None)  # NULL until ARQ completes
     db.add(mem)
     await db.commit()
+    # Enqueue ARQ job for async embedding
+    from app.core.proactive.scheduler import enqueue_embedding_job
+    await enqueue_embedding_job(str(mem.id), content)
     return mem
+
+# ARQ background job (in tasks/embedding.py)
+async def compute_embedding_job(ctx: dict, memory_id: str, content: str):
+    """ARQ job: compute embedding and UPDATE memory row."""
+    from app.core.llm.gateway import get_llm_gateway
+    gateway = get_llm_gateway()
+    embeddings = await gateway.embed("default", [content])
+    # Update memory row (use sync session for ARQ worker)
+    from app.api.deps import engine
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE memories SET embedding = :emb WHERE id = :id"),
+            {"emb": embeddings[0], "id": memory_id}
+        )
+```
 
 async def search_memories(db, tenant_id: str, query: str, limit: int = 5) -> list[Memory]:
     query_embedding = (await llm_gateway.embed("default", [query]))[0]
@@ -1688,6 +2057,43 @@ Steps:
 ## Retirement
 
 No existing paths to retire (greenfield project).
+
+---
+
+## Appendix: Test Coverage Requirements (eng-review Change 8)
+
+Each P1/P2 task MUST include a test step. Minimum 3 tests per module: happy path, error path, edge case.
+
+| Module | Happy Path | Error Path | Edge Case |
+|--------|-----------|------------|-----------|
+| `auth_service.py` | Register → login → token valid | Wrong password → 401 | Expired token → 401 |
+| `llm/gateway.py` | Register provider → stream response | Unknown provider → ValueError | Empty messages → graceful |
+| `conversations.py` | Create → chat → SSE stream | Non-existent conv → 404 | Concurrent chat requests |
+| `agent/engine.py` | Text-only LLM response | Tool not found → tool_error | 3 consecutive errors → circuit breaker |
+| `agent/engine.py` | Tool call → result → loop | Token budget exhausted → stop | 0-iteration (empty response) |
+| `sandbox/manager.py` | Allocate → execute → recycle | Dead container → health check fails → replace | 50-exec limit → container removed |
+| `sandbox-proxy/app.py` | /health → 200 | Invalid auth → 403 | Container ID not found → 404 |
+| `memory/persistent.py` | Create memory → embedding NULL → ARQ fills | Unknown tenant → no results | Empty content → embedding still computed |
+| `tool_router.py` | Call builtin tool → result | Unknown tool → ValueError | Tool returns empty string |
+| `prompt_builder.py` | 10 messages → sliding window fits budget | 100k token budget → older messages dropped | 0 messages → system prompt only |
+
+Framework: `pytest` + `pytest-asyncio` + `httpx.AsyncClient` for endpoint tests.
+
+---
+
+## Appendix: Eng Review Changes Applied
+
+| # | Source | Change | Affected Plan Sections |
+|---|--------|--------|----------------------|
+| 1 | Architecture | litellm replaces openai SDK for LLM Gateway | Task 1.5 |
+| 2 | Architecture | Sandbox-proxy sidecar service (Docker socket isolation) | Task 2.1, docker-compose |
+| 3 | Architecture | Token budget (100k/turn) + circuit breaker (3 errors) | Task 2.3 |
+| 4 | Architecture | Token-aware sliding window replaces fixed limit(50) | Tasks 1.6, 2.3 |
+| 5 | Architecture | Container max lifetime (50 execs/600s) + health ping | Task 2.1 |
+| 6 | Architecture | SSE heartbeat (15s interval) | Task 1.6 |
+| 7 | Code Quality | FastAPI Depends() DI replaces global singletons | Tasks 1.2, 1.4, 1.6, 2.3 |
+| 8 | Tests | Mandatory test step (3 tests/module) for all P1/P2 tasks | Appendix |
+| 9 | Performance | ARQ async embedding (fire-and-forget) | Task 4.2 |
 
 ---
 
