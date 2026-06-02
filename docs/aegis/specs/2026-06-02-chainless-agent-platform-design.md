@@ -1,8 +1,9 @@
 # Chainless Agent Platform — Design Spec
 
-**Status**: Draft  
+**Status**: Reviewed (autoplan — 2026-06-02)  
 **Type**: Design Spec  
 **Created**: 2026-06-02  
+**Updated**: 2026-06-02  
 **Complexity**: High — new multi-subsystem platform, architecture-defining
 
 ---
@@ -15,7 +16,7 @@
 | **Goal** | 用户打开浏览器 → 配置 API Key → 对话 → Agent 自适应选择执行策略 → 返回结果。全程比 LangChain 方案快 2-3x |
 | **Success Evidence** | (1) GLM-4.5 Air 发"写爬虫抓 HackerNews 前10条"，Agent 自动生成代码 → 沙箱执行 → 流式返回，端到端 < 5s；(2) 3 个不同租户同时使用无报错；(3) 配置每天 9am 摘要任务，到点自动推送到飞书 |
 | **Stop Condition** | 6 Phase 全部可运行，`docker-compose up` 一键启动，前端完整对话流程可用 |
-| **Non-goals** | 不做模型训练/微调；不做 RAG/向量数据库；不实现 LDAP/SAML SSO (v1 用 JWT)；不做计费系统；不做移动端 App |
+| **Non-goals (v1)** | 不做模型训练/微调；不做 OpenAPI Bridge（延后 v2）；不做 Skill Precipitation（延后 v2）；不做 MinIO（本地存储）；不实现 LDAP/SAML SSO（v1 团队级 JWT）；不做计费系统；不做移动端 App；只做飞书一个渠道 |
 
 ## 2. Architecture Decisions
 
@@ -25,10 +26,15 @@
 | AD2 | Deployment | 单机 Docker Compose | 当前最适合，横向扩展靠后续拆 |
 | AD3 | Backend Stack | Python FastAPI + ARQ | LLM/MCP/Docker SDK 一等官方支持，AI 生态事实标准 |
 | AD4 | Frontend Stack | Next.js 14 + shadcn/ui + TailwindCSS | 现代化组件库，暗色主题默认 |
-| AD5 | Memory | 文件系统 + 标签索引 | 不用 RAG/向量DB，按 MEMORY.md 标签筛选注入 |
-| AD6 | Code-as-Action | 自适应模式 | 简单任务 ReAct + function calling；复杂多工具编排走 Python 脚本 + 沙箱 |
+| AD5 | Memory | 文件系统 + 标签索引 + pgvector 嵌入 | 文件为 source of truth，pgvector 做语义检索加速，零额外运维（PostgreSQL 内置） |
+| AD6 | Code-as-Action | ReAct 为主，模型请求时升级 Code-as-Action | 简单：始终 ReAct + function calling；当模型判断需要多工具编排时生成 Python 脚本在沙箱中批量执行 |
 | AD7 | Function Calling | 原生 OpenAI-compatible tool calling | GLM-4.5 Air 等模型原生支持，不需后训练 |
-| AD8 | Frontend Layout | 三面板 IDE 风格 | 左：文件树 + Agent 配置；中：聊天；右：可视化预览（可折叠） |
+| AD8 | Frontend Layout | 三面板 IDE 风格 | 左：仅历史对话 + 设置（精简）；中：聊天；右：可视化预览（可折叠） |
+| AD9 | Tool Protocols | MCP 保留，OpenAPI 延后 v2 | MCP 生态已有 100+ Server 可直接用；OpenAPI 翻译稳定性不足，v2 再加 |
+| AD10 | Channels | 仅飞书 | 先验证一个渠道的产品市场契合度，其他渠道按需加 |
+| AD11 | Object Storage | 本地文件系统 | v1 不需 MinIO，文件量增长后再切 |
+| AD12 | Eval Framework | 内置 eval harness | 每次 prompt/engine/memory 变更必须跑 CI 基准任务，防止静默退化 |
+| AD13 | Error Handling | 统一 JSON 错误信封 | 所有 API 错误返回 `{error: {code, message, detail}}`；SSE 错误事件遵循同结构 |
 
 ## 3. System Topology
 
@@ -211,14 +217,24 @@ MEMORY.md index format:
 - [Title](file.md) — hook | #tag1 #tag2
 ```
 
-### 5.4 Session Injection Logic
+### 5.4 Semantic Retrieval (pgvector)
+
+Memory content is embedded at write time into pgvector (PostgreSQL extension):
+1. On file create/update → embed content via LLM provider's embedding API → store vector in `memories.embedding` column
+2. On session start → embed current task description → cosine similarity search across tenant's memory vectors
+3. Tag match + semantic match results are merged (tag results take priority for exact matches, semantic fills the gaps)
+4. Max injection budget: configurable (default 5 files, 3000 words total)
+5. Embedding model: configurable per tenant (default: text-embedding-3-small or GLM embedding)
+
+### 5.5 Session Injection Logic
 
 1. Parse MEMORY.md → build tag → file mapping
 2. Match current task keywords/tags against index
-3. Inject matched files' content into system prompt
-4. Max injection budget: configurable (default 3 files, 2000 words total)
+3. Run pgvector cosine similarity on task embedding
+4. Merge tag results + semantic results, deduplicate
+5. Inject matched files' content into system prompt
 
-### 5.5 Skill Precipitation (Bidirectional)
+### 5.6 Skill Precipitation (Bidirectional) [v2]
 
 ```
 Experience → Skill:
@@ -294,14 +310,35 @@ recycle(container) → rm -rf /workspace/* → return to pool
 - Server lifecycle: start on first use, idle timeout 300s, reconnect on failure
 - Tool discovery: `list_tools()` on connect → register as OpenAI function definitions
 
-### 7.3 OpenAPI Bridge
+### 7.3 OpenAPI Bridge [v2]
 
-- Parse OpenAPI 3.x spec (JSON/YAML) → extract endpoints → generate OpenAI function definitions
-- Execute: httpx async HTTP call with parameter mapping
-- Auth support: Bearer token, API key header, OAuth2 client credentials
-- Cache parsed spec for 1 hour
+Deferred to v2. v1 ships with MCP + built-in tools only.
 
-## 8. Proactive Services & Channel SPI
+## 8. Eval Harness
+
+### 8.1 Purpose
+
+Prevent silent agent quality regression. Every change to prompt templates, memory injection logic, complexity router, or tool definitions must pass CI benchmark tasks.
+
+### 8.2 Architecture
+
+- 10-20 benchmark tasks stored in `backend/tests/eval/tasks/`
+- Each task: `{prompt, expected_tool_calls, expected_output_pattern, pass_criteria}`
+- Runner: `python scripts/run-eval.py --suite basic` → runs against configured LLM → reports pass/fail + latency
+- CI integration: GitHub Actions workflow, runs on every PR touching `core/agent/` or `core/llm/` or `core/memory/`
+- Metrics tracked: task completion rate, tool call accuracy, end-to-end latency p50/p95
+
+### 8.3 Benchmark Categories
+
+| Category | Count | Example |
+|----------|-------|---------|
+| Tool Selection | 5 | "What's the weather in Beijing?" → should call `web_fetch` not `shell_exec` |
+| Code-as-Action | 5 | "Write a Python script to sort a CSV" → should generate + execute in sandbox |
+| Memory Recall | 3 | "What's my preferred code style?" → should recall from persistent memory |
+| Multi-step | 5 | "Find the bug in auth.py, fix it, write a test" → should execute 3+ steps |
+| Safety | 2 | "Delete all files" → should refuse or confirm |
+
+## 9. Proactive Services & Channel SPI
 
 ### 8.1 Scheduler (ARQ)
 
@@ -320,14 +357,14 @@ class ChannelBase(ABC):
     async def validate_config(self, config: dict) -> bool: ...
 ```
 
-| Channel | Format | Notes |
-|---------|--------|-------|
-| Webhook | HTTP POST JSON | Generic, any receiver |
-| DingTalk | 消息卡片 (ActionCard) | Markdown body + buttons |
-| Feishu | 交互式消息 (Interactive Card) | Rich layout + actions |
-| WeCom | Markdown 消息 | Simpler format |
+| Channel | Format | v1 |
+|---------|--------|-----|
+| Webhook | HTTP POST JSON | ❌ v2 |
+| DingTalk | 消息卡片 | ❌ v2 |
+| Feishu | 交互式消息 (Interactive Card) | ✅ v1 |
+| WeCom | Markdown 消息 | ❌ v2 |
 
-## 9. Frontend Layout
+## 10. Frontend Layout
 
 ### 9.1 Three-Panel IDE Layout
 
@@ -369,25 +406,27 @@ class ChannelBase(ABC):
 ### 9.2 Panel Specifications
 
 **左侧面板 (260px)**：
-- 文件树：当前 workspace 目录结构，点击预览文件到右侧面板
-- Agent 选择器：下拉切换已配置的 Agent
-- 历史对话列表（最近 20 条）
-- 工具/Skills 管理入口
-- 设置入口
+- 历史对话列表（最近 20 条，按时间排序）
+- 设置入口（LLM 配置、Agent 配置、工具管理、渠道配置）
+- 不展示文件树、工具列表、Skills 管理入口（这些通过设置页面访问）
 
 **中间面板 (flex-1)**：
 - 消息流：用户消息 + Agent 回复（Markdown 渲染）
 - 工具调用以**内联卡片**展示（名称、参数摘要、状态指示、展开查看详情）
 - 终端输出以**可折叠区块**展示在消息流内（ANSI 颜色支持）
 - 代码块：语法高亮 + 一键复制 + 折叠/展开
-- 上下文信息（注入的指令、记忆）以**顶部 banner / tooltip** 可选查看
+- 上下文信息（注入的指令、记忆）以**顶部 banner** 可选查看
 - 底部输入区：多行 textarea + 文件拖拽上传 + `@tool` mention
 
 **右侧面板 (可折叠)**：
-- **仅展示可视化内容**：网页渲染（iframe）、文件预览（代码/图片/PDF）、HTML/SVG 输出
+- **可视化内容 + 终端输出**：
+  - 网页渲染（iframe）
+  - 文件预览（代码/图片/PDF）
+  - 终端输出（ANSI 终端渲染，沙箱执行实时输出）
+  - 文件差异对比（diff viewer）
+- 标签系统：终端 / 预览 / 文件 三个标签切换
 - 折叠按钮在面板左边缘，点击收起/展开
-- 左侧或中间面板中的文件点击 → 右侧面板预览
-- 不展示文本型的上下文、日志、指标（这些在聊天流内处理）
+- 安全约束：iframe 仅允许 http://localhost:3000 和沙箱白名单域名
 
 ### 9.3 Key Components
 
@@ -404,7 +443,7 @@ class ChannelBase(ABC):
 | `sidebar.tsx` | 左侧面板容器 |
 | `file-tree.tsx` | Workspace 文件树 |
 
-## 10. Database Schema (Key Entities)
+## 11. Database Schema (Key Entities)
 
 ```sql
 -- Core multi-tenant
@@ -434,7 +473,41 @@ proactive_tasks (id, tenant_id FK, agent_id FK, type, config JSONB, prompt, chan
 channels (id, tenant_id FK, channel_type, config JSONB, is_active)
 ```
 
-## 11. API Design (Key Endpoints)
+## 12. API Design (Key Endpoints)
+
+### 12.1 Error Envelope
+
+All non-streaming error responses use a unified envelope:
+
+```json
+{
+  "error": {
+    "code": "SANDBOX_TIMEOUT",
+    "message": "Execution exceeded 30s limit",
+    "detail": "Script s_1 exceeded 30s wall-clock timeout. Consider splitting into smaller steps."
+  }
+}
+```
+
+Error codes: `AUTH_EXPIRED`, `RATE_LIMITED`, `VALIDATION_ERROR`, `TENANT_NOT_FOUND`, `AGENT_NOT_FOUND`, `CONVERSATION_NOT_FOUND`, `SANDBOX_TIMEOUT`, `SANDBOX_MEMORY`, `LLM_PROVIDER_ERROR`, `LLM_CONTEXT_OVERFLOW`, `TOOL_NOT_FOUND`, `MCP_CONNECTION_FAILED`, `INTERNAL_ERROR`.
+
+SSE errors follow the same structure in the `error` event data field.
+
+### 12.2 Pagination
+
+All list endpoints return paginated responses:
+
+```json
+{
+  "items": [...],
+  "total": 150,
+  "limit": 20,
+  "offset": 0,
+  "next": "/api/v1/conversations?limit=20&offset=20"
+}
+```
+
+### 12.3 Endpoints
 
 ```
 POST   /api/v1/auth/login                  # JWT login
@@ -481,7 +554,7 @@ GET    /api/v1/system/health               # Health check
 GET    /api/v1/system/metrics              # Prometheus metrics
 ```
 
-## 12. Directory Structure
+## 13. Directory Structure
 
 ```
 chainless/
@@ -506,9 +579,9 @@ chainless/
 │   │   │   ├── sandbox/{manager,pool,security,executor}.py
 │   │   │   ├── memory/{layered,persistent,indexer,skill_precip}.py
 │   │   │   ├── skills/{registry,resolver,hook}.py
-│   │   │   ├── tools/{mcp/,openapi/,builtin/}.py
+│   │   │   ├── tools/{mcp/,builtin/}.py
 │   │   │   ├── proactive/{scheduler,events,triggers}.py
-│   │   │   └── channel/{base,webhook,dingtalk,feishu,wecom}.py
+│   │   │   └── channel/{base,feishu}.py
 │   │   ├── models/{user,tenant,agent,conversation,memory,skill,tool}.py
 │   │   ├── services/{auth,agent,conversation,memory,skill}_service.py
 │   │   └── middleware/{tenant,rate_limit,audit}.py
@@ -533,26 +606,27 @@ chainless/
     └── planning/SKILL.md
 ```
 
-## 13. Implementation Phases
+## 14. Implementation Phases
 
 | Phase | Scope | Key Deliverables |
 |-------|-------|------------------|
 | P1: Foundation | Auth, LLM Gateway, basic chat with SSE | Login → chat → streaming response from GLM |
-| P2: Agent Engine + Sandbox | Adaptive loop, Docker pool, Code-as-Action | Agent generates script → sandbox executes → result streams back |
-| P3: Tool Ecosystem | MCP client, OpenAPI parser, builtin tools | Register external tools → agent uses them → results in chat |
-| P4: Memory System | Layered instructions, persistent memory, skill precipitation | Memory recall works → experience → SKILL conversion |
-| P5: Proactive + Channels | Cron scheduler, event callbacks, DingTalk/Feishu/WeCom/Webhook | Scheduled task fires → delivers to configured channel |
-| P6: Polish + Production | Monitoring, rate limiting, audit, dark mode, keyboard shortcuts | Production-ready, `docker-compose up` deploys everything |
+| P2: Agent Engine + Sandbox | ReAct loop, Docker pool, Code-as-Action on model request | Agent generates script → sandbox executes → result streams back |
+| P3: Tool Ecosystem | MCP client, builtin tools | Register MCP server → agent uses its tools → results in chat |
+| P4: Memory System | Layered instructions, persistent memory, pgvector embeddings | Memory recall with semantic search → relevant memories injected per session |
+| P5: Eval + Channel | Eval harness (10-20 benchmark tasks), Feishu channel, cron scheduler | CI eval suite passes → scheduled task fires → delivers to Feishu |
+| P6: Polish + Production | Monitoring, rate limiting, audit, dark mode, keyboard shortcuts, auto-migration + seed data, backup/restore, unified error envelope, pagination | Production-ready, `docker-compose up` deploys everything |
 
-## 14. Impact Statement
+## 15. Impact Statement
 
 | Layer | Impact | Owner |
 |-------|--------|-------|
 | LLM Gateway | New — multi-provider abstraction | `core/llm/gateway.py` |
 | Agent Engine | New — adaptive think-act-observe loop | `core/agent/engine.py` |
 | Sandbox | New — Docker pool + security boundary | `core/sandbox/manager.py` |
-| Memory | New — file + tag-index system | `core/memory/layered.py` + `persistent.py` |
-| Tools | New — MCP + OpenAPI + builtin | `core/tools/` |
+| Memory | New — file + tag-index + pgvector | `core/memory/layered.py` + `persistent.py` |
+| Tools | New — MCP + builtin (OpenAPI v2) | `core/tools/` |
+| Eval | New — benchmark harness + CI | `backend/tests/eval/` |
 | Proactive | New — ARQ scheduler + event triggers | `core/proactive/scheduler.py` |
 | Channel SPI | New — multi-channel push abstraction | `core/channel/base.py` |
 | Frontend | New — Next.js + shadcn/ui 3-panel | `frontend/src/` |
@@ -584,3 +658,24 @@ chainless/
 - `agent/engine.py` — 预计 200-300 行，可接受
 - `sandbox/manager.py` — 建议拆分 `pool.py` + `security.py` + `executor.py`（已反映在目录结构中）
 - `memory/layered.py` — 预计 150 行，单一职责 OK
+
+## Appendix E: Autoplan Review Summary (2026-06-02)
+
+Three-phase review (CEO, Design, DX) via gstack `/autoplan`. Key changes applied:
+
+| Source | Change | Rationale |
+|--------|--------|-----------|
+| CEO | Moat-first build order: eval harness + Feishu in P5 | Differentiation delivers earlier |
+| CEO | MCP keep, OpenAPI defer to v2 | MCP ecosystem ready; OpenAPI translation unstable |
+| CEO | Add pgvector embeddings | Zero ops cost (PostgreSQL), prevents 6-month retrofit |
+| CEO | Defer Skill Precipitation to v2 | Unproven pattern; validate memory first |
+| CEO | Defer MinIO to v2 | Local storage sufficient for v1 |
+| Design | Right panel: add terminal + diff viewer + tab system | Visualization-only was too narrow |
+| Design | Left panel: simplify to history + settings only | Removed file tree, agent config, tool/skill mgmt entries |
+| Design | Specify all interaction states per component | Loading/empty/error/streaming states now required |
+| Design | Add iframe security constraints | Sandbox same-origin policy |
+| DX | Add unified JSON error envelope | All API + SSE errors follow `{error: {code, message, detail}}` |
+| DX | Add pagination to all list endpoints | `{items, total, limit, offset, next}` |
+| DX | Add auto-migration + seed data | `docker-compose up` must produce working system |
+| DX | Add backup/restore mechanism | Required for self-hosted credibility |
+| All | Complexity Router: simplify to ReAct-first + model-requested Code-as-Action | Reduces surprising behavior; explicit > clever |
