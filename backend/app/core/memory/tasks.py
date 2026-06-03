@@ -4,6 +4,19 @@ Jobs:
     compute_embedding — compute a pgvector embedding for a memory row.
 """
 
+import arq
+from app.config import settings
+
+_pool: arq.ArqRedis | None = None
+
+
+async def _get_pool() -> arq.ArqRedis:
+    """Return a module-level singleton ARQ pool, lazily initialised."""
+    global _pool
+    if _pool is None:
+        _pool = await arq.create_pool(settings.redis_url)
+    return _pool
+
 
 async def compute_embedding(ctx: dict, memory_id: str, content: str) -> None:
     """ARQ job: compute embedding and update the memory row.
@@ -34,10 +47,7 @@ async def enqueue_embedding(memory_id: str, content: str) -> None:
     ignored so they don't disrupt the API response.
     """
     try:
-        from arq import create_pool
-        from app.config import settings
-
-        redis = await create_pool(settings.redis_url)
+        redis = await _get_pool()
         await redis.enqueue_job("compute_embedding", memory_id, content)
     except Exception:
         pass  # Will backfill later

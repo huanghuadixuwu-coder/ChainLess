@@ -41,5 +41,8 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 60
 
+    # Debug
+    debug: bool = False
+
 
 settings = Settings()

@@ -48,6 +48,9 @@ def classify_tool(tool_name: str, tool_type: str = "builtin") -> RiskLevel:
         classification table default to ``RISKY``.  MCP tools default to
         ``RISKY``.
     """
+    # Auto-detect MCP tools by prefix
+    if tool_name.startswith("mcp__"):
+        tool_type = "mcp"
     if tool_type == "builtin":
         return BUILTIN_RISK.get(tool_name, RiskLevel.RISKY)
     elif tool_type == "mcp":

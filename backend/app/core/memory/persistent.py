@@ -5,10 +5,15 @@ Embedding computation is offloaded to a background ARQ worker so that
 the API response is not blocked by the LLM embedding call.
 """
 
+import asyncio
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import Memory
+
+logger = logging.getLogger(__name__)
 
 
 async def create_memory(
@@ -40,15 +45,20 @@ async def create_memory(
     await db.commit()
     await db.refresh(mem)
 
-    # Enqueue ARQ job for async embedding (best-effort).
+    # Fire-and-forget: don't block the API response waiting for Redis.
+    asyncio.ensure_future(_enqueue_embedding_safe(str(mem.id), content))
+
+    return mem
+
+
+async def _enqueue_embedding_safe(memory_id: str, content: str) -> None:
+    """Enqueue an embedding job, logging (not swallowing) failures."""
     try:
         from app.core.memory.tasks import enqueue_embedding
 
-        await enqueue_embedding(str(mem.id), content)
-    except Exception:
-        pass  # ARQ not running yet — embedding will be backfilled later
-
-    return mem
+        await enqueue_embedding(memory_id, content)
+    except Exception as exc:
+        logger.warning("Failed to enqueue embedding for %s: %s", memory_id, exc)
 
 
 async def search_memories(

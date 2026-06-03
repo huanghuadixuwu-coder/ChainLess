@@ -100,7 +100,7 @@ async def login(
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={
-                "error": {"code": "AUTH_EXPIRED", "message": "Invalid credentials"}
+                "error": {"code": "AUTH_FAILED", "message": "Invalid credentials"}
             },
         )
 
@@ -115,7 +115,7 @@ async def login(
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={
-                "error": {"code": "AUTH_EXPIRED", "message": "Invalid credentials"}
+                "error": {"code": "AUTH_FAILED", "message": "Invalid credentials"}
             },
         )
 

@@ -62,11 +62,15 @@ class MCPToolClient:
         # Use stdio_client context manager
         self._stdio_ctx = stdio_client(params)
         read, write = await self._stdio_ctx.__aenter__()
-        self._session = ClientSession(read, write)
-        await self._session.__aenter__()
-        await self._session.initialize()
+        try:
+            self._session = ClientSession(read, write)
+            await self._session.__aenter__()
+            await self._session.initialize()
 
-        result = await self._session.list_tools()
+            result = await self._session.list_tools()
+        except Exception:
+            await self._stdio_ctx.__aexit__(None, None, None)
+            raise
         self._tools = [
             {
                 "type": "function",
@@ -93,6 +97,12 @@ class MCPToolClient:
             except Exception:
                 pass
             self._session = None
+        if self._stdio_ctx:
+            try:
+                await self._stdio_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._stdio_ctx = None
         self._connected = False
 
     # ------------------------------------------------------------------

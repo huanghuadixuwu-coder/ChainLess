@@ -37,6 +37,8 @@ from uuid import uuid4
 
 import redis.asyncio as aioredis
 
+from arq.connections import RedisSettings
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -352,7 +354,7 @@ class WorkerSettings:
     Or add it to docker-compose as a separate service.
     """
 
-    redis_settings = settings.redis_url
+    redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [execute_proactive_task]
     cron_jobs = [
         # Check for due tasks every 5 minutes

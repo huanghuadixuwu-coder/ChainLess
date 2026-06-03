@@ -14,6 +14,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 # Mapping from exception types to user-facing error codes
@@ -60,7 +62,14 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
         message = str(exc) if str(exc) else "An internal error occurred"
-        detail = traceback.format_exc() if status_code == 500 else None
+        if status_code == 500:
+            if settings.debug:
+                detail = traceback.format_exc()
+            else:
+                message = "Internal server error"
+                detail = None
+        else:
+            detail = None
         return _error_response(status_code, error_code, message, detail)
 
     @app.exception_handler(HTTPException)
