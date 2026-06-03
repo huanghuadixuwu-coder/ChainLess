@@ -1,0 +1,18 @@
+"""v1 API router — aggregates all v1 sub-routers."""
+
+from fastapi import APIRouter
+
+from app.api.v1.auth import auth_router
+from app.api.v1.conversations import router as conversations_router
+from app.api.v1.memories import router as memories_router
+from app.api.v1.tools import router as tools_router
+from app.api.v1.channels import router as channels_router
+from app.api.v1.proactive import router as proactive_router
+
+api_router = APIRouter()
+api_router.include_router(auth_router)
+api_router.include_router(conversations_router)
+api_router.include_router(memories_router)
+api_router.include_router(tools_router)
+api_router.include_router(channels_router)
+api_router.include_router(proactive_router)

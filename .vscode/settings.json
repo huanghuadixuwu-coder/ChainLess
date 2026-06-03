@@ -1,0 +1,92 @@
+{
+    "remote.SSH.remotePlatform": {
+        "118.196.142.222": "linux",
+        "118.196.142.31": "linux",
+        "14.103.139.131": "linux"
+    },
+    "claudeCode.environmentVariables": [
+    
+
+
+
+        
+
+
+
+
+        {
+
+"name": "ANTHROPIC_AUTH_TOKEN",
+
+"value": "sk-a0bf14820cd94b72977000e984e31120" // 替换成deepseek的apikey
+
+},
+
+{
+
+"name": "ANTHROPIC_BASE_URL",
+
+"value": "https://api.deepseek.com/anthropic" // 替换成deepseek官方接口
+
+},
+
+{
+
+"name": "ANTHROPIC_MODEL",
+
+"value": "deepseek-v4-pro"
+
+},
+
+{
+
+"name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+
+"value": "deepseek-v4-pro"
+
+},
+
+{
+
+"name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+
+"value": "deepseek-v4-pro"
+
+},
+
+{
+
+"name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+
+"value": "deepseek-v4-flash"
+
+},
+
+{
+
+"name": "CLAUDE_CODE_SUBAGENT_MODEL",
+
+"value": "deepseek-v4-flash"
+
+},
+
+{
+
+"name": "CLAUDE_CODE_EFFORT_LEVEL",
+
+"value": "max"
+
+},
+
+{
+
+"name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+
+"value": "1" // 一键关闭 Claude Code 向 Anthropic 发送的所有非核心网络请求（遥测、错误上报、反馈问卷、自动更新等），让运行更隐私、更干净、更少的后台流量
+
+}
+    ],
+    "claudeCode.preferredLocation": "panel",
+    "claudeCode.initialPermissionMode": "bypassPermissions",
+    "workbench.panel.showLabels": false
+}

@@ -1,0 +1,91 @@
+version: "2.4"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: chainless-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chainless
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-chainless_dev}
+      POSTGRES_DB: chainless
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chainless"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: chainless-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  sandbox-proxy:
+    build:
+      context: ./sandbox-proxy
+      dockerfile: Dockerfile
+    container_name: chainless-sandbox-proxy
+    restart: unless-stopped
+    ports:
+      - "9001:9001"
+    environment:
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-dev-token}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chainless-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chainless:${DB_PASSWORD:-chainless_dev}@db:5432/chainless
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-dev-token}
+      SANDBOX_PROXY_URL: http://sandbox-proxy:9001
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chainless-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+  sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    container_name: chainless-sandbox
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+
+volumes:
+  pgdata:
