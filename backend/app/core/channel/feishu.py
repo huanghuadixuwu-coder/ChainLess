@@ -4,6 +4,15 @@ import httpx
 
 from .base import ChannelBase, ChannelMessage
 
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=10.0)
+    return _client
+
 
 class FeishuChannel(ChannelBase):
     """Deliver agent results as Feishu interactive cards.
@@ -28,8 +37,8 @@ class FeishuChannel(ChannelBase):
                 ],
             },
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(self.webhook_url, json=body, timeout=10)
+        client = _get_client()
+        resp = await client.post(self.webhook_url, json=body)
             return resp.status_code == 200
 
     async def validate(self) -> bool:

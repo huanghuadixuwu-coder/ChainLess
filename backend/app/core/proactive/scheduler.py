@@ -223,26 +223,14 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
 
     # Import agent engine lazily to avoid circular imports at module level
     from app.core.agent.engine import run_agent
-    from app.core.llm.gateway import LLMGateway
-    from app.core.sandbox.manager import SandboxManager
     from app.core.tools.builtin import ALL_TOOLS
     from app.core.channel.feishu import FeishuChannel
     from app.core.channel.base import ChannelMessage
+    from app.main import app_state
 
-    # Initialize gateway and sandbox
-    llm_gateway = LLMGateway()
-    llm_gateway.register(
-        "default",
-        settings.default_llm_api_base,
-        settings.glm_api_key,
-        settings.default_llm_model,
-        settings.embedding_model,
-    )
-    sandbox_manager = SandboxManager(settings)
-    try:
-        await sandbox_manager.warm_pool()
-    except Exception as exc:
-        logger.warning("Could not warm sandbox pool: %s", exc)
+    # Use already-initialized singletons from app_state
+    llm_gateway = app_state.llm_gateway
+    sandbox_manager = app_state.sandbox_manager
 
     # Run agent
     messages = [{"role": "user", "content": task.prompt}]
@@ -265,9 +253,6 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
     except Exception as exc:
         error = str(exc)
         logger.error("Agent execution failed for task '%s': %s", task_id, exc)
-
-    if sandbox_manager is not None:
-        await sandbox_manager.close()
 
     # Build result message
     content_parts = [

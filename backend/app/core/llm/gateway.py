@@ -5,6 +5,7 @@ import litellm
 class LLMGateway:
     def __init__(self):
         self._providers: dict[str, dict] = {}
+        self._embed_clients: dict[str, "AsyncOpenAI"] = {}
 
     def register(self, name: str, api_base: str, api_key: str, model: str,
                  embedding_model: str | None = None):
@@ -49,7 +50,12 @@ class LLMGateway:
     async def embed(self, provider_name: str, texts: list[str]) -> list[list[float]]:
         cfg = self.get_config(provider_name)
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(base_url=cfg["api_base"], api_key=cfg["api_key"])
+        cache_key = f"{cfg['api_base']}|{cfg['api_key']}"
+        if cache_key not in self._embed_clients:
+            self._embed_clients[cache_key] = AsyncOpenAI(
+                base_url=cfg["api_base"], api_key=cfg["api_key"],
+            )
+        client = self._embed_clients[cache_key]
         resp = await client.embeddings.create(model=cfg["embedding_model"], input=texts)
         return [d.embedding for d in resp.data]
 

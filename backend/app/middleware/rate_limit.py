@@ -9,6 +9,7 @@ Rate limit headers set on every response:
 
 import json
 import logging
+import random
 import time
 from typing import Optional
 
@@ -67,14 +68,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         window_start = now - self.window
 
         try:
-            # Clean expired entries, count remaining, add current
-            pipe = self.redis.pipeline()
-            pipe.zremrangebyscore(key, 0, window_start)
-            pipe.zcard(key)
-            await pipe.execute()
-
-            # The pipeline above uses implicit MULTI — now read the count
-            # Actually: redis-py pipelines are buffered; let's do it stepwise.
+            # Clean expired entries, count remaining
             await self.redis.zremrangebyscore(key, 0, window_start)
             count = await self.redis.zcard(key)
 
@@ -100,7 +94,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
 
             # Record this request
-            await self.redis.zadd(key, {str(time.time()): now})
+            await self.redis.zadd(key, {f"{now}:{random.getrandbits(32)}": now})
             await self.redis.expire(key, self.window)
 
             remaining = max(0, self.limit - count - 1)

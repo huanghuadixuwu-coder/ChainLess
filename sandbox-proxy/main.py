@@ -1,8 +1,6 @@
 """Sandbox proxy — manages a pool of isolated Docker containers for code execution."""
 
 import base64
-import io
-import tarfile
 import asyncio
 import concurrent.futures
 import logging

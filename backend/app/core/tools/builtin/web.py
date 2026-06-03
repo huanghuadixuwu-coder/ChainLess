@@ -9,6 +9,16 @@ import httpx
 # Maximum number of characters to return from a web_fetch response.
 _MAX_FETCH_LENGTH = 5000
 
+# Reusable HTTP client singleton.
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=30.0)
+    return _client
+
 WEB_TOOLS = [
     {
         "type": "function",
@@ -63,8 +73,8 @@ async def execute(tool_name: str, args: dict) -> str:
     """
     if tool_name == "web_fetch":
         url = args["url"]
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, follow_redirects=True, timeout=30)
+        client = _get_client()
+        resp = await client.get(url, follow_redirects=True)
             resp.raise_for_status()
             body = resp.text
             if len(body) > _MAX_FETCH_LENGTH:

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from pydantic import BaseModel
 
 from app.api.deps import get_db, get_current_user
@@ -47,8 +47,9 @@ async def list_agents(limit: int = 20, offset: int = 0,
         select(Agent).where(Agent.tenant_id == user["tenant_id"])
         .order_by(Agent.created_at.desc()).offset(offset).limit(limit))
     agents = result.scalars().all()
-    count_r = await db.execute(select(Agent).where(Agent.tenant_id == user["tenant_id"]))
-    total = len(count_r.scalars().all())
+    count_r = await db.execute(
+        select(func.count()).select_from(Agent).where(Agent.tenant_id == user["tenant_id"]))
+    total = count_r.scalar()
     return paginated_response(
         [{"id": str(a.id), "name": a.name, "system_prompt": a.system_prompt,
           "llm_provider": a.llm_provider, "is_active": a.is_active,
