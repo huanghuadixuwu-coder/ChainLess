@@ -8,22 +8,23 @@ Jobs:
 async def compute_embedding(ctx: dict, memory_id: str, content: str) -> None:
     """ARQ job: compute embedding and update the memory row.
 
-    Called asynchronously by the ARQ worker after a memory is created.
+    Uses the ORM to ensure pgvector Vector type serialization is correct.
     """
     from app.main import app_state
-    from app.api.deps import engine
-    from sqlalchemy import text
+    from app.api.deps import _async_session_factory
+    from sqlalchemy import update
+    from app.models.memory import Memory
 
     gateway = app_state.llm_gateway
     embeddings = await gateway.embed("default", [content])
 
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "UPDATE memories SET embedding = :emb WHERE id = CAST(:id AS uuid)"
-            ),
-            {"emb": embeddings[0], "id": memory_id},
+    async with _async_session_factory() as session:
+        await session.execute(
+            update(Memory)
+            .where(Memory.id == memory_id)
+            .values(embedding=embeddings[0])
         )
+        await session.commit()
 
 
 async def enqueue_embedding(memory_id: str, content: str) -> None:

@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     litellm \
     pgvector \
     tiktoken \
-    mcp
+    mcp \
+    croniter
 
 COPY . .
 

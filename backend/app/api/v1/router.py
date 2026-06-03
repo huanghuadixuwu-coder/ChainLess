@@ -8,6 +8,8 @@ from app.api.v1.memories import router as memories_router
 from app.api.v1.tools import router as tools_router
 from app.api.v1.channels import router as channels_router
 from app.api.v1.proactive import router as proactive_router
+from app.api.v1.agents import router as agents_router
+from app.api.v1.llm_providers import router as llm_providers_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -16,3 +18,5 @@ api_router.include_router(memories_router)
 api_router.include_router(tools_router)
 api_router.include_router(channels_router)
 api_router.include_router(proactive_router)
+api_router.include_router(agents_router)
+api_router.include_router(llm_providers_router)

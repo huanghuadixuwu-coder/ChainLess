@@ -310,23 +310,26 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def check_scheduled_tasks(ctx: dict) -> None:
-    """ARQ cron job: check all registered tasks and enqueue executions.
+    """ARQ cron job: check all registered tasks and enqueue those due to run.
 
-    This runs every minute. For each enabled task it enqueues an
-    ``execute_proactive_task`` job that will be picked up on the next
-    available worker slot.
-
-    In a production deployment this should use a proper cron scheduler
-    (e.g. apscheduler or the built-in ARQ cron) to avoid minute-bound
-    polling.  For now a simple tick is sufficient.
+    Runs every minute. For each enabled task, evaluates its cron expression
+    and only enqueues if the current minute matches.
     """
+    from datetime import datetime, timezone
     from arq.jobs import Job
+    from croniter import croniter
+
+    now = datetime.now(timezone.utc)
+    min_window = now.replace(second=0, microsecond=0)
 
     tasks = await list_tasks()
+    enqueued = 0
     for task in tasks:
         if not task.enabled:
             continue
-        # Enqueue the execution job
+        # Evaluate cron expression — only enqueue if this minute is a match
+        if not croniter.match(task.cron_expr, min_window):
+            continue
         await Job.create(
             ctx["redis"],
             execute_proactive_task,
@@ -334,7 +337,9 @@ async def check_scheduled_tasks(ctx: dict) -> None:
             _queue_name="arq:proactive",
             task_id=task.task_id,
         )
-    logger.debug("Checked %d proactive tasks", len(tasks))
+        enqueued += 1
+        logger.info("Enqueued proactive task '%s' (cron: %s)", task.task_id, task.cron_expr)
+    logger.debug("Checked %d tasks, enqueued %d", len(tasks), enqueued)
 
 
 class WorkerSettings:

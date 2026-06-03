@@ -430,3 +430,62 @@ async def _run_agent_stream(
             "error",
             {"error": {"code": "AGENT_STREAM_ERROR", "message": str(exc)}},
         ))
+
+
+# ---------------------------------------------------------------------------
+# Tool confirmation — completes the destructive-tool round-trip
+# ---------------------------------------------------------------------------
+class ConfirmRequest(BaseModel):
+    tool_call_id: str
+    approved: bool
+
+
+@router.post("/{conv_id}/confirm")
+async def confirm_tool(conv_id: str, req: ConfirmRequest,
+                       user=Depends(get_current_user),
+                       gateway: LLMGateway = Depends(get_llm_gateway),
+                       sandbox: SandboxManager = Depends(get_sandbox_manager)):
+    """Resume a conversation that paused on a destructive tool confirmation."""
+    # Use fresh session for the async generator lifetime
+    from app.api.deps import _async_session_factory
+    async with _async_session_factory() as db:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.id == conv_id, Conversation.tenant_id == user["tenant_id"]))).scalar_one_or_none()
+        if not conv:
+            raise HTTPException(404, detail={"error": {"code": "CONVERSATION_NOT_FOUND",
+                                                        "message": "Conversation not found"}})
+
+        if not req.approved:
+            rejection_msg = Message(
+                conversation_id=conv.id, role="tool",
+                content="User denied the destructive tool execution.",
+                metadata={"confirmation": "denied", "tool_call_id": req.tool_call_id}
+            )
+            db.add(rejection_msg)
+            await db.commit()
+
+        result = await db.execute(select(Message).where(
+            Message.conversation_id == conv.id).order_by(Message.created_at))
+        history = [{"role": m.role, "content": m.content} for m in result.scalars().all()]
+        context_msgs = build_context("You are a helpful AI assistant.", history)
+
+    async def event_stream():
+        full_response = ""
+        try:
+            async for delta in run_agent(gateway, sandbox, "default", context_msgs, AGENT_TOOLS):
+                if delta["type"] == "text":
+                    full_response += delta["content"]
+                    yield f"event: text\ndata: {json.dumps({'delta': delta['content']})}\n\n"
+                elif delta["type"] == "done":
+                    yield f"event: done\ndata: {json.dumps({'tokens_used': delta.get('tokens_used', 0)})}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': {'code': 'LLM_PROVIDER_ERROR', 'message': str(e)}})}\n\n"
+        finally:
+            from app.api.deps import _async_session_factory
+            async with _async_session_factory() as s:
+                assistant_msg = Message(conversation_id=conv_id, role="assistant", content=full_response)
+                s.add(assistant_msg)
+                await s.commit()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

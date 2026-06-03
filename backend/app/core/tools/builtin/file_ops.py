@@ -6,6 +6,19 @@ come in a later integration (P2.3).
 
 import os
 
+# Allowed base directory for file operations — anything outside is rejected
+_ALLOWED_BASE = os.environ.get("FILE_TOOLS_BASE_DIR", os.getcwd())
+
+
+def _safe_resolve(path: str) -> str:
+    """Resolve path and reject any traversal outside the allowed base directory."""
+    allowed = os.path.realpath(_ALLOWED_BASE)
+    resolved = os.path.realpath(os.path.join(allowed, path))
+    if not resolved.startswith(allowed + os.sep) and resolved != allowed:
+        raise ValueError(f"Access denied: '{path}' is outside the allowed directory")
+    return resolved
+
+
 FILE_TOOLS = [
     {
         "type": "function",
@@ -68,7 +81,8 @@ async def execute(tool_name: str, args: dict) -> str:
         FileNotFoundError: If the target path does not exist (read / list).
         IOError: On read/write failure.
     """
-    path = args.get("path", ".")
+    raw_path = args.get("path", ".")
+    path = _safe_resolve(raw_path)
 
     if tool_name == "file_read":
         with open(path) as f:
