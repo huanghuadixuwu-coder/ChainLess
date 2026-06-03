@@ -16,7 +16,7 @@ _client: httpx.AsyncClient | None = None
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=30.0)
+        _client = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "Chainless/1.0"})
     return _client
 
 WEB_TOOLS = [

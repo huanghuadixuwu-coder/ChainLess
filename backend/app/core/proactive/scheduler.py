@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 _tasks: dict[str, dict] = {}
 
+_redis_client: aioredis.Redis | None = None
+
 ARQ_REDIS_KEY = "chainless:proactive:tasks"
 
 
@@ -105,17 +107,19 @@ class ProactiveTask:
 # Redis helpers
 # ---------------------------------------------------------------------------
 
-async def _get_redis() -> aioredis.Redis:
-    """Return a Redis client connected to the configured Redis URL."""
-    return aioredis.from_url(settings.redis_url, decode_responses=True)
+async def _get_redis_client() -> aioredis.Redis:
+    """Return a shared Redis client singleton (connection pool managed internally)."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    return _redis_client
 
 
 async def _save_tasks_to_redis(tasks: dict[str, dict]) -> None:
     """Persist the tasks dict to Redis as a JSON blob."""
     try:
-        r = await _get_redis()
+        r = await _get_redis_client()
         await r.set(ARQ_REDIS_KEY, json.dumps(tasks))
-        await r.close()
     except Exception as exc:
         logger.warning("Could not persist tasks to Redis: %s", exc)
 
@@ -123,9 +127,8 @@ async def _save_tasks_to_redis(tasks: dict[str, dict]) -> None:
 async def _load_tasks_from_redis() -> dict[str, dict]:
     """Load tasks from Redis, falling back to in-memory dict."""
     try:
-        r = await _get_redis()
+        r = await _get_redis_client()
         raw = await r.get(ARQ_REDIS_KEY)
-        await r.close()
         if raw:
             return json.loads(raw)
     except Exception as exc:

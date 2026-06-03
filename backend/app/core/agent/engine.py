@@ -119,14 +119,15 @@ async def run_agent(
             break
 
         # ---- Step 3: Execute each tool call ----
+        destructive_hit = False
         for tc in tool_calls_buffer.values():
             args = json.loads(tc["arguments"]) if tc["arguments"] else {}
 
             yield {"type": "tool_call_start", "name": tc["name"], "args": args}
 
             # ---- Safety check: classify tool risk ----
-            risk = classify_tool(tc["name"])
-            if risk == RiskLevel.DESTRUCTIVE:
+            if classify_tool(tc["name"]) == RiskLevel.DESTRUCTIVE:
+                destructive_hit = True
                 yield {
                     "type": "confirmation_required",
                     "tool_name": tc["name"],
@@ -195,9 +196,7 @@ async def run_agent(
             )
 
         # ---- Safety break: destructive tool halted the loop ----
-        # (risk is set inside the for-loop above; always defined here
-        #  because tool_calls_buffer was non-empty when we entered the loop)
-        if risk == RiskLevel.DESTRUCTIVE:
+        if destructive_hit:
             yield {"type": "done", "tokens_used": tokens_used}
             return
 

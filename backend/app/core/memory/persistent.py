@@ -127,5 +127,6 @@ async def get_memories_for_session(
     try:
         return await search_memories(db, tenant_id, task_description, limit)
     except Exception:
+        logger.warning("Semantic search failed, falling back to tag search", exc_info=True)
         # Fallback: return recent memories by tag
         return await search_by_tags(db, tenant_id, [], limit)
