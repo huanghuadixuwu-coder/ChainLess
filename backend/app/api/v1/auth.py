@@ -1,13 +1,13 @@
-"""Authentication endpoints: register, login, me."""
+"""Authentication endpoints: register, login, refresh, me."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.contracts import api_error, auth_error
 from app.api.deps import get_current_user, get_db
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -50,6 +50,7 @@ class _TokenResponse(BaseModel):
 @auth_router.post("/register", response_model=_TokenResponse)
 async def register(
     body: _RegisterRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new tenant and user, returning a JWT access token."""
@@ -68,9 +69,10 @@ async def register(
         )
     )
     if result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username already exists in this tenant",
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "VALIDATION_ERROR",
+            "Username already exists in this tenant",
         )
 
     user = User(
@@ -80,6 +82,8 @@ async def register(
     )
     db.add(user)
     await db.commit()
+    request.state.audit_tenant_id = tenant.id
+    request.state.audit_user_id = user.id
 
     token = create_access_token(
         tenant_id=tenant.id, user_id=user.id, username=user.username
@@ -90,6 +94,7 @@ async def register(
 @auth_router.post("/login")
 async def login(
     body: _LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate a user and return a JWT access token."""
@@ -97,12 +102,8 @@ async def login(
     result = await db.execute(select(Tenant).where(Tenant.name == body.tenant_name))
     tenant = result.scalar_one_or_none()
     if tenant is None:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={
-                "error": {"code": "AUTH_FAILED", "message": "Invalid credentials"}
-            },
-        )
+        raise auth_error()
+    request.state.audit_tenant_id = tenant.id
 
     # Find user
     result = await db.execute(
@@ -112,15 +113,30 @@ async def login(
     )
     user = result.scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={
-                "error": {"code": "AUTH_FAILED", "message": "Invalid credentials"}
-            },
-        )
+        raise auth_error()
+    request.state.audit_user_id = user.id
+    if (user.preferences or {}).get("disabled") is True:
+        raise auth_error()
 
     token = create_access_token(
         tenant_id=tenant.id, user_id=user.id, username=user.username
+    )
+    return _TokenResponse(access_token=token, token_type="bearer")
+
+
+@auth_router.post("/refresh", response_model=_TokenResponse)
+async def refresh(
+    current_user: dict = Depends(get_current_user),
+):
+    """Refresh a valid JWT access token.
+
+    v1 keeps the refresh flow simple: an authenticated caller exchanges the
+    current bearer token for a new access token with a fresh expiry.
+    """
+    token = create_access_token(
+        tenant_id=current_user["tenant_id"],
+        user_id=current_user["user_id"],
+        username=current_user["username"],
     )
     return _TokenResponse(access_token=token, token_type="bearer")
 

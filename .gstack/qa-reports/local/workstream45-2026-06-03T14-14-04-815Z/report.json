@@ -1,0 +1,29 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-2026-06-03T14-14-04-815Z",
+  "loginOk": true,
+  "steps": [
+    {
+      "name": "open chat with token",
+      "ok": true,
+      "url": "http://118.196.142.31:3000/chat",
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-2026-06-03T14-14-04-815Z\\01-chat.png"
+    },
+    {
+      "name": "weather tool and completion",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-2026-06-03T14-14-04-815Z\\02-weather-complete.png",
+      "hasWeatherSummary": true,
+      "bodyTail": "New Chat\nNew Chat\nNew Chat\nNew Chat\nNew Conversation\nNew Conversation\n你好\nLogout\n\n帮我查一下今天无锡的天气\n\n根据最新的天气API，今天无锡的天气情况如下：有轻微的降雨，当前温度为23摄氏度，体感温度为16摄氏度，湿度为85%。今天的最高温度为30摄氏度，最低温度为23摄氏度，降雨概率约为81%。\n\nweather_get\n\nRunning\n\n{\n  \"location\": \"Wuxi\"\n}\n\nweather_get\n\nCompleted\n\nWeather in Wuxi: Light rain. Current temperature 23C, feels like 16C, humidity 85%. Today's high 30C, low 23C, chance of rain about 81%.\nPreview\nTerminal\nFiles\nDiff\n\n根据最新的天气API，今天无锡的天气情况如下：有轻微的降雨，当前温度为23摄氏度，体感温度为16摄氏度，湿度为85%。今天的最高温度为30摄氏度，最低温度为23摄氏度，降雨概率约为81%。"
+    },
+    {
+      "name": "destructive deny flow",
+      "ok": false,
+      "error": "TimeoutError: locator.waitFor: Timeout 40000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Confirmation required').first() to be visible\u001b[22m\n"
+    }
+  ],
+  "failure": "TimeoutError: locator.waitFor: Timeout 40000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Confirmation required').first() to be visible\u001b[22m\n",
+  "finalUrl": "http://118.196.142.31:3000/chat",
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": []
+}

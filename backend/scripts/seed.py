@@ -4,7 +4,7 @@
 Idempotent — safe to run multiple times.  Creates:
 
 - Default tenant  (name: "default")
-- Admin user      (username: "admin", password: "admin123")
+- Admin user      (username: "admin", password from BOOTSTRAP_ADMIN_PASSWORD)
 - Default agent   (name: "Chainless Assistant")
 - Sample memory entries
 """
@@ -22,12 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
-from app.config import settings  # noqa: E402
+from app.config import settings, validate_production_settings  # noqa: E402
 from app.models.tenant import Tenant  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.models.agent import Agent  # noqa: E402
 from app.models.memory import Memory  # noqa: E402
-from app.services.auth_service import hash_password  # noqa: E402
+from app.services.auth_service import hash_password, verify_password  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ async def seed(db: AsyncSession | None = None) -> None:
     (e.g. from the FastAPI lifespan).  When *db* is ``None`` a fresh
     engine and session are created.
     """
+    validate_production_settings(settings)
     if db is not None:
         await _seed_inner(db)
         return
@@ -76,14 +77,22 @@ async def _seed_inner(db: AsyncSession) -> None:
         admin = User(
             tenant_id=tenant.id,
             username="admin",
-            password_hash=hash_password("admin123"),
+            password_hash=hash_password(settings.bootstrap_admin_password),
             role="admin",
         )
         db.add(admin)
         await db.flush()
-        logger.info("Created admin user (admin / admin123)")
+        logger.info("Created bootstrap admin user")
     else:
-        logger.info("Admin user already exists — skipped")
+        if (
+            settings.app_env.lower() == "production"
+            and verify_password("admin123", admin.password_hash)
+        ):
+            admin.password_hash = hash_password(settings.bootstrap_admin_password)
+            await db.flush()
+            logger.info("Rotated legacy default admin password")
+        else:
+            logger.info("Admin user already exists — skipped")
 
     # ── Default agent ───────────────────────────────────────────────
     result = await db.execute(

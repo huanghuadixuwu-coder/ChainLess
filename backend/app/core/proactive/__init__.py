@@ -1,19 +1,23 @@
 """Proactive task scheduling — cron-driven agent execution with channel delivery."""
 
 from .scheduler import (
-    execute_proactive_task,
     cancel_task,
-    schedule_task,
+    count_run_records,
+    execute_proactive_task,
     get_task,
+    schedule_task,
+    list_run_records,
     list_tasks,
     ProactiveTask,
 )
 
 __all__ = [
-    "execute_proactive_task",
     "cancel_task",
-    "schedule_task",
+    "count_run_records",
+    "execute_proactive_task",
     "get_task",
+    "schedule_task",
+    "list_run_records",
     "list_tasks",
     "ProactiveTask",
 ]

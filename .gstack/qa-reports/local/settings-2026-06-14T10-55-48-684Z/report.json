@@ -1,0 +1,180 @@
+{
+  "runId": "2026-06-14T10-55-48-684Z",
+  "suite": "settings",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login-admin",
+      "ok": true
+    },
+    {
+      "name": "settings-route-open",
+      "ok": true
+    },
+    {
+      "name": "settings-section-provider",
+      "ok": true
+    },
+    {
+      "name": "settings-section-agent",
+      "ok": true
+    },
+    {
+      "name": "settings-section-tools",
+      "ok": true
+    },
+    {
+      "name": "settings-section-memories",
+      "ok": true
+    },
+    {
+      "name": "settings-section-channel",
+      "ok": true
+    },
+    {
+      "name": "settings-section-proactive",
+      "ok": true
+    },
+    {
+      "name": "settings-section-skills",
+      "ok": true
+    },
+    {
+      "name": "settings-section-eval",
+      "ok": true
+    },
+    {
+      "name": "settings-section-system",
+      "ok": true
+    },
+    {
+      "name": "provider-create-mask",
+      "ok": true,
+      "skipped": "no existing provider to preserve as default"
+    },
+    {
+      "name": "agent-create-active",
+      "ok": true,
+      "agentName": "w5-final-1781434549296-agent"
+    },
+    {
+      "name": "tool-risk-override-reset",
+      "ok": true,
+      "toolName": "file_read"
+    },
+    {
+      "name": "mcp-register-test",
+      "ok": true,
+      "mcpServer": "w5final1781434549296mcp"
+    },
+    {
+      "name": "memory-create-search-merge",
+      "ok": true,
+      "memoryName": "w5-final-1781434549296-memory"
+    },
+    {
+      "name": "channel-feishu-secret-surface",
+      "ok": true
+    },
+    {
+      "name": "proactive-create-runs-visible",
+      "ok": true
+    },
+    {
+      "name": "skill-create-match",
+      "ok": true,
+      "skillName": "w5-final-1781434549296-skill"
+    },
+    {
+      "name": "eval-dry-run",
+      "ok": true
+    },
+    {
+      "name": "theme-toggle-default-dark-persist",
+      "ok": true
+    },
+    {
+      "name": "chat-context-banner",
+      "ok": true,
+      "conversationId": "6a6dd0c4-4c70-470f-aea7-4317615ea1b2"
+    },
+    {
+      "name": "cleanup-settings-artifacts",
+      "ok": true,
+      "cleanup": [
+        {
+          "label": "conversations",
+          "ok": true,
+          "cleanup": [
+            {
+              "id": "6a6dd0c4-4c70-470f-aea7-4317615ea1b2",
+              "ok": true
+            }
+          ]
+        },
+        {
+          "label": "tool-risk-reset",
+          "ok": true,
+          "value": {
+            "name": "file_read",
+            "tool_type": "builtin",
+            "enabled": true,
+            "risk_override": null
+          }
+        },
+        {
+          "label": "mcp-delete-w5final1781434549296mcp",
+          "ok": true,
+          "value": {}
+        },
+        {
+          "label": "agent-delete-67c50159-361e-4dec-aee3-ee642721f33d",
+          "ok": true,
+          "value": {
+            "deleted": true
+          }
+        },
+        {
+          "label": "memory-delete-649416a7-04d7-40cb-9b0d-04b373685632",
+          "ok": true,
+          "value": {}
+        },
+        {
+          "label": "skill-delete-ed14933e-f419-4993-9c68-4f2378de28fd",
+          "ok": true,
+          "value": {}
+        },
+        {
+          "label": "proactive-delete-2f3fc866-a64f-4043-8139-c857b74a3f1b",
+          "ok": true,
+          "value": {
+            "status": "ok",
+            "task_id": "2f3fc866-a64f-4043-8139-c857b74a3f1b"
+          }
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://localhost/api/v1/eval/suites?limit=100",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-55-48-684Z\\01-settings-sections.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-55-48-684Z\\02-settings-system-theme.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-55-48-684Z\\03-chat-context-banner.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-55-48-684Z",
+  "generatedAt": "2026-06-14T10:55:55.582Z"
+}

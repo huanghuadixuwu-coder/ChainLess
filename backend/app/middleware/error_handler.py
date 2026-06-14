@@ -8,13 +8,16 @@ Registered in main.py during app construction.
 """
 
 import logging
-import traceback
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.config import settings
+from app.api.contracts import (
+    default_error_code,
+    error_response,
+    normalize_http_detail,
+)
+from app.core.secrets import redact_sensitive_data, safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +28,6 @@ ERROR_CODE_MAP: dict[type[Exception], str] = {
     KeyError: "VALIDATION_ERROR",
     PermissionError: "FORBIDDEN",
 }
-
-
-def _error_response(
-    status_code: int,
-    code: str,
-    message: str,
-    detail: object = None,
-) -> JSONResponse:
-    """Build a JSON response with the standard envelope."""
-    body: dict = {"error": {"code": code, "message": message}}
-    if detail is not None:
-        body["error"]["detail"] = detail
-    return JSONResponse(status_code=status_code, content=body)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -54,42 +44,25 @@ def register_error_handlers(app: FastAPI) -> None:
         error_code = ERROR_CODE_MAP.get(type(exc), "INTERNAL_ERROR")
         status_code = 400 if error_code == "VALIDATION_ERROR" else 500
 
-        logger.error(
-            "Unhandled %s: %s\n%s",
-            type(exc).__name__,
-            exc,
-            traceback.format_exc(),
-        )
+        logger.exception("Unhandled exception type: %s", type(exc).__name__)
 
-        message = str(exc) if str(exc) else "An internal error occurred"
+        message = safe_error_message(exc)
         if status_code == 500:
-            if settings.debug:
-                detail = traceback.format_exc()
-            else:
-                message = "Internal server error"
-                detail = None
+            message = "Internal server error"
+            detail = None
         else:
             detail = None
-        return _error_response(status_code, error_code, message, detail)
+        return error_response(status_code, error_code, message, detail)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         """Handle HTTPExceptions raised by route handlers or dependencies.
 
-        If the exception detail is already a dict with an ``error`` key
-        (e.g. from the auth endpoints), pass it through as-is.  Otherwise
-        wrap it in the standard envelope.
+        Normalize all HTTP exceptions into the canonical error contract.
         """
-        if isinstance(exc.detail, dict) and "error" in exc.detail:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=exc.detail,
-            )
-
-        return _error_response(
+        return JSONResponse(
             status_code=exc.status_code,
-            code="HTTP_ERROR",
-            message=str(exc.detail) if exc.detail else "HTTP error occurred",
+            content=redact_sensitive_data(normalize_http_detail(exc.status_code, exc.detail)),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -98,9 +71,9 @@ def register_error_handlers(app: FastAPI) -> None:
         exc: RequestValidationError,
     ) -> JSONResponse:
         """Handle Pydantic / FastAPI request validation errors (422)."""
-        return _error_response(
+        return error_response(
             status_code=422,
-            code="VALIDATION_ERROR",
+            code=default_error_code(422),
             message="Request validation failed",
-            detail=exc.errors(),
+            detail=redact_sensitive_data(exc.errors()),
         )

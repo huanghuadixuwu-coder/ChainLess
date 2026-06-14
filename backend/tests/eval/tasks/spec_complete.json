@@ -1,0 +1,8 @@
+[
+  {
+    "id": "real-parallel-code-as-action-subagents",
+    "runner": "parallel_subagent_runtime_probe",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Use Code-as-Action to run two real parallel sub-agents and aggregate their results."
+  }
+]

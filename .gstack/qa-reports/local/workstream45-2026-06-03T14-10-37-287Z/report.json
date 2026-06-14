@@ -1,0 +1,15 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-2026-06-03T14-10-37-287Z",
+  "steps": [
+    {
+      "name": "open login",
+      "ok": false,
+      "error": "Error: locator.waitFor: Error: strict mode violation: getByText('Sign In') resolved to 2 elements:\n    1) <div data-slot=\"card-title\" class=\"font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm text-center text-zinc-100\">Sign In</div> aka getByText('Sign In').first()\n    2) <button type=\"submit\" data-slot=\"button\" class=\"group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-inval…>Sign In</button> aka getByRole('button', { name: 'Sign In' })\n\nCall log:\n\u001b[2m  - waiting for getByText('Sign In') to be visible\u001b[22m\n"
+    }
+  ],
+  "failure": "Error: locator.waitFor: Error: strict mode violation: getByText('Sign In') resolved to 2 elements:\n    1) <div data-slot=\"card-title\" class=\"font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm text-center text-zinc-100\">Sign In</div> aka getByText('Sign In').first()\n    2) <button type=\"submit\" data-slot=\"button\" class=\"group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-inval…>Sign In</button> aka getByRole('button', { name: 'Sign In' })\n\nCall log:\n\u001b[2m  - waiting for getByText('Sign In') to be visible\u001b[22m\n",
+  "finalUrl": "http://118.196.142.31:3000/login",
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": []
+}

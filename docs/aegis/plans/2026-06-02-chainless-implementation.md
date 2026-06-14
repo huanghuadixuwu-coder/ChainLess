@@ -10,6 +10,13 @@
 **FPR Review**: D1 (spawn_sub_agent), D2 (tool safety), D3 (hallucination) applied — 12 gaps identified and closed  
 **Complexity**: High — 6 phases, new multi-subsystem platform
 
+> Authority notice (2026-06-05): This is the historical implementation
+> authority, amended by the approved
+> [V1 Complete Spec Reconciliation](../specs/2026-06-04-chainless-v1-complete-spec-reconciliation.md).
+> Remaining work is tracked only by
+> [the 2026-06-05 execution plan](./2026-06-05-chainless-v1-complete-spec-execution-plan.md).
+> Preserve the historical body; reconciled decisions take precedence.
+
 ---
 
 ## Goal

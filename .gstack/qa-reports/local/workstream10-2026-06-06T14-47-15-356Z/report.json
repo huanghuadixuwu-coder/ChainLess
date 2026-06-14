@@ -1,0 +1,22 @@
+{
+  "runId": "2026-06-06T14-47-15-356Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31",
+  "currentUrl": "http://118.196.142.31/login",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "page.waitForURL: Timeout 60000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation until \"load\"\n============================================================\n    at loginViaUi (E:\\Chainless\\scripts\\windows-browser-qa.cjs:124:14)\n    at async runWorkstream10 (E:\\Chainless\\scripts\\windows-browser-qa.cjs:163:13)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:298:19)",
+  "steps": [],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "pageErrors": [],
+  "requestFailures": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-47-15-356Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-47-15-356Z",
+  "generatedAt": "2026-06-06T14:48:16.263Z"
+}

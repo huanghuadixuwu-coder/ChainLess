@@ -1,0 +1,191 @@
+{
+  "runId": "2026-06-14T11-15-31-330Z",
+  "suite": "settings",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "page.waitForFunction: Timeout 90000ms exceeded.\n    at runSettings (E:\\Chainless\\scripts\\windows-browser-qa.cjs:790:16)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:901:19)",
+  "steps": [
+    {
+      "name": "auth-login-admin",
+      "ok": true
+    },
+    {
+      "name": "settings-route-open",
+      "ok": true
+    },
+    {
+      "name": "settings-section-provider",
+      "ok": true
+    },
+    {
+      "name": "settings-section-agent",
+      "ok": true
+    },
+    {
+      "name": "settings-section-tools",
+      "ok": true
+    },
+    {
+      "name": "settings-section-memories",
+      "ok": true
+    },
+    {
+      "name": "settings-section-channel",
+      "ok": true
+    },
+    {
+      "name": "settings-section-proactive",
+      "ok": true
+    },
+    {
+      "name": "settings-section-skills",
+      "ok": true
+    },
+    {
+      "name": "settings-section-eval",
+      "ok": true
+    },
+    {
+      "name": "settings-section-system",
+      "ok": true
+    },
+    {
+      "name": "provider-create-mask-default",
+      "ok": true,
+      "providerName": "w5-final-1781435731648-provider"
+    },
+    {
+      "name": "agent-create-active",
+      "ok": true,
+      "agentName": "w5-final-1781435731648-agent"
+    },
+    {
+      "name": "tool-risk-override-reset",
+      "ok": true,
+      "toolName": "file_read"
+    },
+    {
+      "name": "mcp-register-test",
+      "ok": true,
+      "mcpServer": "w5final1781435731648mcp"
+    },
+    {
+      "name": "memory-create-search-merge",
+      "ok": true,
+      "memoryName": "w5-final-1781435731648-memory"
+    },
+    {
+      "name": "channel-feishu-secret-surface",
+      "ok": true
+    },
+    {
+      "name": "proactive-create-runs-visible",
+      "ok": true
+    },
+    {
+      "name": "skill-create-match",
+      "ok": true,
+      "skillName": "w5-final-1781435731648-skill"
+    },
+    {
+      "name": "eval-dry-run",
+      "ok": true
+    },
+    {
+      "name": "theme-toggle-default-dark-persist",
+      "ok": true
+    },
+    {
+      "name": "cleanup-settings-artifacts",
+      "ok": true,
+      "cleanup": [
+        {
+          "label": "tool-risk-reset",
+          "ok": true,
+          "value": {
+            "name": "file_read",
+            "tool_type": "builtin",
+            "enabled": true,
+            "risk_override": null
+          },
+          "retried": false
+        },
+        {
+          "label": "mcp-delete-w5final1781435731648mcp",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "provider-delete-w5-final-1781435731648-baseline-provider",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "provider-delete-w5-final-1781435731648-provider",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "agent-delete-976905bf-c566-41d7-a70c-7edb9d643c6e",
+          "ok": true,
+          "value": {
+            "deleted": true
+          },
+          "retried": false
+        },
+        {
+          "label": "memory-delete-5dc68d4e-735c-4810-86d2-983dd8baf253",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "skill-delete-956e8dc0-8723-4b89-9acc-e220930102cd",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "proactive-delete-f06ee888-d193-406f-994c-e673c88eaf5b",
+          "ok": true,
+          "value": {
+            "status": "ok",
+            "task_id": "f06ee888-d193-406f-994c-e673c88eaf5b"
+          },
+          "retried": false
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+    "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+    "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+  ],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://localhost/chat?_rsc=yJVSf2-mUsVl2a-v",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "responses429": [
+    "http://localhost/api/v1/skills/?limit=100",
+    "http://localhost/api/v1/conversations/",
+    "http://localhost/api/v1/conversations/"
+  ],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-15-31-330Z\\01-settings-sections.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-15-31-330Z\\02-settings-system-theme.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-15-31-330Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-15-31-330Z",
+  "generatedAt": "2026-06-14T11:17:09.409Z"
+}

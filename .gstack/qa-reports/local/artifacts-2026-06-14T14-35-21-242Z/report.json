@@ -1,0 +1,69 @@
+{
+  "runId": "2026-06-14T14-35-21-242Z",
+  "suite": "artifacts",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-default",
+      "ok": true,
+      "providerName": "w6-artifacts-1781447721500-provider"
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "1a27db27-c3de-4d06-a7a6-df68857b4192"
+    },
+    {
+      "name": "chat-file-write-tool",
+      "ok": true
+    },
+    {
+      "name": "files-tab-real-artifact",
+      "ok": true
+    },
+    {
+      "name": "diff-tab-real-unified-diff",
+      "ok": true
+    },
+    {
+      "name": "reload-preserves-artifact-list",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-observed-tool-loop",
+      "ok": true,
+      "chatCalls": 2
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "1a27db27-c3de-4d06-a7a6-df68857b4192",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-35-21-242Z\\01-files-artifact.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-35-21-242Z\\02-diff-artifact.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-35-21-242Z",
+  "generatedAt": "2026-06-14T14:35:24.412Z"
+}

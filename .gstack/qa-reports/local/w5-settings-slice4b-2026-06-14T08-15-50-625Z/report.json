@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "tenant": "w5-ui-admin-20260614161433",
+  "reportDir": "E:/Chainless/.gstack/qa-reports/local/w5-settings-slice4b-2026-06-14T08-15-50-625Z",
+  "error": "locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByLabel(/tenant/i)\u001b[22m\n\n    at E:\\Chainless\\.node_repl_cell_0.mjs:51:36",
+  "consoleErrors": [],
+  "pageErrors": [],
+  "failedRequests": [],
+  "url": "http://localhost/login"
+}

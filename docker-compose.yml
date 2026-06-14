@@ -1,6 +1,30 @@
 version: "2.4"
 
 services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: chainless-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/chainless.conf:/etc/nginx/conf.d/chainless.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    networks:
+      - public
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health | grep -q ok"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   db:
     image: pgvector/pgvector:pg16
     container_name: chainless-db
@@ -9,10 +33,10 @@ services:
       POSTGRES_USER: chainless
       POSTGRES_PASSWORD: ${DB_PASSWORD:-chainless_dev}
       POSTGRES_DB: chainless
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U chainless"]
       interval: 5s
@@ -24,8 +48,8 @@ services:
     image: redis:7-alpine
     container_name: chainless-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    networks:
+      - data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,12 +62,37 @@ services:
       dockerfile: Dockerfile
     container_name: chainless-sandbox-proxy
     restart: unless-stopped
-    ports:
-      - "9001:9001"
     environment:
+      APP_ENV: production
       PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-dev-token}
+      SANDBOX_PROXY_OWNER: ${SANDBOX_PROXY_OWNER:-chainless-production}
+      SANDBOX_POOL_MIN: ${SANDBOX_POOL_MIN:-2}
+      SANDBOX_POOL_MAX: ${SANDBOX_POOL_MAX:-10}
+      SANDBOX_NETWORK_MODE: ${SANDBOX_NETWORK_MODE:-none}
+      SANDBOX_NETWORK_WHITELIST: ${SANDBOX_NETWORK_WHITELIST:-}
+      SANDBOX_APPARMOR_PROFILE: ${SANDBOX_APPARMOR_PROFILE:-}
+      SANDBOX_PIDS_LIMIT: ${SANDBOX_PIDS_LIMIT:-128}
+      SANDBOX_MAX_TIMEOUT_SECONDS: ${SANDBOX_MAX_TIMEOUT_SECONDS:-60}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-chainless-sandbox:latest}
+      SUBAGENT_CONTROL_VOLUME: chainless_subagent_control
+      SUBAGENT_CONTROL_GID: ${SUBAGENT_CONTROL_GID:-10001}
+      DISPOSABLE_PARENT_MAX_CONCURRENCY: ${DISPOSABLE_PARENT_MAX_CONCURRENCY:-5}
+      DISPOSABLE_PARENT_MAX_STDOUT_BYTES: ${DISPOSABLE_PARENT_MAX_STDOUT_BYTES:-262144}
+      DISPOSABLE_PARENT_MAX_STDERR_BYTES: ${DISPOSABLE_PARENT_MAX_STDERR_BYTES:-262144}
+      DISPOSABLE_PARENT_MAX_OUTPUT_BYTES: ${DISPOSABLE_PARENT_MAX_OUTPUT_BYTES:-524288}
+      PARENT_RUN_STATUS_TTL_SECONDS: ${PARENT_RUN_STATUS_TTL_SECONDS:-300}
+      PARENT_RUN_STATUS_MAX_RECORDS: ${PARENT_RUN_STATUS_MAX_RECORDS:-1000}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - subagent_control:/run/chainless-control
+    networks:
+      - sandbox_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   backend:
     build:
@@ -51,41 +100,149 @@ services:
       dockerfile: Dockerfile
     container_name: chainless-backend
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://chainless:${DB_PASSWORD:-chainless_dev}@db:5432/chainless
+      DB_USER: chainless
+      DB_HOST: db
+      DB_NAME: chainless
+      DB_PASSWORD: ${DB_PASSWORD:-chainless_dev}
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
-      GLM_API_KEY: ${GLM_API_KEY:-}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-dev-secret-encryption-key-change-in-production}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin123}
+      APP_ENV: production
       PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-dev-token}
       SANDBOX_PROXY_URL: http://sandbox-proxy:9001
+      FILE_TOOLS_BASE_DIR: /workspace
+      FILE_TOOLS_MAX_READ_BYTES: 20000
+      MEMORY_BASE_PATH: /data/memory
+      ARTIFACT_BASE_PATH: /data/artifacts
+      ARTIFACT_MAX_FILE_BYTES: ${ARTIFACT_MAX_FILE_BYTES:-200000}
+      ARTIFACT_MAX_DIFF_BYTES: ${ARTIFACT_MAX_DIFF_BYTES:-100000}
+      ARTIFACT_TENANT_QUOTA_BYTES: ${ARTIFACT_TENANT_QUOTA_BYTES:-50000000}
+      ARTIFACT_RETENTION_DAYS: ${ARTIFACT_RETENTION_DAYS:-30}
+      ARTIFACT_PREVIEW_ALLOWED_ORIGINS: ${ARTIFACT_PREVIEW_ALLOWED_ORIGINS:-http://localhost,http://localhost:3000,http://127.0.0.1,http://127.0.0.1:3000}
+      BACKUP_DIR: /backups
+      APP_RELOAD: "0"
+      SUBAGENT_CONTROL_ROOT: /run/chainless-control
+      SUBAGENT_CONTROL_GID: ${SUBAGENT_CONTROL_GID:-10001}
+      SUBAGENT_MAX_CONNECTIONS_PER_RUN: ${SUBAGENT_MAX_CONNECTIONS_PER_RUN:-8}
+      SUBAGENT_MAX_CONNECTIONS_GLOBAL: ${SUBAGENT_MAX_CONNECTIONS_GLOBAL:-32}
+      SUBAGENT_READ_TIMEOUT_SECONDS: ${SUBAGENT_READ_TIMEOUT_SECONDS:-2}
+      SUBAGENT_HANDLER_TIMEOUT_SECONDS: ${SUBAGENT_HANDLER_TIMEOUT_SECONDS:-30}
+      SUBAGENT_CANCELLATION_GRACE_SECONDS: ${SUBAGENT_CANCELLATION_GRACE_SECONDS:-1}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+    volumes:
+      - workspace_data:/workspace
+      - memory_data:/data/memory
+      - artifact_data:/data/artifacts
+      - backup_data:/backups
+      - subagent_control:/run/chainless-control
+    networks:
+      - app
+      - data
+      - sandbox_net
+      - egress
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      sandbox-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chainless-worker
+    restart: unless-stopped
+    command: ["arq", "app.core.proactive.scheduler.WorkerSettings"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chainless:${DB_PASSWORD:-chainless_dev}@db:5432/chainless
+      DB_USER: chainless
+      DB_HOST: db
+      DB_NAME: chainless
+      DB_PASSWORD: ${DB_PASSWORD:-chainless_dev}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-dev-secret-encryption-key-change-in-production}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin123}
+      APP_ENV: production
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-dev-token}
+      SANDBOX_PROXY_URL: http://sandbox-proxy:9001
+      FILE_TOOLS_BASE_DIR: /workspace
+      FILE_TOOLS_MAX_READ_BYTES: 20000
+      MEMORY_BASE_PATH: /data/memory
+      ARTIFACT_BASE_PATH: /data/artifacts
+      ARTIFACT_MAX_FILE_BYTES: ${ARTIFACT_MAX_FILE_BYTES:-200000}
+      ARTIFACT_MAX_DIFF_BYTES: ${ARTIFACT_MAX_DIFF_BYTES:-100000}
+      ARTIFACT_TENANT_QUOTA_BYTES: ${ARTIFACT_TENANT_QUOTA_BYTES:-50000000}
+      ARTIFACT_RETENTION_DAYS: ${ARTIFACT_RETENTION_DAYS:-30}
+      ARTIFACT_PREVIEW_ALLOWED_ORIGINS: ${ARTIFACT_PREVIEW_ALLOWED_ORIGINS:-http://localhost,http://localhost:3000,http://127.0.0.1,http://127.0.0.1:3000}
+      APP_RELOAD: "0"
+    volumes:
+      - workspace_data:/workspace
+      - memory_data:/data/memory
+      - artifact_data:/data/artifacts
+    networks:
+      - data
+      - sandbox_net
+      - egress
+    depends_on:
+      redis:
+        condition: service_healthy
+      sandbox-proxy:
         condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""
     container_name: chainless-frontend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: ""
     depends_on:
       - backend
+    networks:
+      - app
 
   sandbox:
+    image: ${SANDBOX_IMAGE:-chainless-sandbox:latest}
     build:
       context: ./sandbox
       dockerfile: Dockerfile
+      args:
+        SUBAGENT_CONTROL_GID: ${SUBAGENT_CONTROL_GID:-10001}
     container_name: chainless-sandbox
     restart: unless-stopped
     command: ["sleep", "infinity"]
+    network_mode: "none"
 
 volumes:
   pgdata:
+  workspace_data:
+  memory_data:
+  artifact_data:
+  backup_data:
+  subagent_control:
+    name: chainless_subagent_control
+
+networks:
+  public:
+  app:
+    internal: true
+  data:
+    internal: true
+  sandbox_net:
+    internal: true
+  egress:

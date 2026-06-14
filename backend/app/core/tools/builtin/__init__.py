@@ -21,7 +21,7 @@ ALL_TOOLS = FILE_TOOLS + WEB_TOOLS + SHELL_TOOLS
 TOOL_EXECUTORS: dict[str, object] = {}
 for name in ["file_read", "file_write", "file_list"]:
     TOOL_EXECUTORS[name] = file_exec
-for name in ["web_fetch", "web_search"]:
+for name in ["web_fetch", "web_search", "weather_get"]:
     TOOL_EXECUTORS[name] = web_exec
 
 # ``shell_exec`` has a different signature

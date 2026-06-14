@@ -1,0 +1,34 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z",
+  "loginOk": true,
+  "steps": [
+    {
+      "name": "open chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z\\01-open.png"
+    },
+    {
+      "name": "new chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z\\02-newchat.png"
+    },
+    {
+      "name": "trigger confirmation",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z\\03-confirmation.png",
+      "bodyTail": "New Chat\nNew Chat\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nNew Chat\nNew Chat\nNew Chat\nNew Conversation\nNew Conversation\n你好\nLogout\n\nYou must call the shell_exec function with command date.\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nNeeds confirmation\n\n{\n  \"command\": \"date\"\n}\n\nConfirmation required\n\n`shell_exec` is marked as destructive. Review the request and approve or deny.\n\n30S\n{\n  \"command\": \"date\"\n}\nApprove\nDeny"
+    },
+    {
+      "name": "deny",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z\\04-denied.png"
+    },
+    {
+      "name": "approve on second try",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-2026-06-03T14-16-31-531Z\\05-approved.png",
+      "bodyTail": "New Chat\nNew Chat\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nNew Chat\nNew Chat\nNew Chat\nNew Conversation\nNew Conversation\n你好\nLogout\n\nYou must call the shell_exec function with command date.\n\nThe current date and time are %s1. The year is %s2, the month is %s3, the day is %s4, the hour is %s5, and the minute is %s6.\n\nYou must call the shell_exec function with command date.\n\nError: name 'execute_code_as_action' is not defined\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nDenied\n\n{\n  \"command\": \"date\"\n}\nUser denied this action.\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nNeeds confirmation\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nNeeds confirmation\n\n{\n  \"command\": \"date\"\n}\n\nConfirmation required\n\n`shell_exec` is marked as destructive. Review the request and approve or deny.\n\n30S\n{\n  \"command\": \"date\"\n}\nApprove\nDeny"
+    }
+  ],
+  "finalUrl": "http://118.196.142.31:3000/chat"
+}

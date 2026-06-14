@@ -1,0 +1,210 @@
+{
+  "runId": "2026-06-14T11-47-08-833Z",
+  "suite": "settings",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login-admin",
+      "ok": true
+    },
+    {
+      "name": "settings-route-open",
+      "ok": true
+    },
+    {
+      "name": "settings-section-provider",
+      "ok": true
+    },
+    {
+      "name": "settings-section-agent",
+      "ok": true
+    },
+    {
+      "name": "settings-section-tools",
+      "ok": true
+    },
+    {
+      "name": "settings-section-memories",
+      "ok": true
+    },
+    {
+      "name": "settings-section-channel",
+      "ok": true
+    },
+    {
+      "name": "settings-section-proactive",
+      "ok": true
+    },
+    {
+      "name": "settings-section-skills",
+      "ok": true
+    },
+    {
+      "name": "settings-section-eval",
+      "ok": true
+    },
+    {
+      "name": "settings-section-system",
+      "ok": true
+    },
+    {
+      "name": "provider-create-mask-default",
+      "ok": true,
+      "providerName": "w5-final-1781437629115-provider"
+    },
+    {
+      "name": "agent-create-active",
+      "ok": true,
+      "agentName": "w5-final-1781437629115-agent"
+    },
+    {
+      "name": "tool-risk-override-reset",
+      "ok": true,
+      "toolName": "file_read"
+    },
+    {
+      "name": "mcp-register-test",
+      "ok": true,
+      "mcpServer": "w5final1781437629115mcp"
+    },
+    {
+      "name": "memory-create-search-merge",
+      "ok": true,
+      "memoryName": "w5-final-1781437629115-memory"
+    },
+    {
+      "name": "channel-feishu-secret-surface",
+      "ok": true
+    },
+    {
+      "name": "proactive-create-runs-visible",
+      "ok": true
+    },
+    {
+      "name": "skill-create-match",
+      "ok": true,
+      "skillName": "w5-final-1781437629115-skill"
+    },
+    {
+      "name": "eval-dry-run",
+      "ok": true
+    },
+    {
+      "name": "theme-toggle-default-dark-persist",
+      "ok": true
+    },
+    {
+      "name": "auth-login-chat-admin",
+      "ok": true,
+      "username": "qa-chat"
+    },
+    {
+      "name": "chat-context-banner-provider-switch",
+      "ok": true,
+      "conversationId": "5530d1ad-05a5-4992-859f-44ae0c811310",
+      "providerName": "w5-final-1781437629115-provider",
+      "mockCalls": 1
+    },
+    {
+      "name": "cleanup-settings-artifacts",
+      "ok": true,
+      "cleanup": [
+        {
+          "label": "conversations",
+          "ok": true,
+          "cleanup": [
+            {
+              "id": "5530d1ad-05a5-4992-859f-44ae0c811310",
+              "ok": true
+            }
+          ]
+        },
+        {
+          "label": "tool-risk-reset",
+          "ok": true,
+          "value": {
+            "name": "file_read",
+            "tool_type": "builtin",
+            "enabled": true,
+            "risk_override": null
+          },
+          "retried": false
+        },
+        {
+          "label": "mcp-delete-w5final1781437629115mcp",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "provider-delete-w5-final-1781437629115-baseline-provider",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "provider-delete-w5-final-1781437629115-provider",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "agent-delete-34c45f08-80ab-4796-936a-2f17f064b15b",
+          "ok": true,
+          "value": {
+            "deleted": true
+          },
+          "retried": false
+        },
+        {
+          "label": "memory-delete-98c0f437-a867-4aa0-aa9a-7ea0ced1fd8b",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "skill-delete-8f18ee98-630f-446a-bbc0-0febd9430fc1",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "proactive-delete-287dae7c-7479-4f1d-875e-492dbfe76173",
+          "ok": true,
+          "value": {
+            "status": "ok",
+            "task_id": "287dae7c-7479-4f1d-875e-492dbfe76173"
+          },
+          "retried": false
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [
+    {
+      "url": "http://localhost/chat?_rsc=yJVSf2-mUsVl2a-v",
+      "errorText": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://localhost/chat?_rsc=yJVSf2-mUsVl2a-v",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-47-08-833Z\\01-settings-sections.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-47-08-833Z\\02-settings-system-theme.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-47-08-833Z\\03-chat-context-banner.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T11-47-08-833Z",
+  "generatedAt": "2026-06-14T11:47:17.947Z"
+}

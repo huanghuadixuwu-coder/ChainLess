@@ -1,88 +1,99 @@
-"""Conversation CRUD and SSE streaming chat endpoints.
+"""Conversation CRUD and canonical SSE streaming endpoints."""
 
-POST   /                     — create a new conversation
-GET    /                     — list conversations (paginated)
-POST   /{conv_id}/chat       — send message, stream agent response via SSE
-"""
+from __future__ import annotations
 
-import asyncio
-import json
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.contracts import api_error, not_found, validation_error
 from app.api.deps import get_current_user, get_db
 from app.api.pagination import paginated_response
-from app.core.agent.code_executor import CODE_AS_ACTION_TOOL
-from app.core.agent.engine import run_agent
+from app.config import settings
+from app.core.artifacts import (
+    ARTIFACT_STATE_AVAILABLE,
+    delete_artifacts_for_conversation,
+    read_artifact_content,
+    serialize_artifact,
+)
 from app.core.agent.prompt_builder import build_context
-from app.core.llm.gateway import LLMGateway, get_llm_gateway
+from app.core.llm.gateway import get_llm_gateway
+from app.core.memory.layered import load_layered_instructions
 from app.core.memory.persistent import get_memories_for_session
-from app.core.sandbox.manager import SandboxManager, get_sandbox_manager
-from app.core.tools.builtin import ALL_TOOLS
+from app.core.sandbox.manager import get_sandbox_manager
+from app.models.agent import Agent
+from app.models.artifact import Artifact
 from app.models.conversation import Conversation, Message
+from app.models.llm_provider import LLMProvider
+from app.services.conversation_stream_service import (
+    build_chat_stream_response,
+    build_confirmation_stream_response,
+)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 SYSTEM_INSTRUCTIONS = (
     "You are Chainless, an AI assistant with access to tools. "
     "You can write and execute Python code in a sandbox, read/write files, "
-    "fetch web content, search the web, and execute shell commands. "
+    "fetch web content, search the web, check weather, and execute shell commands. "
     "Think step by step and use tools when appropriate. "
-    "When asked to write code, use the code_as_action tool to execute it."
+    "When asked to write code, use the code_as_action tool to execute it. "
+    "When an answer uses persistent memory, cite the memory inline as [memory:<name>]. "
+    "When an answer uses layered instructions, cite the layer inline as [context:<layer>]."
 )
 
-# Number of relevant memories to inject into the system prompt at session start.
 MEMORY_CONTEXT_LIMIT = 5
-
-# Tools exposed to the agent: builtin tools plus the code_as_action tool.
-AGENT_TOOLS = ALL_TOOLS + [CODE_AS_ACTION_TOOL]
-
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
 
 
 class _ChatRequest(BaseModel):
     content: str
+    attachment_artifact_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+class _CreateConversationRequest(BaseModel):
+    title: str | None = None
+    agent_id: uuid.UUID | None = None
+
+
+class _UpdateConversationRequest(BaseModel):
+    title: str
+
+
+class ConfirmRequest(BaseModel):
+    tool_call_id: str
+    approved: bool | None = None
+    decision: Literal["approve", "deny", "timeout"] | None = None
+    tool_name: str | None = None
+    args: dict | None = None
 
 
 @router.post("/")
 async def create_conversation(
+    body: _CreateConversationRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Create a new conversation for the authenticated user.
-
-    Returns the conversation id, title and creation timestamp.
-    """
+    """Create a new conversation for the authenticated user."""
+    agent = await _resolve_requested_or_active_agent(
+        db,
+        current_user["tenant_id"],
+        body.agent_id if body else None,
+    )
     conv = Conversation(
         tenant_id=uuid.UUID(current_user["tenant_id"]),
         user_id=uuid.UUID(current_user["user_id"]),
-        title="New Conversation",
+        agent_id=agent.id if agent else None,
+        title=(body.title.strip() if body and body.title and body.title.strip() else "New Conversation"),
         status="active",
     )
     db.add(conv)
     await db.commit()
     await db.refresh(conv)
-    return {
-        "id": str(conv.id),
-        "title": conv.title,
-        "created_at": conv.created_at.isoformat(),
-    }
+    return _conversation_summary(conv)
 
 
 @router.get("/")
@@ -93,30 +104,27 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    # The Request parameter is injected by FastAPI via type annotation;
-    # the None default is never used at runtime but keeps the signature
-    # stable when the endpoint is called without an explicit request.
     """List conversations for the current tenant/user with pagination."""
     tenant_id = uuid.UUID(current_user["tenant_id"])
     user_id = uuid.UUID(current_user["user_id"])
 
-    # Total count
     count_q = (
         select(func.count())
         .select_from(Conversation)
         .where(
             Conversation.tenant_id == tenant_id,
             Conversation.user_id == user_id,
+            Conversation.status != "archived",
         )
     )
     total = (await db.execute(count_q)).scalar()
 
-    # Paginated items
     rows_q = (
         select(Conversation)
         .where(
             Conversation.tenant_id == tenant_id,
             Conversation.user_id == user_id,
+            Conversation.status != "archived",
         )
         .order_by(Conversation.created_at.desc())
         .offset(offset)
@@ -131,6 +139,7 @@ async def list_conversations(
             "status": c.status,
             "created_at": c.created_at.isoformat(),
             "updated_at": c.updated_at.isoformat(),
+            "agent_id": str(c.agent_id) if c.agent_id else None,
         }
         for c in rows
     ]
@@ -138,354 +147,485 @@ async def list_conversations(
     return paginated_response(items, total, limit, offset, request)
 
 
+@router.get("/{conv_id}")
+async def get_conversation(
+    conv_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return a single conversation with its messages."""
+    conv = await _get_owned_conversation(db, conv_id, current_user)
+    if conv is None:
+        raise not_found("CONVERSATION_NOT_FOUND", "Conversation not found")
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conv_id)
+        .order_by(Message.created_at.asc())
+    )
+    rows: list[Message] = list(result.scalars().all())
+
+    return {
+        "id": str(conv.id),
+        "title": conv.title,
+        "status": conv.status,
+        "created_at": conv.created_at.isoformat(),
+        "updated_at": conv.updated_at.isoformat(),
+        "agent_id": str(conv.agent_id) if conv.agent_id else None,
+        "messages": [
+            {
+                "id": str(m.id),
+                "role": m.role,
+                "content": m.content or "",
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in rows
+        ],
+    }
+
+
+@router.patch("/{conv_id}")
+async def update_conversation(
+    conv_id: uuid.UUID,
+    body: _UpdateConversationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Rename a conversation for the current tenant/user."""
+    conv = await _get_owned_conversation(db, conv_id, current_user)
+    if conv is None:
+        raise not_found("CONVERSATION_NOT_FOUND", "Conversation not found")
+
+    title = body.title.strip()
+    if not title:
+        raise validation_error("Conversation title cannot be empty")
+
+    conv.title = title
+    await db.commit()
+    await db.refresh(conv)
+    return _conversation_summary(conv)
+
+
 @router.post("/{conv_id}/chat")
 async def chat(
     conv_id: uuid.UUID,
     body: _ChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    llm_gateway: LLMGateway = Depends(get_llm_gateway),
-    sandbox_manager: SandboxManager = Depends(get_sandbox_manager),
 ):
-    """Send a user message and stream the agent response via SSE.
-
-    SSE event types:
-        event: text                 -> data: {"delta": "..."}
-        event: tool_call_start      -> data: {"name": "...", "args": {...}}
-        event: tool_result          -> data: {"name": "...", "result": "..."}
-        event: tool_error           -> data: {"name": "...", "error": "..."}
-        event: confirmation_required -> data: {"tool_name": "...", "args": {...}, "risk": "destructive", "timeout_s": 30}
-        event: heartbeat            -> data: {}
-        event: error                -> data: {"error": {"code": "...", "message": "..."}}
-        event: done                 -> data: {"tokens_used": N}
-    """
-    tenant_id = uuid.UUID(current_user["tenant_id"])
-
-    # Validate conversation exists and belongs to the tenant
-    result = await db.execute(
-        select(Conversation).where(
-            Conversation.id == conv_id,
-            Conversation.tenant_id == tenant_id,
-        )
-    )
-    conv = result.scalar_one_or_none()
+    """Send a user message and stream the response with canonical SSE events."""
+    conv = await _get_owned_conversation(db, conv_id, current_user)
     if conv is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
-        )
+        raise not_found("CONVERSATION_NOT_FOUND", "Conversation not found")
 
-    # Save user message
-    user_msg = Message(
-        conversation_id=conv_id,
-        role="user",
-        content=body.content,
+    attachments = await _validate_chat_attachments(db, conv_id, current_user, body.attachment_artifact_ids)
+    llm_gateway = await get_llm_gateway()
+    sandbox_manager = await get_sandbox_manager()
+    db.add(
+        Message(
+            conversation_id=conv_id,
+            role="user",
+            content=body.content,
+            meta_data={
+                "attachment_artifact_ids": [str(artifact.id) for artifact in attachments],
+            } if attachments else {},
+        )
     )
-    db.add(user_msg)
     await db.commit()
 
-    # Load full message history
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conv_id)
         .order_by(Message.created_at.asc())
     )
     db_messages: list[Message] = list(result.scalars().all())
-
-    # Convert to litellm-friendly format
     raw_messages = [
-        {"role": m.role, "content": m.content or ""} for m in db_messages
+        {
+            "role": m.role,
+            "content": await _message_content_with_attachments(m, current_user),
+        }
+        for m in db_messages
     ]
 
-    # Inject relevant memories into the system prompt at session start.
-    # Only do this for the first user message (when history has only one user message).
-    system_prompt = SYSTEM_INSTRUCTIONS
-    memory_note = await _build_memory_context(db, str(tenant_id), body.content)
-    if memory_note:
-        system_prompt = system_prompt + "\n\n" + memory_note
+    agent = await _resolve_conversation_agent(db, conv, current_user["tenant_id"])
+    provider, system_prompt = await _resolve_agent_runtime_context(
+        db,
+        current_user["tenant_id"],
+        agent,
+    )
 
-    # Build token-aware context
+    session_context, context_summary = await _build_session_context(
+        db,
+        current_user["tenant_id"],
+        body.content,
+    )
+    if session_context:
+        system_prompt = system_prompt + "\n\n" + session_context
+
     context_messages = build_context(system_prompt, raw_messages)
-
-    return await _build_sse_stream(
+    return await build_chat_stream_response(
         llm_gateway,
         sandbox_manager,
         db,
         conv_id,
         context_messages,
+        request,
+        tenant_id=current_user["tenant_id"],
+        user_id=current_user["user_id"],
+        provider=provider,
+        context_summary={
+            **context_summary,
+            "agent": {
+                "id": str(agent.id) if agent else None,
+                "name": agent.name if agent else "default",
+                "provider": provider,
+            },
+        },
     )
 
 
-# ---------------------------------------------------------------------------
-# Memory context helper
-# ---------------------------------------------------------------------------
+@router.delete("/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conv_id: uuid.UUID,
+    purge: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Archive a conversation, or permanently purge it when explicitly requested."""
+    conv = await _get_owned_conversation(db, conv_id, current_user, include_archived=purge)
+    if conv is None:
+        raise not_found("CONVERSATION_NOT_FOUND", "Conversation not found")
+
+    if purge:
+        await delete_artifacts_for_conversation(
+            db,
+            tenant_id=current_user["tenant_id"],
+            conversation_id=conv_id,
+        )
+        await db.delete(conv)
+    else:
+        conv.status = "archived"
+    await db.commit()
+    return None
 
 
-async def _build_memory_context(
+@router.post("/{conv_id}/confirm")
+async def confirm_tool(
+    conv_id: str,
+    req: ConfirmRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gateway: LLMGateway = Depends(get_llm_gateway),
+    sandbox: SandboxManager = Depends(get_sandbox_manager),
+):
+    """Resume a conversation that paused on a destructive tool confirmation."""
+    if req.decision is not None:
+        decision = req.decision
+    elif req.approved is not None:
+        decision = "approve" if req.approved else "deny"
+    else:
+        raise validation_error("Either decision or approved is required")
+
+    conversation = await _get_owned_conversation(db, uuid.UUID(conv_id), user)
+    if conversation is None:
+        raise not_found("CONVERSATION_NOT_FOUND", "Conversation not found")
+
+    agent = await _resolve_conversation_agent(db, conversation, user["tenant_id"])
+    provider, system_prompt = await _resolve_agent_runtime_context(
+        db,
+        user["tenant_id"],
+        agent,
+    )
+
+    return await build_confirmation_stream_response(
+        conv_id,
+        user,
+        decision,
+        req.tool_call_id,
+        req.tool_name,
+        req.args,
+        gateway,
+        sandbox,
+        provider=provider,
+        system_prompt=system_prompt,
+    )
+
+
+async def _resolve_agent_runtime_context(
+    db: AsyncSession,
+    tenant_id: str,
+    agent: Agent | None,
+) -> tuple[str, str]:
+    provider = await _resolve_default_provider_name(db, tenant_id)
+    system_prompt = SYSTEM_INSTRUCTIONS
+    if agent is None:
+        return provider, system_prompt
+    if agent.llm_provider:
+        provider = (
+            await _resolve_default_provider_name(db, tenant_id)
+            if agent.llm_provider == "default"
+            else agent.llm_provider
+        )
+    if agent.system_prompt:
+        system_prompt = (
+            system_prompt + "\n\nActive agent instructions:\n" + agent.system_prompt
+        )
+    return provider, system_prompt
+
+
+async def _resolve_default_provider_name(db: AsyncSession, tenant_id: str) -> str:
+    tenant_uuid = uuid.UUID(tenant_id)
+    provider = (
+        await db.execute(
+            select(LLMProvider.name)
+            .where(
+                LLMProvider.tenant_id == tenant_uuid,
+                LLMProvider.is_default.is_(True),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return provider or "default"
+
+
+async def _get_owned_conversation(
+    db: AsyncSession,
+    conv_id: uuid.UUID,
+    current_user: dict,
+    include_archived: bool = False,
+) -> Conversation | None:
+    tenant_id = uuid.UUID(current_user["tenant_id"])
+    user_id = uuid.UUID(current_user["user_id"])
+    filters = [
+        Conversation.id == conv_id,
+        Conversation.tenant_id == tenant_id,
+        Conversation.user_id == user_id,
+    ]
+    if not include_archived:
+        filters.append(Conversation.status != "archived")
+    result = await db.execute(select(Conversation).where(*filters))
+    return result.scalar_one_or_none()
+
+
+async def _build_session_context(
     db: AsyncSession,
     tenant_id: str,
     content: str,
-) -> str:
-    """Fetch relevant memories and format them as a context note.
+) -> tuple[str, dict]:
+    """Fetch relevant memories and layered instructions for the session."""
+    parts: list[str] = []
+    summary: dict = {
+        "memory_count": 0,
+        "memory_names": [],
+        "has_layered_instructions": False,
+        "instruction_preview": "",
+    }
 
-    Returns an empty string when no memories are found or when the
-    memory service is unavailable.
-    """
     try:
         memories = await get_memories_for_session(
             db, tenant_id, content, MEMORY_CONTEXT_LIMIT
         )
-        if not memories:
-            return ""
-        lines = ["Relevant context from previous sessions:"]
-        for m in memories:
-            tag_str = " ".join(f"#{t}" for t in (m.tags or []))
-            lines.append(
-                f"- {m.name}: {m.content or ''} {tag_str}".strip()
-            )
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
-# ---------------------------------------------------------------------------
-# SSE helpers
-# ---------------------------------------------------------------------------
-
-
-async def _build_sse_stream(
-    gateway: LLMGateway,
-    sandbox_manager: SandboxManager,
-    db: AsyncSession,
-    conv_id: uuid.UUID,
-    messages: list[dict],
-) -> StreamingResponse:
-    """Run the agent with a concurrent heartbeat and wrap it as SSE.
-
-    Coordination is done via an ``asyncio.Queue``:
-
-    * ``_run_agent_stream``   -> puts ``text``/``tool_call_start``/etc. events
-    * ``_heartbeat_loop``     -> puts ``heartbeat`` events every 15 seconds
-    * The async generator reads from the queue and yields SSE-formatted lines.
-    """
-    queue: asyncio.Queue = asyncio.Queue()
-
-    agent_task = asyncio.create_task(
-        _run_agent_stream(gateway, sandbox_manager, messages, queue)
-    )
-    heartbeat_task = asyncio.create_task(_heartbeat_loop(queue))
-
-    async def _generate():
-        full_content = ""
-        tokens_used = 0
-        errored = False
-
-        try:
-            while True:
-                event_type, data = await queue.get()
-
-                if event_type == "done":
-                    tokens_used = data.get("tokens_used", 0)
-                    break
-
-                if event_type == "error":
-                    errored = True
-                    yield f"event: error\ndata: {json.dumps(data)}\n\n"
-                    return
-
-                if event_type == "text":
-                    delta = data["delta"]
-                    full_content += delta
-                    yield f"event: text\ndata: {json.dumps({'delta': delta})}\n\n"
-
-                elif event_type == "tool_call_start":
-                    yield (
-                        "event: tool_call_start\n"
-                        f"data: {json.dumps({'name': data['name'], 'args': data['args']})}\n\n"
-                    )
-
-                elif event_type == "tool_result":
-                    yield (
-                        "event: tool_result\n"
-                        f"data: {json.dumps({'name': data['name'], 'result': data['result']})}\n\n"
-                    )
-
-                elif event_type == "tool_error":
-                    yield (
-                        "event: tool_error\n"
-                        f"data: {json.dumps({'name': data['name'], 'error': data['error']})}\n\n"
-                    )
-
-                elif event_type == "confirmation_required":
-                    yield (
-                        "event: confirmation_required\n"
-                        f"data: {json.dumps({'tool_name': data['tool_name'], 'args': data['args'], 'risk': data['risk'], 'timeout_s': data['timeout_s']})}\n\n"
-                    )
-
-                elif event_type == "heartbeat":
-                    yield f"event: heartbeat\ndata: {json.dumps({})}\n\n"
-
-        except asyncio.CancelledError:
-            pass
-
-        finally:
-            # Stop the heartbeat
-            heartbeat_task.cancel()
-            for t in (heartbeat_task, agent_task):
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-            # Persist the assistant message
-            if not errored and full_content:
-                msg = Message(
-                    conversation_id=conv_id,
-                    role="assistant",
-                    content=full_content,
+        if memories:
+            summary["memory_count"] = len(memories)
+            summary["memory_names"] = [memory.name for memory in memories]
+            lines = [
+                "Relevant context from previous sessions. "
+                "When using a memory fact, cite it as [memory:<name>]:"
+            ]
+            for memory in memories:
+                tag_str = " ".join(f"#{tag}" for tag in (memory.tags or []))
+                lines.append(
+                    f"- [memory:{memory.name}] {memory.content or ''} {tag_str}".strip()
                 )
-                db.add(msg)
-                await db.commit()
-
-            # Always emit the done event
-            yield f"event: done\ndata: {json.dumps({'tokens_used': tokens_used})}\n\n"
-
-    return StreamingResponse(_generate(), media_type="text/event-stream")
-
-
-async def _heartbeat_loop(queue: asyncio.Queue) -> None:
-    """Put a heartbeat event on the queue every 15 seconds."""
-    try:
-        while True:
-            await asyncio.sleep(15)
-            await queue.put(("heartbeat", {}))
-    except asyncio.CancelledError:
+            parts.append("\n".join(lines))
+    except Exception:
         pass
 
-
-async def _run_agent_stream(
-    gateway: LLMGateway,
-    sandbox_manager: SandboxManager,
-    messages: list[dict],
-    queue: asyncio.Queue,
-) -> None:
-    """Iterate over the agent ReAct loop and push events to the queue."""
     try:
-        async for event in run_agent(
-            gateway,
-            sandbox_manager,
-            "default",
-            messages,
-            tools=AGENT_TOOLS,
-        ):
-            if event["type"] == "text":
-                await queue.put(("text", {"delta": event["content"]}))
-            elif event["type"] == "tool_call_start":
-                await queue.put((
-                    "tool_call_start",
-                    {"name": event["name"], "args": event["args"]},
-                ))
-            elif event["type"] == "tool_result":
-                await queue.put((
-                    "tool_result",
-                    {"name": event["name"], "result": event["result"]},
-                ))
-            elif event["type"] == "tool_error":
-                await queue.put((
-                    "tool_error",
-                    {
-                        "name": event["name"],
-                        "error": event["error"],
-                        "consecutive": event.get("consecutive", 0),
-                    },
-                ))
-            elif event["type"] == "error":
-                await queue.put((
-                    "error",
-                    {
-                        "error": {
-                            "code": event.get("code", "AGENT_ERROR"),
-                            "message": event.get("message", str(event)),
-                        }
-                    },
-                ))
-            elif event["type"] == "confirmation_required":
-                await queue.put((
-                    "confirmation_required",
-                    {
-                        "tool_name": event["tool_name"],
-                        "args": event["args"],
-                        "risk": event["risk"],
-                        "timeout_s": event["timeout_s"],
-                    },
-                ))
-            elif event["type"] == "done":
-                await queue.put((
-                    "done",
-                    {"tokens_used": event.get("tokens_used", 0)},
-                ))
-
-    except Exception as exc:
-        await queue.put((
-            "error",
-            {"error": {"code": "AGENT_STREAM_ERROR", "message": str(exc)}},
-        ))
-
-
-# ---------------------------------------------------------------------------
-# Tool confirmation — completes the destructive-tool round-trip
-# ---------------------------------------------------------------------------
-class ConfirmRequest(BaseModel):
-    tool_call_id: str
-    approved: bool
-
-
-@router.post("/{conv_id}/confirm")
-async def confirm_tool(conv_id: str, req: ConfirmRequest,
-                       user=Depends(get_current_user),
-                       gateway: LLMGateway = Depends(get_llm_gateway),
-                       sandbox: SandboxManager = Depends(get_sandbox_manager)):
-    """Resume a conversation that paused on a destructive tool confirmation."""
-    # Use fresh session for the async generator lifetime
-    from app.api.deps import _async_session_factory
-    async with _async_session_factory() as db:
-        conv = (await db.execute(select(Conversation).where(
-            Conversation.id == conv_id, Conversation.tenant_id == user["tenant_id"]))).scalar_one_or_none()
-        if not conv:
-            raise HTTPException(404, detail={"error": {"code": "CONVERSATION_NOT_FOUND",
-                                                        "message": "Conversation not found"}})
-
-        if not req.approved:
-            rejection_msg = Message(
-                conversation_id=conv.id, role="tool",
-                content="User denied the destructive tool execution.",
-                metadata={"confirmation": "denied", "tool_call_id": req.tool_call_id}
+        instructions = load_layered_instructions(settings.memory_base_path, tenant_id)
+        if instructions:
+            summary["has_layered_instructions"] = True
+            summary["instruction_preview"] = instructions[:240]
+            parts.append(
+                "Layered instructions for this session. "
+                "When using these instructions, cite the relevant [context:<layer>] marker:\n"
+                + instructions
             )
-            db.add(rejection_msg)
-            await db.commit()
+    except Exception:
+        pass
 
-        result = await db.execute(select(Message).where(
-            Message.conversation_id == conv.id).order_by(Message.created_at))
-        history = [{"role": m.role, "content": m.content} for m in result.scalars().all()]
-        context_msgs = build_context("You are a helpful AI assistant.", history)
+    return "\n\n".join(parts), summary
 
-    async def event_stream():
-        full_response = ""
-        try:
-            async for delta in run_agent(gateway, sandbox, "default", context_msgs, AGENT_TOOLS):
-                if delta["type"] == "text":
-                    full_response += delta["content"]
-                    yield f"event: text\ndata: {json.dumps({'delta': delta['content']})}\n\n"
-                elif delta["type"] == "done":
-                    yield f"event: done\ndata: {json.dumps({'tokens_used': delta.get('tokens_used', 0)})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': {'code': 'LLM_PROVIDER_ERROR', 'message': str(e)}})}\n\n"
-        finally:
-            from app.api.deps import _async_session_factory
-            async with _async_session_factory() as s:
-                assistant_msg = Message(conversation_id=conv_id, role="assistant", content=full_response)
-                s.add(assistant_msg)
-                await s.commit()
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream",
-                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+async def _validate_chat_attachments(
+    db: AsyncSession,
+    conv_id: uuid.UUID,
+    current_user: dict,
+    attachment_ids: list[uuid.UUID],
+) -> list[Artifact]:
+    if len(attachment_ids) > 10:
+        raise validation_error("At most 10 attachments are supported per message")
+    if len(set(attachment_ids)) != len(attachment_ids):
+        raise validation_error("Duplicate attachment IDs are not allowed")
+
+    attachments: list[Artifact] = []
+    for artifact_id in attachment_ids:
+        artifact = (
+            await db.execute(
+                select(Artifact)
+                .join(Conversation, Artifact.conversation_id == Conversation.id)
+                .where(
+                    Artifact.id == artifact_id,
+                    Artifact.tenant_id == uuid.UUID(current_user["tenant_id"]),
+                    Artifact.conversation_id == conv_id,
+                    Conversation.user_id == uuid.UUID(current_user["user_id"]),
+                    Conversation.status != "archived",
+                )
+            )
+        ).scalar_one_or_none()
+        if artifact is None:
+            raise not_found("ARTIFACT_NOT_FOUND", "Attachment artifact not found")
+        if not _is_attachable_upload_artifact(artifact):
+            raise api_error(
+                status.HTTP_409_CONFLICT,
+                "ARTIFACT_NOT_ATTACHABLE",
+                _attachment_not_attachable_message(artifact),
+            )
+        attachments.append(artifact)
+    return attachments
+
+
+def _is_attachable_upload_artifact(artifact: Artifact) -> bool:
+    return artifact.state == ARTIFACT_STATE_AVAILABLE and artifact.operation == "upload"
+
+
+def _attachment_not_attachable_message(artifact: Artifact) -> str:
+    if artifact.state != ARTIFACT_STATE_AVAILABLE:
+        return f"Attachment artifact is {artifact.state}"
+    return "Only uploaded artifacts can be attached to chat messages"
+
+
+async def _message_content_with_attachments(
+    message: Message,
+    current_user: dict,
+) -> str:
+    content = message.content or ""
+    meta = message.meta_data or {}
+    attachment_ids = meta.get("attachment_artifact_ids") or []
+    if message.role != "user" or not attachment_ids:
+        return content
+
+    from app.api.deps import _async_session_factory
+
+    attachment_blocks: list[str] = []
+    async with _async_session_factory() as session:
+        for attachment_id in attachment_ids:
+            try:
+                parsed_artifact_id = uuid.UUID(str(attachment_id))
+            except (TypeError, ValueError):
+                continue
+            artifact = (
+                await session.execute(
+                    select(Artifact)
+                    .join(Conversation, Artifact.conversation_id == Conversation.id)
+                    .where(
+                        Artifact.id == parsed_artifact_id,
+                        Artifact.tenant_id == uuid.UUID(current_user["tenant_id"]),
+                        Artifact.conversation_id == message.conversation_id,
+                        Conversation.user_id == uuid.UUID(current_user["user_id"]),
+                        Conversation.status != "archived",
+                    )
+                )
+            ).scalar_one_or_none()
+            if artifact is None or not _is_attachable_upload_artifact(artifact):
+                continue
+            try:
+                attachment_content = await read_artifact_content(artifact, content_kind="content")
+            except Exception:
+                attachment_content = "[attachment content unavailable]"
+            serialized = serialize_artifact(artifact)
+            clipped = attachment_content[:12000]
+            if len(attachment_content) > len(clipped):
+                clipped += "\n[attachment truncated]"
+            attachment_blocks.append(
+                "\n".join(
+                    [
+                        f"Attachment artifact {serialized['id']}: {serialized['path']}",
+                        "```",
+                        clipped,
+                        "```",
+                    ]
+                )
+            )
+
+    if not attachment_blocks:
+        return content
+    return content + "\n\nAttached files:\n" + "\n\n".join(attachment_blocks)
+
+
+async def _resolve_requested_or_active_agent(
+    db: AsyncSession,
+    tenant_id: str,
+    requested_agent_id: uuid.UUID | None,
+) -> Agent | None:
+    tenant_uuid = uuid.UUID(tenant_id)
+    if requested_agent_id is not None:
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == requested_agent_id,
+                    Agent.tenant_id == tenant_uuid,
+                )
+            )
+        ).scalar_one_or_none()
+        if agent is None:
+            raise not_found("AGENT_NOT_FOUND", "Agent not found")
+        return agent
+    return await _get_active_agent(db, tenant_uuid)
+
+
+async def _resolve_conversation_agent(
+    db: AsyncSession,
+    conv: Conversation,
+    tenant_id: str,
+) -> Agent | None:
+    tenant_uuid = uuid.UUID(tenant_id)
+    if conv.agent_id is not None:
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == conv.agent_id,
+                    Agent.tenant_id == tenant_uuid,
+                )
+            )
+        ).scalar_one_or_none()
+        if agent is not None:
+            return agent
+    agent = await _get_active_agent(db, tenant_uuid)
+    if agent is not None and conv.agent_id != agent.id:
+        conv.agent_id = agent.id
+        await db.commit()
+    return agent
+
+
+async def _get_active_agent(db: AsyncSession, tenant_id: uuid.UUID) -> Agent | None:
+    return (
+        await db.execute(
+            select(Agent)
+            .where(Agent.tenant_id == tenant_id, Agent.is_active.is_(True))
+            .order_by(Agent.updated_at.desc(), Agent.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _conversation_summary(conv: Conversation) -> dict:
+    return {
+        "id": str(conv.id),
+        "title": conv.title,
+        "status": conv.status,
+        "created_at": conv.created_at.isoformat(),
+        "updated_at": conv.updated_at.isoformat(),
+        "agent_id": str(conv.agent_id) if conv.agent_id else None,
+    }

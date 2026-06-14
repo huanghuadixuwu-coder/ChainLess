@@ -1,0 +1,101 @@
+{
+  "runId": "2026-06-14T15-38-56-380Z",
+  "suite": "rich-input",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-default",
+      "ok": true,
+      "providerName": "w7-rich-1781451536680-provider"
+    },
+    {
+      "name": "ctrl-n-ignored-inside-input",
+      "ok": true
+    },
+    {
+      "name": "ctrl-n-new-conversation",
+      "ok": true,
+      "conversationId": "3dc2fe7c-3924-410e-848c-1540ee710f59"
+    },
+    {
+      "name": "ctrl-k-ignored-inside-input",
+      "ok": true
+    },
+    {
+      "name": "ctrl-k-command-palette",
+      "ok": true
+    },
+    {
+      "name": "command-palette-new-conversation",
+      "ok": true,
+      "conversationId": "31360d3a-0501-4970-bc70-c9268908969a"
+    },
+    {
+      "name": "at-tool-picker-selection",
+      "ok": true,
+      "value": "Use @file_read "
+    },
+    {
+      "name": "file-picker-upload",
+      "ok": true
+    },
+    {
+      "name": "drag-drop-upload",
+      "ok": true
+    },
+    {
+      "name": "chat-with-attachments",
+      "ok": true
+    },
+    {
+      "name": "backend-injected-upload-content",
+      "ok": true
+    },
+    {
+      "name": "markdown-code-fold",
+      "ok": true
+    },
+    {
+      "name": "markdown-code-copy",
+      "ok": true
+    },
+    {
+      "name": "long-conversation-virtual-window-present",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "3dc2fe7c-3924-410e-848c-1540ee710f59",
+          "ok": true
+        },
+        {
+          "id": "31360d3a-0501-4970-bc70-c9268908969a",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\rich-input-2026-06-14T15-38-56-380Z\\01-rich-input.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\rich-input-2026-06-14T15-38-56-380Z",
+  "generatedAt": "2026-06-14T15:39:00.202Z"
+}

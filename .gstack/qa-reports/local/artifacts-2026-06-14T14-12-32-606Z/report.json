@@ -1,0 +1,56 @@
+{
+  "runId": "2026-06-14T14-12-32-606Z",
+  "suite": "artifacts",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "locator.waitFor: Error: strict mode violation: getByTestId('artifact-file-list').getByText('w6/w6-artifacts-1781446352858.py') resolved to 2 elements:\n    1) <p class=\"truncate text-xs font-medium\">w6/w6-artifacts-1781446352858.py</p> aka getByTestId('artifact-row')\n    2) <p class=\"truncate text-xs font-medium text-zinc-200\">w6/w6-artifacts-1781446352858.py</p> aka getByText('w6/w6-artifacts-1781446352858').nth(4)\n\nCall log:\n\u001b[2m  - waiting for getByTestId('artifact-file-list').getByText('w6/w6-artifacts-1781446352858.py') to be visible\u001b[22m\n\n    at runArtifacts (E:\\Chainless\\scripts\\windows-browser-qa.cjs:806:62)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:1229:19)",
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-default",
+      "ok": true,
+      "providerName": "w6-artifacts-1781446352858-provider"
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "ede68587-2ed9-4310-8f11-1db270bc6069"
+    },
+    {
+      "name": "chat-file-write-tool",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "ede68587-2ed9-4310-8f11-1db270bc6069",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [
+    {
+      "url": "http://localhost/chat?_rsc=yJVSf2-mUsVl2a-v",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-12-32-606Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-12-32-606Z",
+  "generatedAt": "2026-06-14T14:12:34.394Z"
+}

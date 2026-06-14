@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "tenant": "w5-ui-admin-20260614162002",
+  "reportDir": "E:/Chainless/.gstack/qa-reports/local/w5-settings-slice4b-2026-06-14T08-20-52-777Z",
+  "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Memory deleted.') to be visible\u001b[22m\n\n    at visible (E:\\Chainless\\.node_repl_cell_0.mjs:29:49)\n    at E:\\Chainless\\.node_repl_cell_0.mjs:78:9",
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+  ],
+  "pageErrors": [],
+  "failedRequests": [],
+  "url": "http://localhost/settings",
+  "body": "New Chat\n\nNo conversations yet\n\nSettings\nLogout\nSettings\n\nAdmin controls for configured platform sections.\n\nProviderAgentToolsMemoriesChannelProactiveSkillsEvalSystem\nError: Too many requests. Please try again later.\nMemories\n\nManage tenant memory content used for contextual recall.\n\nType\nName\nDescription\nTags (comma-separated)\nContent\nSave memory\nSearch memories\nSearch\nW5 UI Memory 1781425253182\nuser | w5, ui\n\nW5 UI memory proof 1781425253182\n\nMerge context\nTask\nMerge\nNo merged context to show.\nConfigured memories\nW5 UI Memory 1781425253182\nuser | w5, ui\nName\nDescription\nTags\nContent\nUpdate\nDelete"
+}

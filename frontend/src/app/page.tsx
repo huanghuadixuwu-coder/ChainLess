@@ -9,10 +9,14 @@ export default function Home() {
 
   useEffect(() => {
     const token = api.getToken();
+    const destination = token ? "/chat" : "/login";
     if (token) {
-      router.replace("/chat");
+      router.replace(destination);
     } else {
-      router.replace("/login");
+      router.replace(destination);
+    }
+    if (typeof window !== "undefined") {
+      window.location.replace(destination);
     }
   }, [router]);
 

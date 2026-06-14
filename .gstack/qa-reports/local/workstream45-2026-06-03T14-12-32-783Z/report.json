@@ -1,0 +1,17 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-2026-06-03T14-12-32-783Z",
+  "steps": [
+    {
+      "name": "login",
+      "ok": false,
+      "error": "TimeoutError: page.waitForURL: Timeout 15000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation to \"**/chat\" until \"load\"\n============================================================"
+    }
+  ],
+  "failure": "TimeoutError: page.waitForURL: Timeout 15000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation to \"**/chat\" until \"load\"\n============================================================",
+  "finalUrl": "http://118.196.142.31:3000/login",
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "pageErrors": [],
+  "requestFailures": []
+}

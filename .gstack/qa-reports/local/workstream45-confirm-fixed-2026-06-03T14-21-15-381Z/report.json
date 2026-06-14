@@ -1,0 +1,30 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-fixed-2026-06-03T14-21-15-381Z",
+  "loginOk": true,
+  "steps": [
+    {
+      "name": "open chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-fixed-2026-06-03T14-21-15-381Z\\01-open.png"
+    },
+    {
+      "name": "new chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-fixed-2026-06-03T14-21-15-381Z\\02-newchat.png"
+    },
+    {
+      "name": "trigger confirmation",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-fixed-2026-06-03T14-21-15-381Z\\03-confirmation.png"
+    },
+    {
+      "name": "approve",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-fixed-2026-06-03T14-21-15-381Z\\04-approved.png",
+      "stillNeedsConfirmation": false,
+      "hasToolOutput": false,
+      "bodyTail": "New Chat\nNew Chat\nNew Chat\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nNew Chat\nNew Chat\nNew Chat\nNew Conversation\nNew Conversation\n你好\nLogout\n\nYou must call the shell_exec function with command date.\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nCompleted\n\n{\"error\": \"name 'date' is not defined\"}\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nNeeds confirmation\n\n{\n  \"command\": \"date\"\n}"
+    }
+  ],
+  "finalUrl": "http://118.196.142.31:3000/chat"
+}

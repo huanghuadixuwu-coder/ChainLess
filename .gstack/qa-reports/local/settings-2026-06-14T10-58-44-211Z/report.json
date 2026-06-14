@@ -1,0 +1,187 @@
+{
+  "runId": "2026-06-14T10-58-44-211Z",
+  "suite": "settings",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login-admin",
+      "ok": true
+    },
+    {
+      "name": "settings-route-open",
+      "ok": true
+    },
+    {
+      "name": "settings-section-provider",
+      "ok": true
+    },
+    {
+      "name": "settings-section-agent",
+      "ok": true
+    },
+    {
+      "name": "settings-section-tools",
+      "ok": true
+    },
+    {
+      "name": "settings-section-memories",
+      "ok": true
+    },
+    {
+      "name": "settings-section-channel",
+      "ok": true
+    },
+    {
+      "name": "settings-section-proactive",
+      "ok": true
+    },
+    {
+      "name": "settings-section-skills",
+      "ok": true
+    },
+    {
+      "name": "settings-section-eval",
+      "ok": true
+    },
+    {
+      "name": "settings-section-system",
+      "ok": true
+    },
+    {
+      "name": "provider-create-mask",
+      "ok": true,
+      "providerName": "w5-final-1781434724685-provider"
+    },
+    {
+      "name": "agent-create-active",
+      "ok": true,
+      "agentName": "w5-final-1781434724685-agent"
+    },
+    {
+      "name": "tool-risk-override-reset",
+      "ok": true,
+      "toolName": "file_read"
+    },
+    {
+      "name": "mcp-register-test",
+      "ok": true,
+      "mcpServer": "w5final1781434724685mcp"
+    },
+    {
+      "name": "memory-create-search-merge",
+      "ok": true,
+      "memoryName": "w5-final-1781434724685-memory"
+    },
+    {
+      "name": "channel-feishu-secret-surface",
+      "ok": true
+    },
+    {
+      "name": "proactive-create-runs-visible",
+      "ok": true
+    },
+    {
+      "name": "skill-create-match",
+      "ok": true,
+      "skillName": "w5-final-1781434724685-skill"
+    },
+    {
+      "name": "eval-dry-run",
+      "ok": true
+    },
+    {
+      "name": "theme-toggle-default-dark-persist",
+      "ok": true
+    },
+    {
+      "name": "chat-context-banner",
+      "ok": true,
+      "conversationId": "c530fab4-9408-4c86-828a-0355e58d5b5f"
+    },
+    {
+      "name": "cleanup-settings-artifacts",
+      "ok": true,
+      "cleanup": [
+        {
+          "label": "conversations",
+          "ok": true,
+          "cleanup": [
+            {
+              "id": "c530fab4-9408-4c86-828a-0355e58d5b5f",
+              "ok": true
+            }
+          ]
+        },
+        {
+          "label": "tool-risk-reset",
+          "ok": true,
+          "value": {
+            "name": "file_read",
+            "tool_type": "builtin",
+            "enabled": true,
+            "risk_override": null
+          },
+          "retried": false
+        },
+        {
+          "label": "mcp-delete-w5final1781434724685mcp",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "provider-delete-w5-final-1781434724685-provider",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "agent-delete-f7352b4e-58f4-4220-bfc7-a4b2b4b1d9bb",
+          "ok": true,
+          "value": {
+            "deleted": true
+          },
+          "retried": false
+        },
+        {
+          "label": "memory-delete-f34622aa-26c9-4e64-8717-2407c006ffd5",
+          "ok": true,
+          "value": {},
+          "retried": true
+        },
+        {
+          "label": "skill-delete-3a7a7a4a-1aa6-4f85-a2aa-4884a92d8eba",
+          "ok": true,
+          "value": {},
+          "retried": false
+        },
+        {
+          "label": "proactive-delete-06355c9c-c0a6-4d2a-a72b-bca788fdd384",
+          "ok": true,
+          "value": {
+            "status": "ok",
+            "task_id": "06355c9c-c0a6-4d2a-a72b-bca788fdd384"
+          },
+          "retried": false
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-58-44-211Z\\01-settings-sections.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-58-44-211Z\\02-settings-system-theme.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-58-44-211Z\\03-chat-context-banner.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-58-44-211Z",
+  "generatedAt": "2026-06-14T10:59:59.165Z"
+}

@@ -16,16 +16,18 @@ Usage::
         return paginated_response(items, total, limit, offset, request)
 """
 
+from typing import Any
+
 from fastapi import Request
 
 
 def paginated_response(
-    items: list,
+    items: list[Any],
     total: int,
     limit: int,
     offset: int,
-    request: Request,
-) -> dict:
+    request: Request | None,
+) -> dict[str, Any]:
     """Build a paginated response with the standard envelope.
 
     Returns::
@@ -39,7 +41,11 @@ def paginated_response(
         }
     """
     next_url: str | None = None
-    if offset + limit < total:
+    total = int(total or 0)
+    limit = int(limit)
+    offset = int(offset)
+
+    if request is not None and offset + limit < total:
         next_url = str(
             request.url.include_query_params(
                 limit=limit,

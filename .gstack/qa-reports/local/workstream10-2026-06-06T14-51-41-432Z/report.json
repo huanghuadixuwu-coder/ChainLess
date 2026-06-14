@@ -1,0 +1,69 @@
+{
+  "runId": "2026-06-06T14-51-41-432Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31",
+  "currentUrl": "http://118.196.142.31/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "locator.waitFor: Timeout 90000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('complementary').getByText(/url/i) to be visible\u001b[22m\n\n    at runWorkstream10 (E:\\Chainless\\scripts\\windows-browser-qa.cjs:243:8)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:331:19)",
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "3500cf37-53b3-48bb-91e5-f7baf0ab7289"
+    },
+    {
+      "name": "conversation-rename",
+      "ok": true,
+      "title": "WS10 QA 1780757503462"
+    },
+    {
+      "name": "conversation-archive",
+      "ok": true
+    },
+    {
+      "name": "chat-sse",
+      "ok": true
+    },
+    {
+      "name": "tool-card-web-fetch",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "3500cf37-53b3-48bb-91e5-f7baf0ab7289",
+          "ok": true,
+          "alreadyRemoved": true
+        },
+        {
+          "id": "802a5ed9-8f27-4a24-b8ba-f4e044071896",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://118.196.142.31/api/v1/conversations/3500cf37-53b3-48bb-91e5-f7baf0ab7289",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-51-41-432Z\\01-auth-login.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-51-41-432Z\\02-chat-sse.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-51-41-432Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-51-41-432Z",
+  "generatedAt": "2026-06-06T14:53:17.184Z"
+}

@@ -1,0 +1,42 @@
+{
+  "results": [
+    {
+      "name": "goto-root",
+      "ok": true
+    },
+    {
+      "name": "login",
+      "ok": true
+    },
+    {
+      "name": "create-chat",
+      "ok": true
+    },
+    {
+      "name": "rename-chat",
+      "ok": true
+    },
+    {
+      "name": "archive-chat",
+      "ok": true
+    },
+    {
+      "name": "create-second-chat",
+      "ok": true
+    },
+    {
+      "name": "send-first-message",
+      "ok": true
+    }
+  ],
+  "dialogs": [
+    {
+      "type": "prompt",
+      "message": "Rename conversation"
+    },
+    {
+      "type": "confirm",
+      "message": "Archive conversation \"QA Renamed Chat\"?"
+    }
+  ]
+}

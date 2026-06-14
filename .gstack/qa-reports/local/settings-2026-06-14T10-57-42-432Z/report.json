@@ -1,0 +1,167 @@
+{
+  "runId": "2026-06-14T10-57-42-432Z",
+  "suite": "settings",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login-admin",
+      "ok": true
+    },
+    {
+      "name": "settings-route-open",
+      "ok": true
+    },
+    {
+      "name": "settings-section-provider",
+      "ok": true
+    },
+    {
+      "name": "settings-section-agent",
+      "ok": true
+    },
+    {
+      "name": "settings-section-tools",
+      "ok": true
+    },
+    {
+      "name": "settings-section-memories",
+      "ok": true
+    },
+    {
+      "name": "settings-section-channel",
+      "ok": true
+    },
+    {
+      "name": "settings-section-proactive",
+      "ok": true
+    },
+    {
+      "name": "settings-section-skills",
+      "ok": true
+    },
+    {
+      "name": "settings-section-eval",
+      "ok": true
+    },
+    {
+      "name": "settings-section-system",
+      "ok": true
+    },
+    {
+      "name": "provider-create-mask",
+      "ok": true,
+      "providerName": "w5-final-1781434662796-provider"
+    },
+    {
+      "name": "agent-create-active",
+      "ok": true,
+      "agentName": "w5-final-1781434662796-agent"
+    },
+    {
+      "name": "tool-risk-override-reset",
+      "ok": true,
+      "toolName": "file_read"
+    },
+    {
+      "name": "mcp-register-test",
+      "ok": true,
+      "mcpServer": "w5final1781434662796mcp"
+    },
+    {
+      "name": "memory-create-search-merge",
+      "ok": true,
+      "memoryName": "w5-final-1781434662796-memory"
+    },
+    {
+      "name": "channel-feishu-secret-surface",
+      "ok": true
+    },
+    {
+      "name": "proactive-create-runs-visible",
+      "ok": true
+    },
+    {
+      "name": "skill-create-match",
+      "ok": true,
+      "skillName": "w5-final-1781434662796-skill"
+    },
+    {
+      "name": "eval-dry-run",
+      "ok": true
+    },
+    {
+      "name": "theme-toggle-default-dark-persist",
+      "ok": true
+    },
+    {
+      "name": "chat-context-banner",
+      "ok": true,
+      "conversationId": "92fe851c-2930-4c37-8c40-7f25f4a1cd38"
+    },
+    {
+      "name": "cleanup-settings-artifacts",
+      "ok": false,
+      "cleanup": [
+        {
+          "label": "conversations",
+          "ok": true,
+          "cleanup": [
+            {
+              "id": "92fe851c-2930-4c37-8c40-7f25f4a1cd38",
+              "ok": true
+            }
+          ]
+        },
+        {
+          "label": "tool-risk-reset",
+          "ok": true,
+          "value": {
+            "name": "file_read",
+            "tool_type": "builtin",
+            "enabled": true,
+            "risk_override": null
+          }
+        },
+        {
+          "label": "mcp-delete-w5final1781434662796mcp",
+          "ok": true,
+          "value": {}
+        },
+        {
+          "label": "provider-delete-w5-final-1781434662796-provider",
+          "ok": true,
+          "value": {}
+        },
+        {
+          "label": "agent-delete-d42c8bdd-6e9c-4068-ab23-5c210ecce7fc",
+          "ok": true,
+          "value": {
+            "deleted": true
+          }
+        },
+        {
+          "label": "memory-delete-af6548cc-89e9-4c06-acca-3b533032fce4",
+          "ok": false,
+          "error": "Error: DELETE /api/v1/memories/af6548cc-89e9-4c06-acca-3b533032fce4 -> 429: {\"error\": {\"code\": \"RATE_LIMITED\", \"message\": \"Too many requests. Please try again later.\"}}"
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-57-42-432Z\\01-settings-sections.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-57-42-432Z\\02-settings-system-theme.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-57-42-432Z\\03-chat-context-banner.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\settings-2026-06-14T10-57-42-432Z",
+  "generatedAt": "2026-06-14T10:57:53.129Z"
+}

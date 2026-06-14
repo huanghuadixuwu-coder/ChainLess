@@ -1,0 +1,31 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream5-code-2026-06-03T14-38-55-038Z",
+  "loginOk": true,
+  "steps": [
+    {
+      "name": "open chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream5-code-2026-06-03T14-38-55-038Z\\01-open.png"
+    },
+    {
+      "name": "new chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream5-code-2026-06-03T14-38-55-038Z\\02-newchat.png"
+    },
+    {
+      "name": "trigger code_as_action",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream5-code-2026-06-03T14-38-55-038Z\\03-code-complete.png",
+      "bodyTail": "New Chat\nNew Chat\ncode-probe\ncode-probe\ncode-probe\ncode-probe\ncode-probe\nNew Chat\nNew Chat\nNew Chat\nNew Chat\nNew Chat\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nNew Chat\nNew Chat\nNew Chat\nLogout\n\n请明确调用 code_as_action 工具执行 Python：print(6*7)\n\n计算结果是：42。\n\ncode_as_action\n\nCompleted\n\n42\nPreview\nTerminal\nFiles\nDiff\n42",
+      "pageUrl": "http://118.196.142.31:3000/chat"
+    },
+    {
+      "name": "reload and inspect history",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream5-code-2026-06-03T14-38-55-038Z\\04-reload.png",
+      "sameUrl": true,
+      "bodyTail": "New Chat\n\nNo conversations yet\n\nLogout\n\nNo conversation selected\n\nClick \"New Chat\" in the sidebar to start"
+    }
+  ],
+  "finalUrl": "http://118.196.142.31:3000/chat"
+}

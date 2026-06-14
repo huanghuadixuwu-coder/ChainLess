@@ -16,16 +16,24 @@ class Settings(BaseSettings):
 
     # Auth
     secret_key: str = "dev-secret-key-change-in-production"
-
-    # LLM
-    glm_api_key: str = ""
-    default_llm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
-    default_llm_model: str = "glm-4.5-air"
-    embedding_model: str = "text-embedding-3-small"
+    secret_encryption_key: str = "dev-secret-encryption-key-change-in-production"
+    bootstrap_admin_password: str = "admin123"
 
     # Sandbox proxy
     proxy_auth_token: str = "dev-token"
     sandbox_proxy_url: str = "http://sandbox-proxy:9001"
+    subagent_control_root: str = "/run/chainless-control"
+    subagent_control_gid: int = 10001
+    subagent_capability_ttl_seconds: float = 30.0
+    subagent_max_connections_per_run: int = 8
+    subagent_max_connections_global: int = 32
+    subagent_read_timeout_seconds: float = 2.0
+    subagent_handler_timeout_seconds: float = 30.0
+    subagent_cancellation_grace_seconds: float = 1.0
+    disposable_parent_max_concurrency: int = 5
+    disposable_parent_max_stdout_bytes: int = 262144
+    disposable_parent_max_stderr_bytes: int = 262144
+    disposable_parent_max_output_bytes: int = 524288
 
     # Sandbox pool
     sandbox_image: str = "chainless_sandbox:latest"
@@ -39,10 +47,66 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_enabled: bool = True
-    rate_limit_per_minute: int = 60
+    rate_limit_per_minute: int = 300
+
+    # Memory
+    memory_base_path: str = "/data/memory"
+
+    # Artifacts
+    artifact_base_path: str = "/data/artifacts"
+    artifact_max_file_bytes: int = 200_000
+    artifact_max_diff_bytes: int = 100_000
+    artifact_tenant_quota_bytes: int = 50_000_000
+    artifact_retention_days: int = 30
+    artifact_preview_allowed_origins: str = (
+        "http://localhost,http://localhost:3000,"
+        "http://127.0.0.1,http://127.0.0.1:3000"
+    )
 
     # Debug
     debug: bool = False
+    app_env: str = "development"
+    cors_allowed_origins: str = "http://localhost,http://127.0.0.1"
+
+
+def validate_production_settings(config: Settings) -> None:
+    """Fail closed when production is configured with placeholder secrets."""
+    if config.app_env.lower() != "production":
+        return
+
+    unsafe_values = {
+        "secret_key": {
+            "",
+            "dev-secret-key-change-in-production",
+            "change-me",
+            "change-me-to-a-random-secret",
+        },
+        "secret_encryption_key": {
+            "",
+            "dev-secret-encryption-key-change-in-production",
+            "change-me",
+            "change-me-to-a-random-secret",
+        },
+        "proxy_auth_token": {
+            "",
+            "dev-token",
+            "change-me",
+            "change-me-to-a-random-token",
+        },
+        "bootstrap_admin_password": {
+            "",
+            "admin123",
+            "change-me",
+            "change-me-to-a-random-password",
+        },
+    }
+    for field, rejected in unsafe_values.items():
+        value = getattr(config, field)
+        if value in rejected:
+            raise RuntimeError(f"Unsafe production configuration: {field} is not set")
+
+    if "chainless_dev" in config.database_url or "change-me" in config.database_url:
+        raise RuntimeError("Unsafe production configuration: database password is not set")
 
 
 settings = Settings()

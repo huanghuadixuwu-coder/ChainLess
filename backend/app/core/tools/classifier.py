@@ -26,6 +26,7 @@ BUILTIN_RISK: dict[str, RiskLevel] = {
     "file_read": RiskLevel.SAFE,
     "file_list": RiskLevel.SAFE,
     "web_search": RiskLevel.SAFE,
+    "weather_get": RiskLevel.SAFE,
     "web_fetch": RiskLevel.RISKY,
     "file_write": RiskLevel.RISKY,
     "shell_exec": RiskLevel.DESTRUCTIVE,

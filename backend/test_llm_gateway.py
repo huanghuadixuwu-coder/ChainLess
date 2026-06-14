@@ -9,29 +9,31 @@ Expected output: streaming chunks from GLM-4.5 Air.
 import asyncio
 import sys
 
-from app.config import settings
+from sqlalchemy import select
+
+from app.api.deps import _async_session_factory
 from app.core.llm.gateway import LLMGateway
+from app.models.tenant import Tenant
 
 
 async def main():
     print("=== LLMGateway smoke test ===")
-    print(f"API base: {settings.default_llm_api_base}")
-    print(f"Model:    {settings.default_llm_model}")
-
     gateway = LLMGateway()
-    gateway.register(
-        "default",
-        settings.default_llm_api_base,
-        settings.glm_api_key,
-        settings.default_llm_model,
-        settings.embedding_model,
-    )
+    async with _async_session_factory() as db:
+        tenant_id = str(
+            (
+                await db.execute(select(Tenant.id).where(Tenant.name == "default"))
+            ).scalar_one()
+        )
+    config = await gateway.get_config(tenant_id, "default")
+    print(f"API base: {config['api_base']}")
+    print(f"Model:    {config['model']}")
 
     messages = [{"role": "user", "content": "Say hello in one word"}]
 
     print("\n--- Streaming response ---")
     chunk_count = 0
-    async for chunk in gateway.chat_stream("default", messages):
+    async for chunk in gateway.chat_stream("default", messages, tenant_id=tenant_id):
         if chunk["type"] == "text":
             print(chunk["content"], end="", flush=True)
             chunk_count += 1

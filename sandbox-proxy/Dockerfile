@@ -2,11 +2,10 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    docker
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    -r requirements.txt
 
 COPY . .
 

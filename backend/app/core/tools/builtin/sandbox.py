@@ -4,6 +4,8 @@ Executes a shell command inside an isolated sandbox container managed by
 the SandboxManager (sandbox-proxy).
 """
 
+import json
+
 from app.core.sandbox.manager import SandboxManager
 
 SHELL_TOOLS = [
@@ -46,10 +48,20 @@ async def execute(tool_name: str, args: dict, sandbox_manager: SandboxManager) -
         raise ValueError(f"Unknown sandbox tool: {tool_name}")
 
     command = args["command"]
+    wrapped_script = (
+        "import subprocess\n"
+        "command = "
+        f"{json.dumps(command)}\n"
+        "result = subprocess.run(command, shell=True, capture_output=True, text=True)\n"
+        "if result.stdout:\n"
+        "    print(result.stdout, end='')\n"
+        "if result.stderr:\n"
+        "    print(result.stderr, end='')\n"
+    )
     cid = await sandbox_manager.allocate()
     try:
         output_parts: list[str] = []
-        async for event in sandbox_manager.execute(cid, script=command, timeout=30):
+        async for event in sandbox_manager.execute(cid, script=wrapped_script, timeout=30):
             if event["type"] == "error":
                 output_parts.append(f"[ERROR] {event['data']}")
             elif event["type"] in ("stdout", "stderr"):

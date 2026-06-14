@@ -1,0 +1,18 @@
+{
+  "runId": "2026-06-04T07-34-25-729Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31:3000",
+  "currentUrl": "http://118.196.142.31:3000/login",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "Error: Login form fill failed: [\"\",\"\",\"admin123\"]\n    at loginViaUi (E:\\Chainless\\scripts\\windows-browser-qa.cjs:156:11)\n    at async runWorkstream10 (E:\\Chainless\\scripts\\windows-browser-qa.cjs:196:17)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:319:21)",
+  "steps": [],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "screenshots": [],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-34-25-729Z",
+  "generatedAt": "2026-06-04T07:34:26.154Z"
+}

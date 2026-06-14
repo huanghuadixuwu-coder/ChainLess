@@ -1,0 +1,22 @@
+version: "2.4"
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  sandbox-proxy:
+    ports:
+      - "127.0.0.1:9001:9001"
+
+  backend:
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  frontend:
+    ports:
+      - "127.0.0.1:3000:3000"

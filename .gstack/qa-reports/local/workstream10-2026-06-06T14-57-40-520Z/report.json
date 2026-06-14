@@ -1,0 +1,83 @@
+{
+  "runId": "2026-06-06T14-57-40-520Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31",
+  "currentUrl": "http://118.196.142.31/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "5ffffe00-abd6-45e3-b1a4-e0dcca1b70fe"
+    },
+    {
+      "name": "conversation-rename",
+      "ok": true,
+      "title": "WS10 QA 1780757862633"
+    },
+    {
+      "name": "conversation-archive",
+      "ok": true
+    },
+    {
+      "name": "chat-sse",
+      "ok": true
+    },
+    {
+      "name": "tool-card-web-fetch",
+      "ok": true
+    },
+    {
+      "name": "right-panel-files",
+      "ok": true
+    },
+    {
+      "name": "code-as-action",
+      "ok": true
+    },
+    {
+      "name": "destructive-confirmation-deny",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "5ffffe00-abd6-45e3-b1a4-e0dcca1b70fe",
+          "ok": true,
+          "alreadyRemoved": true
+        },
+        {
+          "id": "4ec8b330-7ab0-4d64-8502-b9b5227f988b",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://118.196.142.31/api/v1/conversations/5ffffe00-abd6-45e3-b1a4-e0dcca1b70fe",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z\\01-auth-login.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z\\02-chat-sse.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z\\03-tool-panel.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z\\04-code-as-action.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z\\05-destructive-confirmation.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-06T14-57-40-520Z",
+  "generatedAt": "2026-06-06T14:57:52.330Z"
+}

@@ -1,41 +1,31 @@
-"""Memory management API endpoints.
-
-POST   /memories               — create a memory
-GET    /memories               — list memories (paginated, filterable)
-GET    /memories/search?q=...  — semantic search
-PUT    /memories/{id}          — update memory (triggers re-embedding)
-DELETE /memories/{id}          — delete memory
-POST   /memories/merge         — merged context for session start
-"""
+"""Memory management API endpoints."""
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db
+from app.api.contracts import not_found
+from app.api.deps import get_db, require_role
 from app.api.pagination import paginated_response
+from app.config import settings
 from app.core.memory.layered import load_layered_instructions
 from app.core.memory.persistent import (
+    _compute_embedding_best_effort,
     create_memory,
     get_memories_for_session,
     search_memories,
     search_by_tags,
 )
 from app.models.memory import Memory
-from app.config import settings
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
-
 
 class _CreateMemoryRequest(BaseModel):
-    type: str = "user"  # user / feedback / project / reference
+    type: str = "user"
     name: str
     content: str
     tags: list[str] | None = None
@@ -64,18 +54,12 @@ class _MemoryResponse(BaseModel):
     updated_at: str
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_memory_endpoint(
     body: _CreateMemoryRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """Create a new memory for the current tenant/user."""
     mem = await create_memory(
         db=db,
         tenant_id=current_user["tenant_id"],
@@ -97,9 +81,8 @@ async def list_memories(
     offset: int = Query(0, ge=0),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """List memories with pagination, optional type/tag filter."""
     tenant_id = current_user["tenant_id"]
     conditions = [Memory.tenant_id == tenant_id]
 
@@ -110,11 +93,9 @@ async def list_memories(
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         conditions.append(Memory.tags.overlap(tag_list))
 
-    # Total count
     count_q = select(func.count()).select_from(Memory).where(*conditions)
     total = (await db.execute(count_q)).scalar()
 
-    # Paginated items
     rows_q = (
         select(Memory)
         .where(*conditions)
@@ -135,15 +116,13 @@ async def search_memories_endpoint(
     offset: int = Query(0, ge=0),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """Semantic search across memories via pgvector."""
     try:
         mems = await search_memories(
             db, current_user["tenant_id"], query=q, limit=limit
         )
     except Exception:
-        # Fallback to tag-based search
         mems = await search_by_tags(
             db, current_user["tenant_id"], [], limit=limit
         )
@@ -158,9 +137,8 @@ async def update_memory(
     memory_id: uuid.UUID,
     body: _UpdateMemoryRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """Update memory content. Triggers re-embedding if content changes."""
     result = await db.execute(
         select(Memory).where(
             Memory.id == memory_id,
@@ -169,23 +147,13 @@ async def update_memory(
     )
     mem = result.scalar_one_or_none()
     if mem is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Memory not found",
-        )
+        raise not_found("MEMORY_NOT_FOUND", "Memory not found")
 
     changed = False
     if body.content is not None and body.content != mem.content:
         mem.content = body.content
-        mem.embedding = None  # Invalidate embedding
+        mem.embedding = await _compute_embedding_best_effort(body.content)
         changed = True
-        # Enqueue re-embedding
-        try:
-            from app.core.memory.tasks import enqueue_embedding
-
-            await enqueue_embedding(str(mem.id), body.content)
-        except Exception:
-            pass
 
     if body.name is not None:
         mem.name = body.name
@@ -208,9 +176,8 @@ async def update_memory(
 async def delete_memory(
     memory_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """Delete a memory by ID."""
     result = await db.execute(
         select(Memory).where(
             Memory.id == memory_id,
@@ -219,10 +186,7 @@ async def delete_memory(
     )
     mem = result.scalar_one_or_none()
     if mem is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Memory not found",
-        )
+        raise not_found("MEMORY_NOT_FOUND", "Memory not found")
 
     await db.delete(mem)
     await db.commit()
@@ -233,17 +197,10 @@ async def delete_memory(
 async def merge_context(
     body: _MergeRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_role("admin")),
 ):
-    """Get merged context for session start.
-
-    Combines:
-      1. Relevant memories (semantic search)
-      2. Layered instructions from CLAUDE.md files
-    """
     tenant_id = current_user["tenant_id"]
 
-    # Get relevant memories
     memories = await get_memories_for_session(
         db, tenant_id, body.task, limit=5
     )
@@ -251,10 +208,7 @@ async def merge_context(
         f"## {m.name}\n{m.content or ''}" for m in memories
     )
 
-    # Load layered instructions
-    # The base path uses app config or a default data directory
-    base_path = getattr(settings, "MEMORY_BASE_PATH", "/data/memory")
-    instructions = load_layered_instructions(base_path, tenant_id)
+    instructions = load_layered_instructions(settings.memory_base_path, tenant_id)
 
     merged = []
     if memory_context:
@@ -272,11 +226,6 @@ async def merge_context(
         "memories": [_memory_to_response(m) for m in memories],
         "has_instructions": bool(instructions),
     }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _memory_to_response(mem: Memory) -> _MemoryResponse:

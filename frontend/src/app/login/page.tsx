@@ -18,6 +18,7 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setLoading(true);
 
     try {
@@ -34,6 +35,9 @@ export default function LoginPage() {
         api.setToken(token);
         toast.success(isRegister ? "Registration successful" : "Login successful");
         router.push("/chat");
+        if (typeof window !== "undefined") {
+          window.location.assign("/chat");
+        }
       } else {
         toast.error("No token received from server");
       }

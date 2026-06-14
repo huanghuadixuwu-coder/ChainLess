@@ -1,0 +1,27 @@
+{
+  "runId": "2026-06-04T07-31-54-571Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31:3000",
+  "currentUrl": "http://118.196.142.31:3000/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "locator.click: Error: strict mode violation: getByRole('button', { name: 'New Chat' }) resolved to 2 elements:\n    1) <button type=\"button\" data-slot=\"button\" class=\"group/button inline-flex shrink-0 items-center justify-center rounded-lg bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 d…>…</button> aka getByRole('button', { name: 'New Chat' }).first()\n    2) <button class=\"min-w-0 flex-1 px-3 py-2 text-left\">…</button> aka getByRole('button', { name: 'New Chat' }).nth(1)\n\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'New Chat' })\u001b[22m\n\n    at runWorkstream10 (E:\\Chainless\\scripts\\windows-browser-qa.cjs:190:56)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:307:21)",
+  "steps": [],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://118.196.142.31:3000/_next/static/chunks/3r-o7j8njn_0w.js",
+      "errorText": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://118.196.142.31:3000/_next/static/chunks/2gxqyq1f2nu76.js",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-31-54-571Z",
+  "generatedAt": "2026-06-04T07:31:56.130Z"
+}

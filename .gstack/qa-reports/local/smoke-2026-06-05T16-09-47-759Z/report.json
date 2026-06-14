@@ -1,0 +1,31 @@
+{
+  "runId": "2026-06-05T16-09-47-759Z",
+  "suite": "smoke",
+  "url": "http://118.196.142.31:3000",
+  "currentUrl": "http://118.196.142.31:3000/login",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "smoke-navigation",
+      "ok": true,
+      "gotoStatus": 200,
+      "loadingCheck": {
+        "ok": true,
+        "detail": "text 'Loading' disappeared"
+      },
+      "gotoError": null
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\smoke-2026-06-05T16-09-47-759Z\\page.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\smoke-2026-06-05T16-09-47-759Z",
+  "generatedAt": "2026-06-05T16:09:48.945Z"
+}

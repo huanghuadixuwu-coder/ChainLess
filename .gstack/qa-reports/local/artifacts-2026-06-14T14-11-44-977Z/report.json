@@ -1,0 +1,51 @@
+{
+  "runId": "2026-06-14T14-11-44-977Z",
+  "suite": "artifacts",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "locator.waitFor: Error: strict mode violation: getByText('w6/w6-artifacts-1781446305266.py') resolved to 5 elements:\n    1) <p class=\"whitespace-pre-wrap text-sm\">Create the W6 artifact file w6/w6-artifacts-17814…</p> aka getByText('Create the W6 artifact file')\n    2) <pre class=\"mt-3 overflow-x-auto rounded-md bg-zinc-950 px-3 py-2 text-xs text-zinc-400\">{↵  \"path\": \"w6/w6-artifacts-1781446305266.py\",↵ …</pre> aka getByText('{ \"path\": \"w6/w6-artifacts-')\n    3) <pre class=\"mt-3 overflow-x-auto rounded-md px-3 py-2 text-xs bg-zinc-950 text-zinc-300\">Written 42 bytes to workspace:w6/w6-artifacts-178…</pre> aka getByText('Written 42 bytes to workspace')\n    4) <p class=\"truncate text-xs font-medium\">w6/w6-artifacts-1781446305266.py</p> aka getByTestId('artifact-row')\n    5) <p class=\"truncate text-xs font-medium text-zinc-200\">w6/w6-artifacts-1781446305266.py</p> aka getByText('w6/w6-artifacts-1781446305266').nth(4)\n\nCall log:\n\u001b[2m  - waiting for getByText('w6/w6-artifacts-1781446305266.py') to be visible\u001b[22m\n\n    at runArtifacts (E:\\Chainless\\scripts\\windows-browser-qa.cjs:805:58)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:1225:19)",
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-default",
+      "ok": true,
+      "providerName": "w6-artifacts-1781446305266-provider"
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "a1508aac-fe36-4563-b1ef-601f7d115a8d"
+    },
+    {
+      "name": "chat-file-write-tool",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "a1508aac-fe36-4563-b1ef-601f7d115a8d",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-11-44-977Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\artifacts-2026-06-14T14-11-44-977Z",
+  "generatedAt": "2026-06-14T14:11:47.758Z"
+}

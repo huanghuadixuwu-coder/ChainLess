@@ -1,0 +1,108 @@
+{
+  "runId": "2026-06-14T16-29-55-332Z",
+  "suite": "rich-input",
+  "url": "http://localhost",
+  "currentUrl": "http://localhost/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": true,
+  "suiteError": null,
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "mock-provider-default",
+      "ok": true,
+      "providerName": "w7-rich-1781454595585-provider"
+    },
+    {
+      "name": "ctrl-n-ignored-inside-input",
+      "ok": true
+    },
+    {
+      "name": "ctrl-n-new-conversation",
+      "ok": true,
+      "conversationId": "4d00a919-3d61-4f2c-b843-d12886cca3f1"
+    },
+    {
+      "name": "ctrl-k-ignored-inside-input",
+      "ok": true
+    },
+    {
+      "name": "ctrl-k-command-palette",
+      "ok": true
+    },
+    {
+      "name": "command-palette-new-conversation",
+      "ok": true,
+      "conversationId": "d00b24ba-3c54-42be-8d23-eb38854b5a19"
+    },
+    {
+      "name": "at-tool-picker-keyboard-selection",
+      "ok": true,
+      "value": "Use @code_as_action "
+    },
+    {
+      "name": "file-picker-upload",
+      "ok": true
+    },
+    {
+      "name": "drag-drop-upload",
+      "ok": true
+    },
+    {
+      "name": "chat-with-attachments",
+      "ok": true
+    },
+    {
+      "name": "backend-injected-upload-content",
+      "ok": true
+    },
+    {
+      "name": "markdown-code-fold",
+      "ok": true
+    },
+    {
+      "name": "markdown-code-copy",
+      "ok": true
+    },
+    {
+      "name": "long-conversation-virtual-window",
+      "ok": true,
+      "virtualStats": {
+        "total": 34,
+        "rendered": 12,
+        "rows": 12,
+        "scrollHeight": 3730,
+        "clientHeight": 795
+      }
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": true,
+      "cleanup": [
+        {
+          "id": "4d00a919-3d61-4f2c-b843-d12886cca3f1",
+          "ok": true
+        },
+        {
+          "id": "d00b24ba-3c54-42be-8d23-eb38854b5a19",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "ignoredRequestFailures": [],
+  "responses429": [],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\rich-input-2026-06-14T16-29-55-332Z\\01-rich-input.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\rich-input-2026-06-14T16-29-55-332Z",
+  "generatedAt": "2026-06-14T16:29:58.972Z"
+}

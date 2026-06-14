@@ -10,7 +10,7 @@ from app.core.tools.builtin import TOOL_EXECUTORS
 from app.core.tools.mcp.manager import mcp_manager
 
 
-async def execute_tool(tool_name: str, args: dict) -> str:
+async def execute_tool(tool_name: str, args: dict, context: dict | None = None):
     """Execute a tool by name.
 
     Args:
@@ -25,6 +25,8 @@ async def execute_tool(tool_name: str, args: dict) -> str:
     """
     if tool_name in TOOL_EXECUTORS:
         executor = TOOL_EXECUTORS[tool_name]
+        if tool_name in {"file_read", "file_write", "file_list"}:
+            return await executor(tool_name, args, context=context)
         return await executor(tool_name, args)
 
     # Check MCP tools

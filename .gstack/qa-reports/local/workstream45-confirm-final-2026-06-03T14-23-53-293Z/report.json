@@ -1,0 +1,30 @@
+{
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-final-2026-06-03T14-23-53-293Z",
+  "loginOk": true,
+  "steps": [
+    {
+      "name": "open chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-final-2026-06-03T14-23-53-293Z\\01-open.png"
+    },
+    {
+      "name": "new chat",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-final-2026-06-03T14-23-53-293Z\\02-newchat.png"
+    },
+    {
+      "name": "trigger confirmation",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-final-2026-06-03T14-23-53-293Z\\03-confirmation.png"
+    },
+    {
+      "name": "approve",
+      "ok": true,
+      "screenshot": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream45-confirm-final-2026-06-03T14-23-53-293Z\\04-approved.png",
+      "stillHasCard": false,
+      "hasDateOutput": true,
+      "bodyTail": "New Chat\nNew Chat\nNew Chat\nNew Chat\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nprobe\nNew Chat\nNew Chat\nNew Chat\nNew Conversation\nNew Conversation\n你好\nLogout\n\nYou must call the shell_exec function with command date.\n\nThe current date and time is Wed Jun 3 14:23:57 UTC 2026.\n\nshell_exec\n\nRunning\n\n{\n  \"command\": \"date\"\n}\n\nshell_exec\n\nCompleted\n\nWed Jun  3 14:23:57 UTC 2026"
+    }
+  ],
+  "finalUrl": "http://118.196.142.31:3000/chat"
+}

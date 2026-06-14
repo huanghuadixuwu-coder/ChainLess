@@ -1,0 +1,204 @@
+version: "2.4"
+
+services:
+  db-test:
+    image: pgvector/pgvector:pg16
+    container_name: chainless-db-test
+    environment:
+      POSTGRES_USER: chainless
+      POSTGRES_PASSWORD: chainless_test
+      POSTGRES_DB: chainless_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chainless -d chainless_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: chainless-redis-test
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_TEST_DEPS: "1"
+    container_name: chainless-backend-test
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test
+      DB_USER: chainless
+      DB_HOST: db-test
+      DB_NAME: chainless_test
+      DB_PASSWORD: chainless_test
+      REDIS_URL: redis://redis-test:6379/0
+      SECRET_KEY: test-secret-key
+      SECRET_ENCRYPTION_KEY: test-secret-encryption-key
+      BOOTSTRAP_ADMIN_PASSWORD: admin123
+      APP_ENV: test
+      PROXY_AUTH_TOKEN: test-token
+      SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
+      SANDBOX_POOL_MIN: 0
+      FILE_TOOLS_BASE_DIR: /workspace
+      FILE_TOOLS_MAX_READ_BYTES: 20000
+      MEMORY_BASE_PATH: /tmp/chainless-test-memory
+      ARTIFACT_BASE_PATH: /tmp/chainless-test-artifacts
+      ARTIFACT_MAX_FILE_BYTES: 200000
+      ARTIFACT_MAX_DIFF_BYTES: 100000
+      ARTIFACT_TENANT_QUOTA_BYTES: 50000000
+      ARTIFACT_RETENTION_DAYS: 30
+      ARTIFACT_PREVIEW_ALLOWED_ORIGINS: http://localhost,http://localhost:3000,http://127.0.0.1,http://127.0.0.1:3000
+      BACKUP_DIR: /tmp/chainless-test-backups
+      RATE_LIMIT_ENABLED: "false"
+      APP_RELOAD: "0"
+      PYTHONPATH: /app
+      CHAINLESS_TESTING: "1"
+      SUBAGENT_CONTROL_ROOT: /run/chainless-control
+      SANDBOX_IMAGE: chainless-sandbox:latest
+      SUBAGENT_CONTROL_GID: 10001
+      SUBAGENT_MAX_CONNECTIONS_PER_RUN: 8
+      SUBAGENT_MAX_CONNECTIONS_GLOBAL: 32
+      SUBAGENT_READ_TIMEOUT_SECONDS: 2
+      SUBAGENT_HANDLER_TIMEOUT_SECONDS: 30
+      SUBAGENT_CANCELLATION_GRACE_SECONDS: 1
+    volumes:
+      - test_workspace:/workspace
+      - .:/repo:ro
+      - subagent_control:/run/chainless-control
+    depends_on:
+      db-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    command: ["pytest", "-q"]
+
+  sandbox-proxy-test:
+    profiles:
+      - live-docker
+    build:
+      context: ./sandbox-proxy
+      dockerfile: Dockerfile
+    container_name: chainless-sandbox-proxy-test
+    environment:
+      APP_ENV: test
+      PROXY_AUTH_TOKEN: test-token
+      SANDBOX_PROXY_OWNER: chainless-test
+      SANDBOX_POOL_MIN: 0
+      SANDBOX_POOL_MAX: 5
+      SANDBOX_NETWORK_MODE: none
+      SANDBOX_IMAGE: chainless-sandbox:latest
+      SUBAGENT_CONTROL_VOLUME: chainless_subagent_control
+      SUBAGENT_CONTROL_GID: 10001
+      DISPOSABLE_PARENT_MAX_CONCURRENCY: 5
+      DISPOSABLE_PARENT_MAX_STDOUT_BYTES: 262144
+      DISPOSABLE_PARENT_MAX_STDERR_BYTES: 262144
+      DISPOSABLE_PARENT_MAX_OUTPUT_BYTES: 524288
+      PARENT_RUN_STATUS_TTL_SECONDS: 300
+      PARENT_RUN_STATUS_MAX_RECORDS: 1000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - subagent_control:/run/chainless-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=3).read()"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  backend-test-live:
+    profiles:
+      - live-docker
+    extends:
+      service: backend-test
+    container_name: chainless-backend-test-live
+    environment:
+      CHAINLESS_LIVE_DOCKER: "1"
+      SUBAGENT_MAX_CONNECTIONS_PER_RUN: 8
+      SUBAGENT_MAX_CONNECTIONS_GLOBAL: 32
+      SUBAGENT_READ_TIMEOUT_SECONDS: 2
+      SUBAGENT_HANDLER_TIMEOUT_SECONDS: 30
+      SUBAGENT_CANCELLATION_GRACE_SECONDS: 1
+    depends_on:
+      sandbox-proxy-test:
+        condition: service_healthy
+
+  backend-test-server:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_TEST_DEPS: "1"
+    container_name: chainless-backend-test-server
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test
+      DB_USER: chainless
+      DB_HOST: db-test
+      DB_NAME: chainless_test
+      DB_PASSWORD: chainless_test
+      REDIS_URL: redis://redis-test:6379/0
+      SECRET_KEY: test-secret-key
+      SECRET_ENCRYPTION_KEY: test-secret-encryption-key
+      BOOTSTRAP_ADMIN_PASSWORD: admin123
+      APP_ENV: test
+      PROXY_AUTH_TOKEN: test-token
+      SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
+      SANDBOX_POOL_MIN: 0
+      FILE_TOOLS_BASE_DIR: /workspace
+      FILE_TOOLS_MAX_READ_BYTES: 20000
+      MEMORY_BASE_PATH: /tmp/chainless-test-memory
+      ARTIFACT_BASE_PATH: /tmp/chainless-test-artifacts
+      ARTIFACT_MAX_FILE_BYTES: 200000
+      ARTIFACT_MAX_DIFF_BYTES: 100000
+      ARTIFACT_TENANT_QUOTA_BYTES: 50000000
+      ARTIFACT_RETENTION_DAYS: 30
+      ARTIFACT_PREVIEW_ALLOWED_ORIGINS: http://localhost,http://localhost:3000,http://127.0.0.1,http://127.0.0.1:3000
+      BACKUP_DIR: /tmp/chainless-test-backups
+      RATE_LIMIT_ENABLED: "false"
+      APP_RELOAD: "0"
+      PYTHONPATH: /app
+      CHAINLESS_TESTING: "1"
+    volumes:
+      - test_workspace:/workspace
+      - .:/repo:ro
+    depends_on:
+      db-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    command: ["./scripts/startup.sh"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  frontend-test:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://backend-test-server:8000
+    container_name: chainless-frontend-test
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend-test-server:8000
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      backend-test-server:
+        condition: service_healthy
+    command: ["npm", "run", "start"]
+
+volumes:
+  test_workspace:
+  subagent_control:
+    name: chainless_subagent_control

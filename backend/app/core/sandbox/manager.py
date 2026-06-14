@@ -1,5 +1,6 @@
 """Real SandboxManager — talks to sandbox-proxy over HTTP to manage container pool."""
 
+import asyncio
 import logging
 import time
 from typing import AsyncIterator, Optional
@@ -28,6 +29,7 @@ class SandboxManager:
         self._proxy_url = settings.sandbox_proxy_url.rstrip("/")
         self._auth_token = settings.proxy_auth_token
         self._pool_min = settings.sandbox_pool_min
+        self._pool_max = settings.sandbox_pool_max
         self._pool_size: int = 0
 
         # httpx client (created lazily in warm_pool / allocate)
@@ -68,9 +70,7 @@ class SandboxManager:
         # The proxy already warms the pool on startup; we just verify
         # connectivity and check the pool size.
         try:
-            resp = await self._request("GET", "/health")
-            data = resp.json()
-            self._pool_size = data.get("pool_size", 0) + data.get("total_containers", 0)
+            await self.get_proxy_health()
             logger.info("Sandbox proxy healthy — pool_size=%d", self._pool_size)
         except Exception as exc:
             logger.warning("Could not contact sandbox-proxy: %s", exc)
@@ -84,13 +84,20 @@ class SandboxManager:
                 cid = alloc.json().get("container_id")
                 if cid:
                     await self._request("POST", f"/containers/{cid}/recycle")
-                    self._pool_size += 1
+                    self._pool_size = min(self._pool_max, self._pool_size + 1)
             except Exception as exc:
                 logger.warning("Failed to warm additional container: %s", exc)
 
     @property
     def pool_size(self) -> int:
         return self._pool_size
+
+    async def get_proxy_health(self) -> dict:
+        """Fetch live health data from sandbox-proxy and refresh cache."""
+        resp = await self._request("GET", "/health")
+        data = resp.json()
+        self._pool_size = data.get("pool_size", 0)
+        return data
 
     # ------------------------------------------------------------------
     # Allocation
@@ -152,6 +159,113 @@ class SandboxManager:
             # If stream ended without a done event
             yield {"type": "done", "data": ""}
 
+    async def execute_disposable_parent(
+        self,
+        *,
+        run_id: str,
+        capability: str,
+        script: str,
+        timeout: int = 30,
+    ) -> dict:
+        """Execute once in a run-bound parent sandbox that the proxy must delete."""
+        try:
+            response = await self._request(
+                "POST",
+                "/parent-runs/execute",
+                json={
+                    "run_id": run_id,
+                    "capability": capability,
+                    "script": script,
+                    "timeout": timeout,
+                },
+            )
+        except asyncio.CancelledError as cancellation:
+            await self._cancel_disposable_parent_authoritatively(run_id, capability)
+            raise cancellation
+        except Exception as execution_error:
+            await self._annotate_disposable_parent_cleanup(
+                execution_error,
+                run_id,
+                capability,
+            )
+            raise
+        data = response.json()
+        self._require_disposable_parent_deleted(data)
+        return data
+
+    async def _annotate_disposable_parent_cleanup(
+        self,
+        execution_error: Exception,
+        run_id: str,
+        capability: str,
+    ) -> None:
+        """Attach authoritative cleanup evidence without replacing execute errors."""
+        try:
+            status = await self._request(
+                "POST",
+                f"/parent-runs/{run_id}/status",
+                json={"capability": capability},
+            )
+            data = status.json()
+            self._require_disposable_parent_deleted(data)
+        except BaseException as cleanup_error:
+            execution_error.disposable_parent_deleted = False
+            execution_error.disposable_parent_cleanup_error = cleanup_error
+            if hasattr(execution_error, "add_note"):
+                execution_error.add_note(
+                    f"disposable parent cleanup verification failed: {cleanup_error}"
+                )
+            return
+        execution_error.disposable_parent_deleted = True
+        execution_error.disposable_parent_cleanup_status = data
+
+    async def _cancel_disposable_parent_authoritatively(
+        self,
+        run_id: str,
+        capability: str,
+    ) -> None:
+        async def cancel_and_confirm() -> None:
+            cancel_response = await self._request(
+                "POST",
+                f"/parent-runs/{run_id}/cancel",
+                json={"capability": capability},
+            )
+            self._require_disposable_parent_deleted(cancel_response.json())
+            status = await self._request(
+                "POST",
+                f"/parent-runs/{run_id}/status",
+                json={"capability": capability},
+            )
+            self._require_disposable_parent_deleted(status.json())
+
+        control = asyncio.create_task(cancel_and_confirm())
+        while not control.done():
+            try:
+                await asyncio.shield(control)
+            except asyncio.CancelledError:
+                continue
+        control.result()
+
+    @staticmethod
+    def _require_disposable_parent_deleted(data: dict) -> None:
+        container_id = data.get("container_id")
+        active_container_ids = data.get("active_container_ids")
+        cleanup_errors = data.get("cleanup_errors")
+        cleanup_confirmed = (
+            data.get("deleted") is True
+            and isinstance(cleanup_errors, list)
+            and not cleanup_errors
+            and isinstance(container_id, str)
+            and bool(container_id)
+            and isinstance(active_container_ids, list)
+            and all(isinstance(cid, str) for cid in active_container_ids)
+            and container_id not in active_container_ids
+        )
+        if not cleanup_confirmed:
+            raise RuntimeError(
+                f"disposable parent cleanup not confirmed: {data!r}"
+            )
+
     # ------------------------------------------------------------------
     # Recycle / cleanup
     # ------------------------------------------------------------------
@@ -164,7 +278,7 @@ class SandboxManager:
         resp = await self._request("POST", f"/containers/{cid}/recycle")
         data = resp.json()
         new_cid = data.get("container_id", cid)
-        self._pool_size += 1
+        self._pool_size = min(self._pool_max, self._pool_size + 1)
         logger.info("Recycled container %s -> %s", cid, new_cid)
         return new_cid
 

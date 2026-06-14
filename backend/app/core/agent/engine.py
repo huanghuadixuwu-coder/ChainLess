@@ -12,12 +12,16 @@ Guards
 - **Circuit breaker** (``MAX_CONSECUTIVE_ERRORS``) — stops on repeated tool failures.
 """
 
+import asyncio
 import json
-from typing import AsyncIterator
+import uuid
+from typing import AsyncIterator, Any
 
-from app.core.agent.code_executor import execute_code_as_action
+from app.core.artifacts import ToolExecutionResult
+from app.core.agent.code_executor import stream_code_as_action
 from app.core.agent.tool_router import execute_tool
 from app.core.tools.builtin import ALL_TOOLS
+from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.classifier import RiskLevel, classify_tool
 
 # ---------------------------------------------------------------------------
@@ -27,6 +31,25 @@ from app.core.tools.classifier import RiskLevel, classify_tool
 MAX_ITERATIONS = 10
 MAX_TOKENS_PER_TURN = 100_000
 MAX_CONSECUTIVE_ERRORS = 3
+
+
+class _TurnBudget:
+    """One shared token ledger for the parent turn and all dynamic children."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.consumed = 0
+        self._lock = asyncio.Lock()
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.consumed
+
+    async def consume(self, amount: int) -> None:
+        async with self._lock:
+            if amount > self.remaining:
+                raise RuntimeError("turn token budget exhausted")
+            self.consumed += amount
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +64,11 @@ async def run_agent(
     messages: list[dict],
     tools: list[dict] | None = None,
     is_sub_agent: bool = False,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    run_id: str | None = None,
+    sub_agent_execution: Any | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
 
@@ -55,7 +83,12 @@ async def run_agent(
             ``ALL_TOOLS`` from the builtin tool registry.  Note that
             ``code_as_action`` and ``shell_exec`` are handled directly
             by the engine, not by the tool router.
-        is_sub_agent: Reserved for sub-agent spawning (Phase 4).
+        is_sub_agent: Disable recursive Code-as-Action for depth-one children.
+        tenant_id: Trusted backend tenant scope required by Code-as-Action.
+        user_id: Trusted backend user scope for persisted artifacts.
+        conversation_id: Trusted conversation scope for persisted artifacts.
+        run_id: Optional parent run id. Generated per engine run when omitted.
+        sub_agent_execution: Backend-owned child budget/partial-result context.
 
     Yields:
         Event dicts with the following ``type`` values:
@@ -70,11 +103,31 @@ async def run_agent(
     """
     iteration = 0
     tokens_used = 0
+    run_id = run_id or str(uuid.uuid4())
+    turn_budget = None if sub_agent_execution is not None else _TurnBudget(MAX_TOKENS_PER_TURN)
     consecutive_errors = 0
-    active_tools = tools or ALL_TOOLS
+    active_tools = ALL_TOOLS if tools is None else tools
+    if is_sub_agent:
+        active_tools = [
+            tool
+            for tool in active_tools
+            if tool.get("function", {}).get("name") != "code_as_action"
+        ]
+    allowed_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in active_tools
+        if tool.get("function", {}).get("name")
+    }
+    configured_tool_risks = {
+        tool.get("function", {}).get("name"): tool.get("risk")
+        for tool in active_tools
+        if tool.get("function", {}).get("name") and tool.get("risk")
+    }
 
     while iteration < MAX_ITERATIONS:
         # ---- Guard: token budget ----
+        if turn_budget is not None:
+            tokens_used = turn_budget.consumed
         if tokens_used >= MAX_TOKENS_PER_TURN:
             yield {
                 "type": "error",
@@ -97,8 +150,15 @@ async def run_agent(
         # ---- Step 1: LLM call ----
         tool_calls_buffer: dict[int, dict] = {}
 
-        async for delta in gateway.chat_stream(provider, messages, active_tools):
-            tokens_used += 1
+        async for delta in gateway.chat_stream(
+            provider, messages, active_tools, tenant_id=tenant_id
+        ):
+            if sub_agent_execution is not None:
+                await sub_agent_execution.consume_budget(1)
+                tokens_used += 1
+            else:
+                await turn_budget.consume(1)
+                tokens_used = turn_budget.consumed
 
             if delta["type"] == "text":
                 yield {"type": "text", "content": delta["content"]}
@@ -111,8 +171,8 @@ async def run_agent(
                         "name": "",
                         "arguments": "",
                     }
-                tool_calls_buffer[idx]["name"] += delta.get("name", "")
-                tool_calls_buffer[idx]["arguments"] += delta.get("arguments", "")
+                tool_calls_buffer[idx]["name"] += delta.get("name") or ""
+                tool_calls_buffer[idx]["arguments"] += delta.get("arguments") or ""
 
         # ---- Step 2: No tool calls -> response is complete ----
         if not tool_calls_buffer:
@@ -121,15 +181,74 @@ async def run_agent(
         # ---- Step 3: Execute each tool call ----
         destructive_hit = False
         for tc in tool_calls_buffer.values():
-            args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+            if tc["name"] not in allowed_tool_names:
+                consecutive_errors += 1
+                yield {
+                    "type": "tool_error",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "error": f"tool is not authorized for this run: {tc['name']}",
+                    "consecutive": consecutive_errors,
+                }
+                continue
 
-            yield {"type": "tool_call_start", "name": tc["name"], "args": args}
+            try:
+                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                if not isinstance(args, dict):
+                    raise ValueError("tool arguments must be a JSON object")
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                consecutive_errors += 1
+                yield {
+                    "type": "tool_error",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "error": f"invalid tool arguments: {exc}",
+                    "consecutive": consecutive_errors,
+                }
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                },
+                            }
+                        ],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": f"Error: invalid tool arguments: {exc}",
+                    }
+                )
+                continue
+            configured_risk = configured_tool_risks.get(tc["name"])
+            try:
+                risk = RiskLevel(configured_risk) if configured_risk else classify_tool(tc["name"])
+            except ValueError:
+                risk = classify_tool(tc["name"])
+
+            yield {
+                "type": "tool_call_start",
+                "tool_call_id": tc["id"],
+                "name": tc["name"],
+                "args": args,
+                "risk": risk.value,
+            }
 
             # ---- Safety check: classify tool risk ----
-            if classify_tool(tc["name"]) == RiskLevel.DESTRUCTIVE:
+            if risk == RiskLevel.DESTRUCTIVE:
                 destructive_hit = True
                 yield {
                     "type": "confirmation_required",
+                    "tool_call_id": tc["id"],
                     "tool_name": tc["name"],
                     "args": args,
                     "risk": "destructive",
@@ -141,21 +260,51 @@ async def run_agent(
                 break
 
             try:
+                tool_context = {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "run_id": run_id,
+                    "tool_call_id": tc["id"],
+                }
                 if tc["name"] == "code_as_action":
-                    result = await execute_code_as_action(
-                        args.get("script", ""), sandbox_manager
-                    )
+                    if is_sub_agent:
+                        raise RuntimeError("sub-agents cannot execute Code-as-Action")
+                    if not tenant_id:
+                        raise RuntimeError("Code-as-Action requires a trusted tenant scope")
+                    output_parts: list[str] = []
+                    async for sandbox_event in stream_code_as_action(
+                        args.get("script", ""),
+                        sandbox_manager,
+                        gateway=gateway,
+                        tenant_id=tenant_id,
+                        provider=provider,
+                        parent_budget=turn_budget,
+                    ):
+                        if sandbox_event["type"] == "sandbox_output":
+                            data = sandbox_event.get("data", "")
+                            if sandbox_event.get("stream") == "error":
+                                output_parts.append(f"[ERROR] {data}")
+                            elif sandbox_event.get("stream") != "artifact":
+                                output_parts.append(data)
+                        yield sandbox_event
+                    result = "\n".join(output_parts)
                 elif tc["name"] == "shell_exec":
-                    # shell_exec goes through sandbox (same mechanism)
-                    script = args.get("command", "")
-                    result = await execute_code_as_action(script, sandbox_manager)
+                    result = await execute_shell_exec(tc["name"], args, sandbox_manager)
                 else:
-                    result = await execute_tool(tc["name"], args)
+                    result = await execute_tool(tc["name"], args, context=tool_context)
+
+                artifacts: list[dict] = []
+                if isinstance(result, ToolExecutionResult):
+                    artifacts = result.artifacts
+                    result = result.content
 
                 yield {
                     "type": "tool_result",
+                    "tool_call_id": tc["id"],
                     "name": tc["name"],
                     "result": str(result)[:2000],
+                    "artifacts": artifacts,
                 }
                 consecutive_errors = 0
 
@@ -163,6 +312,7 @@ async def run_agent(
                 consecutive_errors += 1
                 yield {
                     "type": "tool_error",
+                    "tool_call_id": tc["id"],
                     "name": tc["name"],
                     "error": str(e),
                     "consecutive": consecutive_errors,
@@ -202,4 +352,6 @@ async def run_agent(
 
         # ---- Loop back to Step 1 for another iteration ----
 
+    if turn_budget is not None:
+        tokens_used = turn_budget.consumed
     yield {"type": "done", "tokens_used": tokens_used}

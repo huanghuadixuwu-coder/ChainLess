@@ -3,15 +3,17 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from alembic.config import Config as AlembicConfig
 from alembic import command as alembic_command
 
-from app.config import settings
+from app.config import settings, validate_production_settings
 from app.core.llm.gateway import LLMGateway
 from app.core.sandbox.manager import SandboxManager
+from app.middleware.audit import AuditMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +63,13 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle handler."""
     # ---- startup ----
     logger.info("Starting Chainless Backend")
+    validate_production_settings(settings)
 
     # Note: Migrations already run by startup.sh before uvicorn starts.
     # Running them again here would cause event-loop deadlock with async Alembic.
 
     # Initialize LLM gateway
     app_state.llm_gateway = LLMGateway()
-    app_state.llm_gateway.register(
-        "default",
-        settings.default_llm_api_base,
-        settings.glm_api_key,
-        settings.default_llm_model,
-        settings.embedding_model,
-    )
 
     # Initialize sandbox pool
     app_state.sandbox_manager = SandboxManager(settings)
@@ -103,9 +99,26 @@ app = FastAPI(
 )
 
 # CORS — allow all origins during development
+def _cors_origins() -> list[str]:
+    if settings.app_env.lower() == "production":
+        return []
+    return [origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()]
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -134,26 +147,22 @@ from app.middleware.error_handler import register_error_handlers
 register_error_handlers(app)
 
 
-# Attempt to include the real v1 router; fall back to a no-op placeholder
-# when the API package hasn't been created yet.
-try:
-    from app.api.v1.router import api_router  # type: ignore[import-untyped]
-    app.include_router(api_router, prefix="/api/v1")
-except (ImportError, ModuleNotFoundError):
-    from fastapi import APIRouter
-    v1_placeholder = APIRouter(prefix="/api/v1")
-    app.include_router(v1_placeholder)
-    logger.info("v1 API router not yet implemented; using empty placeholder")
+from app.api.v1.router import api_router  # type: ignore[import-untyped]
+
+app.include_router(api_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
 # Health endpoint
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/system/health")
+@app.get("/api/v1/health")
 async def health():
-    pool = app_state.sandbox_manager
-    return {
-        "status": "ok",
-        "sandbox_pool": pool.pool_size if pool is not None else 0,
-    }
+    """Public liveness endpoint for container and reverse-proxy probes."""
+    return {"status": "ok"}
+
+
+@app.get("/health")
+async def root_health():
+    """Short alias for infrastructure liveness checks."""
+    return {"status": "ok"}

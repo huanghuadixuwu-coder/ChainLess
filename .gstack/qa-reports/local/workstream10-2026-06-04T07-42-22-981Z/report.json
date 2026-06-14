@@ -1,0 +1,79 @@
+{
+  "runId": "2026-06-04T07-42-22-981Z",
+  "suite": "workstream10",
+  "url": "http://118.196.142.31:3000",
+  "currentUrl": "http://118.196.142.31:3000/chat",
+  "title": "Chainless",
+  "browser": "chrome",
+  "headed": false,
+  "ok": false,
+  "suiteError": "locator.waitFor: Error: strict mode violation: getByText(/Denied|User denied|Confirmation timed out/i) resolved to 3 elements:\n    1) <p class=\"text-xs text-zinc-500\">Denied / destructive</p> aka getByText('Denied / destructive')\n    2) <pre class=\"mt-3 overflow-x-auto rounded-md px-3 py-2 text-xs bg-red-950/40 text-red-200\">User denied this action.</pre> aka getByText('User denied this action.').first()\n    3) <pre class=\"overflow-x-auto rounded-lg bg-zinc-950 px-3 py-3 text-xs text-zinc-300\">User denied this action.</pre> aka getByRole('complementary').getByText('User denied this action.')\n\nCall log:\n\u001b[2m  - waiting for getByText(/Denied|User denied|Confirmation timed out/i) to be visible\u001b[22m\n\n    at runWorkstream10 (E:\\Chainless\\scripts\\windows-browser-qa.cjs:271:72)\n    at async main (E:\\Chainless\\scripts\\windows-browser-qa.cjs:340:21)",
+  "steps": [
+    {
+      "name": "auth-login",
+      "ok": true
+    },
+    {
+      "name": "conversation-create",
+      "ok": true,
+      "conversationId": "247e37ec-554c-4450-a129-f17b4dd26bc4"
+    },
+    {
+      "name": "conversation-rename",
+      "ok": true,
+      "title": "WS10 QA 1780558944479"
+    },
+    {
+      "name": "conversation-archive",
+      "ok": true
+    },
+    {
+      "name": "chat-sse",
+      "ok": true
+    },
+    {
+      "name": "tool-card-web-fetch",
+      "ok": true
+    },
+    {
+      "name": "right-panel-files",
+      "ok": true
+    },
+    {
+      "name": "code-as-action",
+      "ok": true
+    },
+    {
+      "name": "cleanup-conversations",
+      "ok": false,
+      "cleanup": [
+        {
+          "id": "247e37ec-554c-4450-a129-f17b4dd26bc4",
+          "ok": false,
+          "error": "Error: DELETE /api/v1/conversations/247e37ec-554c-4450-a129-f17b4dd26bc4 -> 404: {\"error\":{\"code\":\"CONVERSATION_NOT_FOUND\",\"message\":\"Conversation not found\"}}"
+        },
+        {
+          "id": "fb3dc8ee-5ea0-4782-9fb6-4ea90aaf42b9",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://118.196.142.31:8000/api/v1/conversations/247e37ec-554c-4450-a129-f17b4dd26bc4",
+      "errorText": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z\\01-auth-login.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z\\02-chat-sse.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z\\03-tool-panel.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z\\04-code-as-action.png",
+    "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z\\failure.png"
+  ],
+  "reportDir": "E:\\Chainless\\.gstack\\qa-reports\\local\\workstream10-2026-06-04T07-42-22-981Z",
+  "generatedAt": "2026-06-04T07:42:36.196Z"
+}

@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.config import settings
+from app.services.auth_service import decode_token
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ _REDIS_KEY_PREFIX = "ratelimit:"
 
 # Paths that are never rate-limited
 _SKIP_PATHS = frozenset({
-    "/api/v1/system/health",
+    "/api/v1/health",
+    "/health",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -62,8 +64,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if self.redis is None:
             return await call_next(request)
 
-        client_ip = self._get_client_ip(request)
-        key = f"{_REDIS_KEY_PREFIX}{client_ip}"
+        client_identity = self._get_rate_limit_identity(request)
+        key = f"{_REDIS_KEY_PREFIX}{client_identity}"
         now = time.time()
         window_start = now - self.window
 
@@ -106,16 +108,43 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         except Exception as exc:
             logger.warning(
-                "Rate limiter error for %s (falling through): %s", client_ip, exc
+                "Rate limiter error for %s (falling through): %s",
+                client_identity,
+                exc,
             )
             return await call_next(request)
 
     @staticmethod
     def _get_client_ip(request: Request) -> str:
-        """Extract client IP from request, preferring X-Forwarded-For."""
+        """Extract client IP from the trusted proxy header when available."""
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
         if request.client:
             return request.client.host
         return "unknown"
+
+    @classmethod
+    def _get_rate_limit_identity(cls, request: Request) -> str:
+        """Use authenticated tenant/user identity when available, else IP.
+
+        Nginx and Docker often collapse many browser requests to one upstream
+        IP. Authenticated admin settings pages can legitimately make several
+        API calls, so tenant/user identity prevents cross-tenant false sharing
+        while preserving IP limits for login and anonymous traffic.
+        """
+        authorization = request.headers.get("Authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            try:
+                payload = decode_token(token)
+            except ValueError:
+                payload = {}
+            tenant_id = payload.get("tenant_id")
+            user_id = payload.get("user_id")
+            if tenant_id and user_id:
+                return f"user:{tenant_id}:{user_id}"
+        return f"ip:{cls._get_client_ip(request)}"

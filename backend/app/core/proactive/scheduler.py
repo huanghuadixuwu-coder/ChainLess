@@ -1,57 +1,36 @@
-"""Proactive task scheduler using ARQ and Redis.
-
-This module provides:
-
-- An in-memory / Redis-backed registry for proactive (cron) tasks.
-- An ARQ-compatible job function ``execute_proactive_task`` that runs the agent
-  and delivers results via the configured channel.
-- ``schedule_task`` / ``cancel_task`` / ``list_tasks`` helpers.
-
-Storage
--------
-Task definitions are kept in an in-memory dict for now (backed by Redis in
-production).  The ARQ worker enqueues job execution at the times determined
-by each task's cron expression.
-
-ARQ Worker Integration
-----------------------
-To run the worker, add an ``arq-worker`` service to docker-compose:
-
-    arq-worker:
-        build:
-            context: ./backend
-            dockerfile: Dockerfile
-        command: [
-            "arq", "app.core.proactive.scheduler.WorkerSettings"
-        ]
-        environment: ...
-        depends_on: [redis]
-"""
+"""Redis-backed proactive task scheduler with ARQ worker execution."""
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
-from uuid import uuid4
+from typing import Any, Optional
+from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
-
+from arq import cron
 from arq.connections import RedisSettings
 
 from app.config import settings
+from app.core.channel.configuration import resolve_channel_configuration
+from app.core.secrets import is_sensitive_key, safe_error_message
+from app.core.ops.health import write_worker_heartbeat
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# In-memory task registry (Redis-backed in production)
-# ---------------------------------------------------------------------------
-
 _tasks: dict[str, dict] = {}
-
 _redis_client: aioredis.Redis | None = None
+_redis_loop: asyncio.AbstractEventLoop | None = None
 
 ARQ_REDIS_KEY = "chainless:proactive:tasks"
+ARQ_RUN_LOG_KEY = "chainless:proactive:run-log"
+ARQ_RUN_LOG_LIMIT = 100
+ARQ_QUEUE_NAME = "arq:proactive"
+
+
+class LegacyProactiveSecretStateError(RuntimeError):
+    """Raised when Redis contains retired secret-bearing proactive state."""
 
 
 class ProactiveTask:
@@ -64,7 +43,7 @@ class ProactiveTask:
         agent_id: str,
         prompt: str,
         channel_type: str,
-        channel_config: Optional[dict] = None,
+        tenant_id: Optional[str] = None,
         enabled: bool = True,
         created_at: Optional[str] = None,
     ):
@@ -73,7 +52,7 @@ class ProactiveTask:
         self.agent_id = agent_id
         self.prompt = prompt
         self.channel_type = channel_type
-        self.channel_config = channel_config or {}
+        self.tenant_id = tenant_id
         self.enabled = enabled
         self.created_at = created_at or datetime.now(timezone.utc).isoformat()
 
@@ -84,7 +63,7 @@ class ProactiveTask:
             "agent_id": self.agent_id,
             "prompt": self.prompt,
             "channel_type": self.channel_type,
-            "channel_config": self.channel_config,
+            "tenant_id": self.tenant_id,
             "enabled": self.enabled,
             "created_at": self.created_at,
         }
@@ -97,62 +76,202 @@ class ProactiveTask:
             agent_id=d.get("agent_id", "default"),
             prompt=d.get("prompt", ""),
             channel_type=d.get("channel_type", "feishu"),
-            channel_config=d.get("channel_config", {}),
+            tenant_id=d.get("tenant_id"),
             enabled=d.get("enabled", True),
             created_at=d.get("created_at"),
         )
 
 
-# ---------------------------------------------------------------------------
-# Redis helpers
-# ---------------------------------------------------------------------------
-
 async def _get_redis_client() -> aioredis.Redis:
-    """Return a shared Redis client singleton (connection pool managed internally)."""
-    global _redis_client
-    if _redis_client is None:
+    """Return a shared Redis client singleton."""
+    global _redis_client, _redis_loop
+    loop = asyncio.get_running_loop()
+    if _redis_client is None or _redis_loop is not loop:
         _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        _redis_loop = loop
     return _redis_client
 
 
 async def _save_tasks_to_redis(tasks: dict[str, dict]) -> None:
-    """Persist the tasks dict to Redis as a JSON blob."""
+    if inspect_legacy_proactive_state(tasks)["unsafe_task_count"]:
+        logger.error("Refusing retired secret-bearing proactive task write")
+        raise LegacyProactiveSecretStateError(
+            "Retired secret-bearing proactive task write was rejected"
+        )
     try:
         r = await _get_redis_client()
-        await r.set(ARQ_REDIS_KEY, json.dumps(tasks))
+        await r.set(ARQ_REDIS_KEY, json.dumps(tasks, ensure_ascii=False))
     except Exception as exc:
-        logger.warning("Could not persist tasks to Redis: %s", exc)
+        logger.warning("%s", safe_error_message(exc, "Could not persist tasks to Redis"))
 
 
 async def _load_tasks_from_redis() -> dict[str, dict]:
-    """Load tasks from Redis, falling back to in-memory dict."""
     try:
         r = await _get_redis_client()
         raw = await r.get(ARQ_REDIS_KEY)
         if raw:
-            return json.loads(raw)
+            try:
+                tasks = json.loads(raw)
+            except (TypeError, ValueError) as exc:
+                logger.error("Refusing malformed proactive task state")
+                raise LegacyProactiveSecretStateError(
+                    "Malformed proactive task state requires controlled migration"
+                ) from exc
+            report = inspect_legacy_proactive_state(tasks)
+            if report["unsafe_task_count"]:
+                logger.error(
+                    "Refusing retired secret-bearing proactive state: unsafe_task_count=%d",
+                    report["unsafe_task_count"],
+                )
+                raise LegacyProactiveSecretStateError(
+                    "Retired secret-bearing proactive state requires controlled migration"
+                )
+            return tasks
+    except LegacyProactiveSecretStateError:
+        raise
     except Exception as exc:
-        logger.warning("Could not load tasks from Redis: %s", exc)
+        logger.warning("%s", safe_error_message(exc, "Could not load tasks from Redis"))
     return {}
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def inspect_legacy_proactive_state(tasks: object) -> dict[str, Any]:
+    """Return a secret-free, read-only report for historical Redis task state."""
+    if not isinstance(tasks, dict):
+        return {"task_count": 0, "unsafe_task_count": 1, "unsafe_task_ids": []}
+    unsafe_ids = [
+        _unsafe_state_fingerprint(task_id)
+        for task_id, value in tasks.items()
+        if _contains_retired_secret_field(value)
+    ]
+    return {
+        "task_count": len(tasks),
+        "unsafe_task_count": len(unsafe_ids),
+        "unsafe_task_ids": unsafe_ids,
+    }
+
+
+def inspect_legacy_run_history_state(rows: object) -> dict[str, Any]:
+    """Return a secret-free, read-only report for historical Redis run records."""
+    if not isinstance(rows, (list, tuple)):
+        return {"run_count": 0, "unsafe_run_count": 1, "unsafe_run_ids": []}
+
+    unsafe_ids: list[str] = []
+    for row in rows:
+        try:
+            record = json.loads(row) if isinstance(row, str) else row
+        except (TypeError, ValueError):
+            record = None
+        if not isinstance(record, dict) or _contains_retired_secret_field(record):
+            unsafe_ids.append(_unsafe_state_fingerprint(row))
+    return {
+        "run_count": len(rows),
+        "unsafe_run_count": len(unsafe_ids),
+        "unsafe_run_ids": unsafe_ids,
+    }
+
+
+def _unsafe_state_fingerprint(value: object) -> str:
+    fingerprint = hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+    return f"sha256:{fingerprint}"
+
+
+def _contains_retired_secret_field(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            is_sensitive_key(key)
+            or _contains_retired_secret_field(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_retired_secret_field(item) for item in value)
+    return False
+
+
+async def inspect_redis_proactive_state() -> dict[str, Any]:
+    """Inspect Redis without changing task state or returning secret values."""
+    r = await _get_redis_client()
+    raw_tasks = await r.get(ARQ_REDIS_KEY)
+    raw_runs = await r.lrange(ARQ_RUN_LOG_KEY, 0, -1)
+    if raw_tasks:
+        try:
+            task_report = inspect_legacy_proactive_state(json.loads(raw_tasks))
+        except (TypeError, ValueError):
+            task_report = {"task_count": 0, "unsafe_task_count": 1, "unsafe_task_ids": []}
+    else:
+        task_report = {"task_count": 0, "unsafe_task_count": 0, "unsafe_task_ids": []}
+    return {**task_report, **inspect_legacy_run_history_state(raw_runs)}
+
+
+async def _refresh_tasks_from_redis() -> dict[str, dict]:
+    """Replace the in-process cache with Redis as the source of truth."""
+    _tasks.clear()
+    _tasks.update(await _load_tasks_from_redis())
+    return _tasks
+
+
+async def _record_task_run(record: dict[str, Any]) -> None:
+    """Append a bounded execution record for scheduler observability."""
+    if _contains_retired_secret_field(record):
+        logger.error("Refusing retired secret-bearing proactive run record")
+        raise LegacyProactiveSecretStateError(
+            "Retired secret-bearing proactive run record was rejected"
+        )
+    payload = json.dumps(record, ensure_ascii=False)
+    try:
+        r = await _get_redis_client()
+        await r.lpush(ARQ_RUN_LOG_KEY, payload)
+        await r.ltrim(ARQ_RUN_LOG_KEY, 0, ARQ_RUN_LOG_LIMIT - 1)
+    except Exception as exc:
+        logger.warning("%s", safe_error_message(exc, "Could not record proactive run"))
+
+
+async def list_run_records(limit: int = 20, tenant_id: str | None = None) -> list[dict[str, Any]]:
+    """Return recent proactive execution records, newest first."""
+    try:
+        r = await _get_redis_client()
+        rows = await r.lrange(ARQ_RUN_LOG_KEY, 0, -1)
+        report = inspect_legacy_run_history_state(rows)
+        if report["unsafe_run_count"]:
+            logger.error(
+                "Refusing retired secret-bearing proactive run history: unsafe_run_count=%d",
+                report["unsafe_run_count"],
+            )
+            raise LegacyProactiveSecretStateError(
+                "Retired secret-bearing proactive run history requires controlled migration"
+            )
+        records = [json.loads(row) for row in rows]
+        if tenant_id is not None:
+            records = [record for record in records if record.get("tenant_id") == tenant_id]
+        return records[:limit]
+    except LegacyProactiveSecretStateError:
+        raise
+    except Exception as exc:
+        logger.warning("%s", safe_error_message(exc, "Could not load proactive run records"))
+        return []
+
+
+async def count_run_records(tenant_id: str | None = None) -> int:
+    """Return the number of retained proactive execution records."""
+    try:
+        r = await _get_redis_client()
+        if tenant_id is None:
+            return int(await r.llen(ARQ_RUN_LOG_KEY))
+        return len(await list_run_records(ARQ_RUN_LOG_LIMIT, tenant_id))
+    except Exception as exc:
+        logger.warning("%s", safe_error_message(exc, "Could not count proactive run records"))
+        return 0
+
 
 async def schedule_task(
     task_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
     cron_expr: str = "0 9 * * *",
     agent_id: str = "default",
     prompt: str = "",
     channel_type: str = "feishu",
-    channel_config: Optional[dict] = None,
 ) -> ProactiveTask:
-    """Register a new proactive task.
-
-    The task will be picked up by the ARQ worker's ``check_scheduled_tasks``
-    cron job and executed at the times indicated by ``cron_expr``.
-    """
+    """Register a proactive task for the ARQ worker to execute."""
+    await _refresh_tasks_from_redis()
     tid = task_id or str(uuid4())
     task = ProactiveTask(
         task_id=tid,
@@ -160,7 +279,7 @@ async def schedule_task(
         agent_id=agent_id,
         prompt=prompt,
         channel_type=channel_type,
-        channel_config=channel_config or {},
+        tenant_id=tenant_id,
     )
     _tasks[tid] = task.to_dict()
     await _save_tasks_to_redis(_tasks)
@@ -168,12 +287,11 @@ async def schedule_task(
     return task
 
 
-async def cancel_task(task_id: str) -> bool:
+async def cancel_task(task_id: str, tenant_id: Optional[str] = None) -> bool:
     """Remove a scheduled task. Returns False if not found."""
-    if task_id not in _tasks:
-        # Try loading from Redis
-        _tasks.update(await _load_tasks_from_redis())
-    if task_id in _tasks:
+    await _refresh_tasks_from_redis()
+    raw = _tasks.get(task_id)
+    if raw is not None and (tenant_id is None or raw.get("tenant_id") == tenant_id):
         del _tasks[task_id]
         await _save_tasks_to_redis(_tasks)
         logger.info("Cancelled proactive task '%s'", task_id)
@@ -181,62 +299,81 @@ async def cancel_task(task_id: str) -> bool:
     return False
 
 
-async def get_task(task_id: str) -> Optional[ProactiveTask]:
+async def get_task(task_id: str, tenant_id: Optional[str] = None) -> Optional[ProactiveTask]:
     """Retrieve a single task by ID."""
-    if task_id not in _tasks:
-        _tasks.update(await _load_tasks_from_redis())
+    await _refresh_tasks_from_redis()
     raw = _tasks.get(task_id)
     if raw is None:
+        return None
+    if tenant_id is not None and raw.get("tenant_id") != tenant_id:
         return None
     return ProactiveTask.from_dict(raw)
 
 
-async def list_tasks() -> list[ProactiveTask]:
+async def list_tasks(tenant_id: Optional[str] = None) -> list[ProactiveTask]:
     """Return all registered proactive tasks."""
-    _tasks.update(await _load_tasks_from_redis())
-    return [ProactiveTask.from_dict(v) for v in _tasks.values()]
+    await _refresh_tasks_from_redis()
+    return [
+        ProactiveTask.from_dict(v)
+        for v in _tasks.values()
+        if tenant_id is None or v.get("tenant_id") == tenant_id
+    ]
 
-
-# ---------------------------------------------------------------------------
-# ARQ job function — execute one proactive task
-# ---------------------------------------------------------------------------
 
 async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
-    """ARQ job function: run the agent for a scheduled task and deliver results.
-
-    This function is called by the ARQ worker when a proactive task is due.
-    It:
-      1. Looks up the task config.
-      2. Runs the agent with the configured prompt.
-      3. Sends the result through the configured channel.
-
-    Args:
-        ctx: ARQ job context (contains ``redis`` connection pool).
-        task_id: ID of the proactive task to execute.
-
-    Returns:
-        Dict with execution result summary.
-    """
+    """Run the agent for a scheduled task and deliver the result."""
     logger.info("Executing proactive task '%s'", task_id)
 
     task = await get_task(task_id)
     if task is None:
-        logger.warning("Proactive task '%s' not found", task_id)
-        return {"status": "error", "message": f"Task '{task_id}' not found"}
+        result = {
+            "status": "error",
+            "task_id": task_id,
+            "delivered": False,
+            "error": f"Task '{task_id}' not found",
+        }
+        await _record_task_run({**result, "created_at": datetime.now(timezone.utc).isoformat()})
+        return result
 
-    # Import agent engine lazily to avoid circular imports at module level
+    from app.core.agent.code_executor import CODE_AS_ACTION_TOOL
     from app.core.agent.engine import run_agent
-    from app.core.tools.builtin import ALL_TOOLS
-    from app.core.channel.feishu import FeishuChannel
     from app.core.channel.base import ChannelMessage
-    from app.main import app_state
+    from app.core.tools.builtin import ALL_TOOLS
 
-    # Use already-initialized singletons from app_state
-    llm_gateway = app_state.llm_gateway
-    sandbox_manager = app_state.sandbox_manager
+    llm_gateway = ctx.get("llm_gateway")
+    sandbox_manager = ctx.get("sandbox_manager")
+    if llm_gateway is None or sandbox_manager is None:
+        from app.main import app_state
 
-    # Run agent
-    messages = [{"role": "user", "content": task.prompt}]
+        llm_gateway = llm_gateway or app_state.llm_gateway
+        sandbox_manager = sandbox_manager or app_state.sandbox_manager
+
+    if llm_gateway is None or sandbox_manager is None:
+        error_message = "Worker runtime dependencies are not initialized"
+        result = {
+            "status": "error",
+            "task_id": task_id,
+            "delivered": False,
+            "error": error_message,
+        }
+        await _record_task_run({**result, "created_at": datetime.now(timezone.utc).isoformat()})
+        await _audit_proactive_result(task, result)
+        return result
+
+    try:
+        channel = await _resolve_delivery_channel(task)
+    except Exception as exc:
+        result = {
+            "status": "error",
+            "task_id": task_id,
+            "tenant_id": task.tenant_id,
+            "delivered": False,
+            "error": safe_error_message(exc, "Channel configuration"),
+        }
+        await _record_task_run({**result, "created_at": datetime.now(timezone.utc).isoformat()})
+        await _audit_proactive_result(task, result)
+        return result
+
     response_text = ""
     tool_calls_made: list[str] = []
     error = None
@@ -246,18 +383,20 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
             gateway=llm_gateway,
             sandbox_manager=sandbox_manager,
             provider="default",
-            messages=messages,
-            tools=ALL_TOOLS,
+            messages=[{"role": "user", "content": task.prompt}],
+            tools=ALL_TOOLS + [CODE_AS_ACTION_TOOL],
+            tenant_id=task.tenant_id,
         ):
             if event["type"] == "text":
                 response_text += event["content"]
             elif event["type"] == "tool_call_start":
                 tool_calls_made.append(event["name"])
+            elif event["type"] == "error":
+                error = event.get("message", "Unknown error")
     except Exception as exc:
-        error = str(exc)
-        logger.error("Agent execution failed for task '%s': %s", task_id, exc)
+        error = safe_error_message(exc, "Agent execution")
+        logger.error("Agent execution failed for task '%s'", task_id)
 
-    # Build result message
     content_parts = [
         f"**Task**: {task.prompt}",
         f"**Response**:\n{response_text[:1000]}",
@@ -267,85 +406,150 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
     if error:
         content_parts.append(f"**Error**: {error}")
 
-    content = "\n\n".join(content_parts)
+    delivery = await channel.send_with_result(
+        ChannelMessage(
+            title=f"Proactive Task: {task_id[:8]}",
+            content="\n\n".join(content_parts),
+        )
+    )
 
-    # Deliver via channel
-    channel = FeishuChannel(
-        task.channel_config.get("webhook_url", "")
+    delivered = delivery["ok"]
+    status = "completed" if not error else "error"
+    if not delivered and status == "completed":
+        status = "delivery_failed"
+
+    result = {
+        "status": status,
+        "task_id": task_id,
+        "tenant_id": task.tenant_id,
+        "response_length": len(response_text),
+        "tool_calls": tool_calls_made,
+        "delivered": delivered,
+        "delivery": delivery,
+        "error": error,
+    }
+    await _record_task_run(
+        {
+            **result,
+            "prompt": task.prompt[:200],
+            "tenant_id": task.tenant_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
     )
-    msg = ChannelMessage(
-        title=f"Proactive Task: {task_id[:8]}",
-        content=content,
-    )
-    delivered = await channel.send(msg)
+    await _audit_proactive_result(task, result)
     logger.info(
         "Proactive task '%s' completed, delivered=%s, tools=%s",
         task_id,
         delivered,
         tool_calls_made,
     )
-
-    return {
-        "status": "completed" if not error else "error",
-        "task_id": task_id,
-        "response_length": len(response_text),
-        "tool_calls": tool_calls_made,
-        "delivered": delivered,
-        "error": error,
-    }
+    return result
 
 
-# ---------------------------------------------------------------------------
-# ARQ WorkerSettings — periodic check for due tasks
-# ---------------------------------------------------------------------------
+async def _resolve_delivery_channel(task: ProactiveTask):
+    """Build a delivery channel only from the tenant-scoped database owner."""
+    from app.core.channel.feishu import FeishuChannel
+
+    if not task.tenant_id:
+        raise ValueError("Tenant scope is required for proactive channel resolution")
+    resolved_channel = await resolve_channel_configuration(task.tenant_id, task.channel_type)
+    if task.channel_type != "feishu":
+        raise ValueError("Unsupported proactive channel type")
+    webhook_url = resolved_channel["secrets"].get("webhook_url")
+    if not webhook_url:
+        raise ValueError("Configured channel webhook is missing")
+    return FeishuChannel(webhook_url, signing_secret=resolved_channel["secrets"].get("secret"))
+
+
+async def _audit_proactive_result(task: ProactiveTask, result: dict[str, Any]) -> None:
+    """Persist a bounded, secret-free audit record for a proactive action."""
+    if not task.tenant_id:
+        return
+    try:
+        from app.api.deps import _async_session_factory
+        from app.core.audit.service import AuditRecord, write_audit_log
+
+        async with _async_session_factory() as db:
+            await write_audit_log(
+                db,
+                AuditRecord(
+                    tenant_id=UUID(task.tenant_id),
+                    action="EXECUTE proactive-task",
+                    resource_type="proactive-tasks",
+                    resource_id=task.task_id,
+                    method="WORKER",
+                    path=f"/internal/proactive-tasks/{task.task_id}/execute",
+                    status_code=200 if result.get("status") == "completed" else 500,
+                    details={
+                        "status": result.get("status"),
+                        "delivered": bool(result.get("delivered")),
+                        "tool_calls": list(result.get("tool_calls") or []),
+                    },
+                ),
+            )
+    except Exception:
+        logger.warning("Could not audit proactive task '%s'", task.task_id)
+
 
 async def check_scheduled_tasks(ctx: dict) -> None:
-    """ARQ cron job: check all registered tasks and enqueue those due to run.
-
-    Runs every minute. For each enabled task, evaluates its cron expression
-    and only enqueues if the current minute matches.
-    """
-    from datetime import datetime, timezone
-    from arq.jobs import Job
+    """Enqueue enabled tasks whose cron expression matches the current minute."""
     from croniter import croniter
+
+    await write_worker_heartbeat(ctx["redis"])
 
     now = datetime.now(timezone.utc)
     min_window = now.replace(second=0, microsecond=0)
+    run_key = min_window.strftime("%Y%m%d%H%M")
 
     tasks = await list_tasks()
     enqueued = 0
     for task in tasks:
-        if not task.enabled:
+        if not task.enabled or not croniter.match(task.cron_expr, min_window):
             continue
-        # Evaluate cron expression — only enqueue if this minute is a match
-        if not croniter.match(task.cron_expr, min_window):
-            continue
-        await Job.create(
-            ctx["redis"],
-            execute_proactive_task,
-            _job_id=f"proactive:{task.task_id}",
-            _queue_name="arq:proactive",
-            task_id=task.task_id,
+        job = await ctx["redis"].enqueue_job(
+            "execute_proactive_task",
+            task.task_id,
+            _job_id=f"proactive:{task.task_id}:{run_key}",
+            _queue_name=ARQ_QUEUE_NAME,
         )
-        enqueued += 1
-        logger.info("Enqueued proactive task '%s' (cron: %s)", task.task_id, task.cron_expr)
+        if job is not None:
+            enqueued += 1
+            logger.info("Enqueued proactive task '%s' (cron: %s)", task.task_id, task.cron_expr)
     logger.debug("Checked %d tasks, enqueued %d", len(tasks), enqueued)
 
 
+async def startup(ctx: dict) -> None:
+    """Initialize runtime dependencies for the standalone ARQ worker."""
+    from app.config import validate_production_settings
+    from app.core.llm.gateway import LLMGateway
+    from app.core.sandbox.manager import SandboxManager
+
+    validate_production_settings(settings)
+    llm_gateway = LLMGateway()
+    sandbox_manager = SandboxManager(settings)
+    try:
+        await sandbox_manager.warm_pool()
+    except Exception as exc:
+        logger.warning("Worker could not warm sandbox pool: %s", exc)
+
+    ctx["llm_gateway"] = llm_gateway
+    ctx["sandbox_manager"] = sandbox_manager
+    await write_worker_heartbeat(ctx["redis"])
+
+
+async def shutdown(ctx: dict) -> None:
+    """Close worker-owned runtime resources."""
+    sandbox_manager = ctx.get("sandbox_manager")
+    if sandbox_manager is not None:
+        await sandbox_manager.close()
+
+
 class WorkerSettings:
-    """ARQ worker settings for the proactive scheduler.
-
-    Use this class to launch an ARQ worker that processes proactive tasks:
-
-        arq app.core.proactive.scheduler.WorkerSettings
-
-    Or add it to docker-compose as a separate service.
-    """
+    """ARQ worker settings for proactive scheduling."""
 
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [execute_proactive_task]
-    cron_jobs = [
-        # Check for due tasks every 5 minutes
-        (check_scheduled_tasks, {"cron": "*/5 * * * *"}),
-    ]
-    queue_name = "arq:proactive"
+    cron_jobs = [cron(check_scheduled_tasks, minute=None)]
+    on_startup = startup
+    on_shutdown = shutdown
+    queue_name = ARQ_QUEUE_NAME

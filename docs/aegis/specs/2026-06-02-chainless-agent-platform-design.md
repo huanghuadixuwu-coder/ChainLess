@@ -6,6 +6,13 @@
 **Updated**: 2026-06-02  
 **Complexity**: High — new multi-subsystem platform, architecture-defining
 
+> Authority notice (2026-06-05): This is the historical design authority,
+> amended by the approved
+> [V1 Complete Spec Reconciliation](./2026-06-04-chainless-v1-complete-spec-reconciliation.md).
+> Remaining work is tracked only by
+> [the 2026-06-05 execution plan](../plans/2026-06-05-chainless-v1-complete-spec-execution-plan.md).
+> Preserve the historical body; reconciled decisions take precedence.
+
 ---
 
 ## 1. Task Intent
