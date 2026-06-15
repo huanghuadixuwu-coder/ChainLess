@@ -491,6 +491,22 @@ Current checkpoint:
 8. Workstream 8
 9. Workstream 9
 10. Workstream 10
+11. Workstream 11
+
+## Historical Workstream 11 Closure
+
+- Workstream 11 ran the final spec-complete release gate in local Docker
+  Desktop, not on the retired remote server.
+- Evidence includes fresh `docker-compose up -d --build`, full backend tests
+  (`339 passed, 4 skipped`), frontend lint/build, `spec_complete_probe.py`,
+  Windows Chrome `spec-complete` browser QA, both eval suites, backup, isolated
+  restore drill, Fibonacci `55`, HackerNews top-10 Code-as-Action under `5s`,
+  and residue cleanup.
+- The authoritative one-to-one original gate mapping is
+  [original-gate-ledger.md](../work/2026-06-05-v1-spec-completion/original-gate-ledger.md).
+- Live GLM API and real Feishu group receipt are external-credential proof
+  boundaries in the current local Docker environment, not claimed as executed
+  without credentials.
 
 ## Historical Exit Rule
 
@@ -505,7 +521,9 @@ The objective is achieved only when each remaining spec surface is either:
 
 - Historical Workstreams 8, 9, and 10 are closed for their recorded current
   runtime scopes and evidence.
-- Their closure does not imply the reconciled complete V1 is finished.
+- Historical Workstream 11 closes the final spec-complete local-Docker evidence
+  bundle for the current V1 scope, with live GLM and real Feishu receipt kept as
+  explicit external-credential proof boundaries.
 - The current-truth registry is
   [2026-06-03-spec-runtime-gap-matrix.md](./2026-06-03-spec-runtime-gap-matrix.md).
 - The only active remaining-work tracker is

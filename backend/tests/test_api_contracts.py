@@ -406,7 +406,7 @@ async def test_tools_admin_can_register_test_and_delete_mcp_server(
         assert deleted_again.status_code == 404
         assert deleted_again.json()["error"]["code"] == "TOOL_NOT_FOUND"
     finally:
-        await mcp_manager.unregister(server_name)
+        await mcp_manager.unregister(server_name, payload["tenant_id"])
 
 
 async def test_tools_mcp_failures_do_not_leak_exception_details(
@@ -429,7 +429,7 @@ async def test_tools_mcp_failures_do_not_leak_exception_details(
     secret = f"sk-secret-{uuid.uuid4().hex}"
     secret_command = f"secret-command-{uuid.uuid4().hex}"
 
-    async def fail_register(name, config):
+    async def fail_register(name, config, owner=None):
         raise RuntimeError(f"raw register failure {secret} {config['command']} {config['env']}")
 
     monkeypatch.setattr(mcp_manager, "register", fail_register)
@@ -456,10 +456,10 @@ async def test_tools_mcp_failures_do_not_leak_exception_details(
     assert secret not in register_failure.text
     assert secret_command not in register_failure.text
 
-    async def fail_execute(tool_name, args):
+    async def fail_execute(tool_name, args, owner=None):
         raise RuntimeError(f"raw tool failure {secret} {args}")
 
-    monkeypatch.setattr(mcp_manager, "get_client_for_tool", lambda tool_name: object())
+    monkeypatch.setattr(mcp_manager, "get_client_for_tool", lambda tool_name, owner=None: object())
     monkeypatch.setattr(mcp_manager, "execute", fail_execute)
     test_failure = await client.post(
         "/api/v1/tools/unsafe-mcp/test",

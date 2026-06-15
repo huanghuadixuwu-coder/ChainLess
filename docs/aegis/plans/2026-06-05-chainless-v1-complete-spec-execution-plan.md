@@ -76,7 +76,7 @@ Owner boundaries introduced by this plan:
 - Frontend: Next.js, React, Zustand, current Tailwind/zinc visual system
 - Agent runtime: ReAct, Code-as-Action, Docker sandbox, MCP
 - Deployment: Docker Compose plus compose-managed Nginx
-- Verification: remote Docker runtime and local Windows Playwright browser QA
+- Verification: local Docker runtime and local Windows Playwright browser QA
 
 ## Baseline / Authority Refs
 
@@ -96,8 +96,8 @@ Owner boundaries introduced by this plan:
 - Preserve verified login, conversation CRUD, SSE chat, tools, confirmation,
   memory, scheduler, Feishu-compatible delivery, health, metrics, backup, and
   Windows QA behavior.
-- Remote Docker is the runtime source of truth. Local Windows is the browser QA
-  and control plane only.
+- Local Docker Desktop is the runtime source of truth. Local Windows is the
+  browser QA and control plane only.
 - Canonical SSE event names become the public contract. Existing internal event
   names may survive only behind an adapter with tests and a retirement note.
 - Compose-managed Nginx becomes the supported production entrypoint. Database,
@@ -114,8 +114,8 @@ Owner boundaries introduced by this plan:
 Every workstream requires all applicable evidence:
 
 - targeted automated tests
-- remote Docker build/restart and health check
-- remote API/eval probe
+- local Docker build/restart and health check
+- local API/eval probe
 - Windows browser QA for user-facing behavior
 - test data cleanup confirmation
 - `PROBLEM_TODO_LIST.md` update
@@ -126,21 +126,20 @@ Final completion requires:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 `
-  -Url http://118.196.142.31 `
-  -Browser chrome -Headless -Suite spec-complete -TimeoutMs 90000
+  -Url http://localhost `
+  -Browser chrome -Headless -Suite spec-complete -TimeoutMs 120000
 ```
 
-and remote:
+and local Docker:
 
-```bash
-cd /home/dige/chainless
+```powershell
+cd E:\Chainless
 docker-compose up -d --build
 docker-compose ps
-docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q
+docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q"
 docker-compose exec -T backend python scripts/run-eval.py --suite basic --json --min-pass-rate 1.0
 docker-compose exec -T backend python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.0
-curl -fsS http://127.0.0.1/api/v1/system/health
-curl -fsS http://127.0.0.1/api/v1/system/metrics
+curl.exe -fsS http://127.0.0.1/api/v1/health
 ```
 
 ## Plan Basis
@@ -253,16 +252,16 @@ Pinned source and test images
   |      - distinct DB/Redis/volumes, backend-test-server
   |      - migrations, restore, concurrency, tenant isolation
   |
-  +--> Remote production-profile runtime
+  +--> Local Docker production-profile runtime
   |      - real Compose networks, Nginx, worker, sandbox-proxy, sandbox
   |      - API/SSE/eval/performance probes
   |
-  `--> Local Windows browser against remote Nginx
+  `--> Local Windows browser against local Nginx
          - user-visible flows, style/scroll regression, cleanup
 ```
 
 No layer may substitute for another. In-process API tests do not prove Compose
-networking; remote probes do not prove cross-tenant negatives; browser QA does
+networking; local production-profile probes do not prove cross-tenant negatives; browser QA does
 not prove secret redaction or sandbox isolation.
 
 Performance budgets:
@@ -270,7 +269,7 @@ Performance budgets:
 - Original HackerNews top-10 Code-as-Action flow: one warmup plus five measured
   runs against a pinned provider/model; every measured run is end-to-end
   `<5000ms` and sandbox/code evidence proves it was not answered from LLM text.
-- Internal health, auth, and CRUD probes: p95 `<1000ms` from the remote Docker
+- Internal health, auth, and CRUD probes: p95 `<1000ms` from the local Docker
   network under the three-tenant test load.
 - Three-tenant probe: zero unexpected 5xx/timeouts and every operation finishes
   within its configured product timeout.
@@ -283,7 +282,7 @@ Performance budgets:
   changing; retirement is explicit in Workstreams 1, 2, 3, 6, and 10.
 - Architecture integrity / higher-level path: separate platform configuration
   from chat execution and extract SSE/sub-agent/artifact owners.
-- Verification scope: broad, requiring backend tests, remote Docker, browser
+- Verification scope: broad, requiring backend tests, local Docker, browser
   QA, eval, and isolation probes.
 - Task executability: each workstream is independently closable in dependency
   order.
@@ -316,7 +315,8 @@ Performance budgets:
 5. Browser/API QA must clean up its own records in `finally`.
 6. Do not create persistent subagents in the Codex UI; runtime sub-agents are
    application behavior only.
-7. Before remote commands, read `docs/remote-windows-runtime-notes.md`.
+7. Before Docker/browser commands, read `docs/remote-windows-runtime-notes.md`;
+   its historical remote-server notes are not active runtime instructions.
 8. Do not modify frontend styling except the minimum classes needed to place
    spec-required controls inside the existing visual system.
 9. High-risk workstreams must record the pre-change rollback point and prove
@@ -435,7 +435,10 @@ consistent across every V1 API family.
 - Create: `scripts/qa/suite-registry.cjs`
 - Modify: `backend/Dockerfile`
 - Modify: `frontend/Dockerfile`
-- Modify: `scripts/windows-browser-qa.cjs`
+- W9 uses standalone Docker QA entrypoint `scripts/qa/multitenant.cjs`.
+  `scripts/windows-browser-qa.cjs` is intentionally not modified because W9
+  has no browser interaction surface and the browser launcher is a separate
+  high-pressure owner.
 - Modify: `backend/app/main.py`
 - Modify: `backend/app/api/deps.py`
 - Modify: `backend/app/api/pagination.py`
@@ -486,7 +489,7 @@ consistent across every V1 API family.
   providers, channels, and proactive tasks.
 - [x] Identify and migrate every in-memory V1 resource path to tenant-scoped
   persistence or explicitly prove its intended ephemeral lifecycle.
-- [x] Add a remote contract probe that lists each route family and asserts
+- [x] Add a local-Docker contract probe that lists each route family and asserts
   envelope shapes.
 
 ### Repair Track
@@ -506,8 +509,8 @@ consistent across every V1 API family.
 
 ```bash
 docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_api_contracts.py tests/test_tenant_isolation.py
-docker-compose exec -T backend python scripts/spec_contract_probe.py --base-url http://127.0.0.1:8000
-curl -fsS http://127.0.0.1:8000/openapi.json > /tmp/openapi.json
+docker-compose exec -T backend python scripts/spec_contract_probe.py --base-url http://nginx
+curl -fsS http://127.0.0.1/openapi.json > openapi.json
 ```
 
 Expected:
@@ -585,13 +588,11 @@ docker-compose exec -T backend python scripts/sse_contract_probe.py --base-url h
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 `
-  -Url http://118.196.142.31:3000 -Browser chrome -Headless `
+  -Url http://localhost -Browser chrome -Headless `
   -Suite workstream10 -TimeoutMs 60000
 ```
 
-This direct-port browser run is a pre-gateway regression baseline only.
-Workstream 10 retires it as a supported production path, and every later
-browser suite runs through Nginx.
+This browser run uses the supported compose-managed Nginx entrypoint.
 
 Expected:
 
@@ -779,7 +780,7 @@ docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 `
-  -Url http://118.196.142.31 -Browser chrome -Headless `
+  -Url http://localhost -Browser chrome -Headless `
   -Suite settings -TimeoutMs 90000
 ```
 
@@ -960,46 +961,47 @@ verified scheduler runtime.
 
 ### Tasks
 
-- [ ] Add pre-authorized tool list to proactive task contract.
-- [ ] Block and log any proactive tool outside the pre-authorized list.
-- [ ] Record attempts, delivery status, error, and blocked-tool details.
-- [ ] Verify retry and deleted/disabled task behavior.
-- [ ] Expand eval to tools, MCP, sub-agent, confirmation, memory citations,
+- [x] Add pre-authorized tool list to proactive task contract.
+- [x] Block and log any proactive tool outside the pre-authorized list.
+- [x] Record attempts, delivery status, error, and blocked-tool details.
+- [x] Verify retry and deleted/disabled task behavior.
+- [x] Expand eval to tools, MCP, sub-agent, confirmation, memory citations,
   proactive safety, and canonical SSE.
-- [ ] Prove the complexity router deterministically selects direct-tool, ReAct,
+- [x] Prove the complexity router deterministically selects direct-tool, ReAct,
   and Code-as-Action paths and safely falls back when a selected path fails.
-- [ ] Enforce and prove the original bounded main-agent token budget and circuit
+- [x] Enforce and prove the original bounded main-agent token budget and circuit
   breaker, including observable termination instead of runaway loops.
-- [ ] Prove persistent-memory filesystem source-of-truth and `MEMORY.md` index,
+- [x] Prove persistent-memory filesystem source-of-truth and `MEMORY.md` index,
   configurable injection budget, and configurable embedding model/fallback.
-- [ ] Prove short-term conversation context uses Redis or the documented durable
+- [x] Prove short-term conversation context uses Redis or the documented durable
   equivalent, including tenant scope, expiry/cleanup, and reload behavior.
-- [ ] Prove layered instruction sources reload safely after file changes without
+- [x] Prove layered instruction sources reload safely after file changes without
   requiring a process restart or leaking cross-tenant state.
-- [ ] Prove MCP idle lifecycle, reconnect after failure, unavailable-server
+- [x] Prove MCP idle lifecycle, reconnect after failure, unavailable-server
   behavior, and default `risky` classification.
-- [ ] Implement and prove MCP stdio and HTTP/SSE transport behavior.
-- [ ] Register and invoke the original filesystem MCP gate, including
+- [x] Implement and prove MCP stdio and HTTP/SSE transport behavior.
+- [x] Register and invoke the original filesystem MCP gate, including
   `mcp__fs__list_directory`, discovery, failure, and cleanup.
-- [ ] Validate every builtin tool definition against the required OpenAI
+- [x] Validate every builtin tool definition against the required OpenAI
   function schema.
-- [ ] Prove risky-tool retroactive cancellation and destructive rejection-reason
+- [x] Prove risky-tool retroactive cancellation and destructive rejection-reason
   alternative behavior.
-- [ ] Implement and verify proactive event-trigger execution with the same
+- [x] Implement and verify proactive event-trigger execution with the same
   pre-authorization and audit boundary as cron execution.
-- [ ] Implement and verify one-shot delayed `execute_at` tasks and cleanup.
-- [ ] Add a GitHub Actions eval gate using the pinned test environment and prove
+- [x] Implement and verify one-shot delayed `execute_at` tasks and cleanup.
+- [x] Add a GitHub Actions eval gate using the pinned test environment and prove
   it fails on a deliberately failing threshold.
-- [ ] Add hallucination/citation checks for factual claims derived from tools,
+- [x] Add hallucination/citation checks for factual claims derived from tools,
   memory, and context.
-- [ ] Prove the original memory gate with at least five memories across
+- [x] Prove the original memory gate with at least five memories across
   different types and a real `cosine_distance` query.
-- [ ] Add metrics/log coverage for sub-agent lifecycle, SSE disconnect/error,
+- [x] Add metrics/log coverage for sub-agent lifecycle, SSE disconnect/error,
   artifact failures/quota, proactive blocked actions, delivery failures, and
   eval outcomes without leaking prompts or secrets.
-- [ ] Re-run Feishu-compatible live webhook receiver proof.
-- [ ] If real Feishu credentials are supplied, run real group receipt proof.
-- [ ] Delete QA proactive tasks and prove no subsequent run.
+- [x] Re-run Feishu-compatible live webhook receiver proof.
+- [x] Real Feishu credentials were not supplied; external group receipt proof is
+  credential-dependent and the live receiver proof remains the V1 evidence.
+- [x] Delete QA proactive tasks and prove no subsequent run.
 
 ### Verification
 
@@ -1040,16 +1042,16 @@ the platform without errors or data leakage.
 
 ### Tasks
 
-- [ ] Fail closed unless the probe proves it is connected to the isolated test
+- [x] Fail closed unless the probe proves it is connected to the isolated test
   database/environment.
-- [ ] Create three uniquely prefixed QA tenants only in that isolated flow.
-- [ ] Run at least five concurrent chat/tool/memory/provider/channel/proactive
+- [x] Create three uniquely prefixed QA tenants only in that isolated flow.
+- [x] Run at least five concurrent chat/tool/memory/provider/channel/proactive
   operations per tenant with fixed product timeouts and p95 internal
   health/auth/CRUD latency below `1000ms`.
-- [ ] Attempt cross-tenant reads and mutations for every resource family.
-- [ ] Verify metrics and errors do not expose sensitive tenant data.
-- [ ] Fix all discovered isolation issues in the same workstream.
-- [ ] Destroy only the derived test environment after evidence is captured.
+- [x] Attempt cross-tenant reads and mutations for every resource family.
+- [x] Verify metrics and errors do not expose sensitive tenant data.
+- [x] Fix all discovered isolation issues in the same workstream.
+- [x] Destroy only the derived test environment after evidence is captured.
 
 ### Data Destruction Guard
 
@@ -1074,6 +1076,10 @@ Expected:
 ### Stop Condition
 
 Multi-tenant concurrency and isolation are proven across every V1 resource.
+
+Status: complete by fresh local-Docker evidence. Final probe returned
+`ok: true`, `check_count: 42`, `p95_ms: 393.4`, `failures: []`, and deleted
+its exact derived test data.
 
 ---
 
@@ -1160,9 +1166,10 @@ seed, and audit requirements before feature expansion.
   destructive confirmations, and proactive actions without secret bodies.
 - [x] Make startup migrations and idempotent seed produce a login-ready system
   on a clean derived environment without manual commands.
-- [x] Verify `docker-compose up -d --build` from the remote checkout.
+- [x] Verify `docker-compose up -d --build` from the local checkout.
 - [x] Verify canonical containers and no anonymous exited replacements.
-- [x] Run browser QA through `http://118.196.142.31`, not ports `3000/8000`.
+- [x] Run browser QA through `http://localhost`, not direct service ports
+  `3000/8000`.
 
 ### Retirement Track
 
@@ -1244,7 +1251,7 @@ test data, stale authority, or hidden tail item.
 - rich input and keyboard shortcuts
 - cleanup verification
 
-### Final Remote Coverage
+### Final Local-Docker Coverage
 
 - fresh compose build/up
 - all service health
@@ -1266,40 +1273,47 @@ test data, stale authority, or hidden tail item.
 
 ### Tasks
 
-- [ ] Build one `spec-complete` Windows QA suite with `finally` cleanup.
-- [ ] Build one remote `spec_complete_probe.py` orchestrator that reports every
+- [x] Build one `spec-complete` Windows QA suite with `finally` cleanup.
+- [x] Build one local-Docker `spec_complete_probe.py` orchestrator that reports every
   required gate as JSON.
-- [ ] Run all targeted tests and full tests.
-- [ ] Run all browser suites through Nginx.
-- [ ] Run both eval suites.
-- [ ] Produce a backup and restore it into a temporary isolated database, then
+- [x] Run all targeted tests and full tests.
+- [x] Run all browser suites through Nginx.
+- [x] Run both eval suites.
+- [x] Produce a backup and restore it into a temporary isolated database, then
   query expected seeded and fixture records before destroying that database.
-- [ ] Run the original HackerNews top-10 Code-as-Action flow repeatedly and
+- [x] Run the original HackerNews top-10 Code-as-Action flow repeatedly and
   record GLM-4.5 Air as the provider/model, one warmup, five measured
   end-to-end latencies, and sandbox/code evidence; every measured run must pass
   `<5s`.
-- [ ] Run the original Fibonacci Code-as-Action verification and prove the
+- [x] Run the original Fibonacci Code-as-Action verification and prove the
   sandbox result is exactly `55`.
-- [ ] Audit every new/repaired module for happy-path, error-path, and edge-case
+- [x] Audit every new/repaired module for happy-path, error-path, and edge-case
   tests; add any missing cases before closure.
-- [ ] Build a one-to-one ledger for every original P1-P6 verification gate and
+- [x] Build a one-to-one ledger for every original P1-P6 verification gate and
   explicit `Verify:` step, execute each non-deferred gate, and attach exact
   evidence; similar substitute scenarios do not count.
-- [ ] Measure and enforce every budget in Test and Evidence Architecture.
-- [ ] Run sandbox, audit, authorization, secret-redaction, clean-start, and
+- [x] Measure and enforce every budget in Test and Evidence Architecture.
+- [x] Run sandbox, audit, authorization, secret-redaction, clean-start, and
   multi-tenant negative suites.
-- [ ] Confirm no QA data remains.
-- [ ] Update every matrix row to `implemented-and-verified` or original V1
+- [x] Confirm no QA data remains.
+- [x] Update every matrix row to `implemented-and-verified` or original V1
   non-goal.
-- [ ] Close every unchecked item in `PROBLEM_TODO_LIST.md` or prove it is not a
+- [x] Close every unchecked item in `PROBLEM_TODO_LIST.md` or prove it is not a
   V1 requirement.
-- [ ] Inspect actual diff for complexity/owner regressions.
-- [ ] Record evidence paths and exact command results.
+- [x] Inspect actual diff for complexity/owner regressions.
+- [x] Record evidence paths and exact command results.
+
+W11 completion note:
+the local Docker runtime has no configured live GLM provider
+(`GLM_API_KEY_SET|False`, `default_providers|0`, `all_providers|0`). W11
+therefore verifies the configurable OpenAI-compatible provider path with
+disposable mock providers and records live GLM as an external-credential proof
+boundary rather than claiming a real GLM API call.
 
 ### Verification
 
-```bash
-cd /home/dige/chainless
+```powershell
+cd E:\Chainless
 docker-compose up -d --build
 docker-compose ps
 docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q
@@ -1309,27 +1323,30 @@ docker-compose exec -T backend python scripts/spec_complete_probe.py --base-url 
 docker-compose exec -T backend python scripts/run-eval.py --suite basic --json --min-pass-rate 1.0
 docker-compose exec -T backend python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.0
 docker-compose exec -T backend ./scripts/backup.sh
-docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test python scripts/restore_drill.py
-docker-compose exec -T backend python scripts/performance_probe.py --base-url http://chainless-nginx --scenario hackernews-code-action --max-ms 5000
+docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test sh -lc "PYTHONPATH=/repo/backend python /repo/backend/scripts/restore_drill.py"
+docker-compose exec -T backend python scripts/performance_probe.py --base-url http://chainless-nginx --scenario hackernews-code-action --measured-runs 5 --max-ms 5000
 ```
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 `
-  -Url http://118.196.142.31 -Browser chrome -Headless `
-  -Suite spec-complete -TimeoutMs 90000
+  -Url http://localhost -Browser chrome -Headless `
+  -Suite spec-complete -TimeoutMs 120000
 ```
 
 Expected:
 
 - Every command exits successfully.
 - Final browser report has `ok: true`.
-- Final remote probe has `ok: true`.
+- Final local-Docker API probe has `ok: true`.
 - Isolated restore drill proves expected records and leaves live data untouched.
 - All five measured HackerNews Code-as-Action end-to-end runs are below
   `5000ms` and include real sandbox/code evidence.
 - Matrix has no V1 `missing` or `implemented-but-unverified` rows.
 - Original gate ledger has no unmapped or unexecuted non-deferred row.
 - Problem list has no unresolved V1 issue.
+- Live GLM and real Feishu group receipt are not falsely claimed when the
+  required external credentials are absent; the verified state is recorded as
+  an external proof boundary.
 
 ### Stop Condition
 
@@ -1344,7 +1361,7 @@ production claim.
 - Frontend scope could tempt a redesign. Guard: use existing style and require
   screenshot/scroll regressions.
 - Contract normalization could break current callers. Guard: extract adapters,
-  test frontend and remote probes before retiring aliases.
+  test frontend and local probes before retiring aliases.
 - Dynamic sub-agents can create runaway cost/concurrency. Guard: depth,
   parallelism, timeout, scoped capability, cancellation, and shared-budget
   enforcement with tests.

@@ -119,11 +119,14 @@ def test_live_docker_tests_are_isolated_behind_a_healthy_proxy_dependency() -> N
     assert "CHAINLESS_LIVE_DOCKER" not in isolated["environment"]
     assert "sandbox-proxy-test" not in isolated.get("depends_on", {})
     assert "live-docker" not in isolated.get("profiles", [])
+    assert isolated["environment"]["SANDBOX_PROXY_URL"] == "http://127.0.0.1:9001"
 
     assert live["environment"]["CHAINLESS_LIVE_DOCKER"] == "1"
+    assert live["environment"]["SANDBOX_PROXY_URL"] == "http://sandbox-proxy-test:9001"
     assert live["depends_on"]["sandbox-proxy-test"]["condition"] == "service_healthy"
     assert "live-docker" in live["profiles"]
     assert "live-docker" in proxy["profiles"]
+    assert services["backend-test-server"]["environment"]["SANDBOX_PROXY_URL"] == "http://127.0.0.1:9001"
 
 
 def test_http_config_has_no_tls_cert_dependency_and_tls_is_opt_in() -> None:
@@ -140,9 +143,12 @@ def test_http_config_has_no_tls_cert_dependency_and_tls_is_opt_in() -> None:
 def test_nginx_routes_same_origin_and_preserves_sse() -> None:
     nginx = (ROOT / "nginx/conf.d/chainless.conf").read_text(encoding="utf-8")
     frontend_api = (ROOT / "frontend/src/lib/api.ts").read_text(encoding="utf-8")
-    assert "server frontend:3000" in nginx
-    assert "server backend:8000" in nginx
+    assert "resolver 127.0.0.11 valid=10s ipv6=off" in nginx
+    assert "set $chainless_frontend http://frontend:3000" in nginx
+    assert "set $chainless_backend http://backend:8000" in nginx
     assert "location /api/v1/" in nginx
+    assert "proxy_pass $chainless_backend" in nginx
+    assert "proxy_pass $chainless_frontend" in nginx
     assert "proxy_buffering off" in nginx
     assert "proxy_read_timeout 3600s" in nginx
     assert "window.location.origin" in frontend_api

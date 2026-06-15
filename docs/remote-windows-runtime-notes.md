@@ -48,12 +48,12 @@ three env vars are set.
 
 PowerShell can mangle nested shell/Python/JSON quoting. Prefer one of these:
 
-- Keep remote commands simple and quote them as one SSH string.
-- For multi-line remote scripts, use a single-quoted here-string piped into SSH.
-- For file edits, edit locally with `apply_patch`, then `scp` the exact files to
-  the remote project.
-- Do not rely on local Python. Use remote `python3` inside SSH or container
-  Python inside `docker-compose exec`.
+- Historical remote commands should not be used for active work. If reading old
+  notes, translate the operation to local Docker first.
+- For file edits, edit locally with `apply_patch`; do not copy files to the
+  retired remote project.
+- Do not rely on local Python or remote `python3`. Use container Python inside
+  `docker-compose exec` or `docker-compose ... run`.
 - Do not embed quoted SQL, JSON, or `python -c` expressions in SSH commands.
   Put the operation in a repository script and invoke the script path.
 - Do not use Docker Go-template `index` lookups for labels containing dots from
@@ -62,7 +62,8 @@ PowerShell can mangle nested shell/Python/JSON quoting. Prefer one of these:
   `docker inspect --format '{{json .Config.Labels}}' <id>` and filter the JSON
   output, or use `docker ps --filter label=key=value`.
 
-Safer multi-line pattern:
+Historical remote-only pattern, retained for archaeology and not for active
+local-Docker work:
 
 ```powershell
 ssh -o StrictHostKeyChecking=no dige@118.196.142.31 @'
@@ -131,13 +132,18 @@ docker-compose ps
 After any rebuild, verify the canonical container names, not just any container
 with a similar image.
 
-When `backend` is recreated, restart `nginx` even if Compose leaves it running.
-The current Nginx upstream can keep the old backend container IP and return
-`502 Bad Gateway` until restarted:
+Historical note: before W11, when `backend` was recreated, restarting `nginx`
+was required because static upstream DNS could keep the old backend container
+IP and return `502 Bad Gateway`.
 
-```bash
-docker compose restart nginx
+Current W11 state: [nginx/conf.d/chainless.conf](../nginx/conf.d/chainless.conf)
+uses Docker DNS resolver variables, so the expected verification is to rebuild
+or recreate backend while leaving Nginx running, then prove both public and
+internal health:
+
+```powershell
 curl -fsS http://127.0.0.1/api/v1/health
+docker-compose exec -T nginx wget -qO- http://backend:8000/api/v1/health
 ```
 
 ## Health and Metrics Checks
@@ -196,7 +202,7 @@ frontend to refresh only the affected section instead of raising limits.
 Use the repo-local Windows QA launcher:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url http://118.196.142.31 -Browser chrome -Headless -Suite workstream10 -TimeoutMs 90000
+powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url http://localhost -Browser chrome -Headless -Suite workstream10 -TimeoutMs 90000
 ```
 
 Current local-Docker runtime should use `http://localhost` instead of the
@@ -230,6 +236,24 @@ Known Playwright pitfalls:
 - Mounting the whole frontend directory into a Docker image can hide the
   container's `node_modules` on Windows. For linting current source against a
   built image, mount only `frontend\src` to `/app/src`.
+
+## PowerShell / Docker Command Pitfalls
+
+- Do not pipe Docker output to Unix tools on the Windows host unless the tool is
+  actually installed. For example, `docker-compose exec redis redis-cli --scan |
+  grep ...` runs `grep` on the host and fails. Put the pipe inside the container:
+  `docker-compose exec -T redis sh -lc "redis-cli --scan | grep -E 'prefix' || true"`.
+- PowerShell expands `$key:` before Docker sees it. If a loop needs shell
+  variables, wrap the entire container script in single quotes or avoid shell
+  variables entirely.
+- Do not use PowerShell heredocs as if they were Bash heredocs. If a container
+  command needs `python - <<'PY'`, wrap that heredoc inside `sh -lc "..."`.
+- The default `backend-test pytest -q` can run stale `/app` code from the image.
+  To test the current worktree mounted at `/repo/backend`, use:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q"`.
+- `node` may not be in host `PATH`. The Windows browser QA launcher uses the
+  Codex bundled Node automatically; for manual syntax checks use the bundled
+  Node printed by `scripts\windows-browser-qa.ps1`.
 
 ## Frontend Build Pitfall
 

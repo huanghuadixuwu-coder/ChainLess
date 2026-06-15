@@ -1,9 +1,9 @@
 # Chainless Production Operations
 
-This document records the current single-machine runtime and the approved
-Chainless V1 production topology. Remaining production implementation is owned
-only by
-`docs/aegis/plans/2026-06-05-chainless-v1-complete-spec-execution-plan.md`.
+This document records the current single-machine runtime, the approved
+Chainless V1 production topology, and the local-Docker verification boundary.
+The final W11 evidence bundle is recorded under
+`docs/aegis/work/2026-06-05-v1-spec-completion/`.
 
 ## Supported Deployment
 
@@ -40,6 +40,12 @@ direct ports are explicitly required for debugging.
 Compose-managed Nginx routes `/api/v1/*`, `/docs`, and `/openapi.json` to the
 backend and all other traffic to the frontend. SSE buffering is disabled and
 timeouts are extended.
+
+The Nginx site config uses Docker DNS (`127.0.0.11`) and variable-based
+`proxy_pass` targets for `backend:8000` and `frontend:3000`. This avoids stale
+upstream IPs after `backend` or `frontend` is rebuilt/recreated; do not replace
+it with static `upstream` blocks unless you also prove rebuild-safe DNS
+refresh.
 
 HTTP is the default profile and does not reference certificate files. To enable
 TLS, provide `nginx/certs/fullchain.pem` and `nginx/certs/privkey.pem`, then run:
@@ -208,3 +214,14 @@ curl http://localhost/api/v1/health
 Restore is intentionally explicit and does not drop the database for you. If a
 full destructive restore is needed, first create a fresh backup, then recreate
 the database volume in a maintenance window.
+
+For a non-destructive restore proof, use the isolated test stack drill instead
+of restoring into the production database:
+
+```powershell
+docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test sh -lc "PYTHONPATH=/repo/backend python /repo/backend/scripts/restore_drill.py"
+```
+
+The drill fails closed unless it is connected to `db-test/chainless_test`,
+creates a temporary restore database, verifies seed and fixture records, then
+drops the temporary database and removes the dump/source fixture.

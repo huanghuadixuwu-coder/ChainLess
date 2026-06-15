@@ -31,6 +31,7 @@ async def execute_tool(tool_name: str, args: dict, context: dict | None = None):
 
     # Check MCP tools
     if tool_name.startswith("mcp__"):
-        return await mcp_manager.execute(tool_name, args)
+        tenant_id = (context or {}).get("tenant_id")
+        return await mcp_manager.execute(tool_name, args, tenant_id)
 
     raise ValueError(f"Tool not found: {tool_name}")

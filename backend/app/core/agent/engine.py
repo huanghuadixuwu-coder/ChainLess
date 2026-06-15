@@ -33,6 +33,29 @@ MAX_TOKENS_PER_TURN = 100_000
 MAX_CONSECUTIVE_ERRORS = 3
 
 
+def select_execution_route(prompt: str, tools: list[dict] | None = None) -> str:
+    """Choose the deterministic first route for a turn.
+
+    The router is intentionally conservative: it only chooses a specialized
+    path when the prompt and exposed tools make that path unambiguous.
+    Otherwise the normal ReAct loop remains the fallback.
+    """
+    tool_names = {
+        tool.get("function", {}).get("name", "")
+        for tool in (tools or ALL_TOOLS)
+    }
+    text = prompt.lower()
+    if any(word in text for word in ("weather", "forecast", "temperature", "天气")):
+        return "direct_tool:weather_get" if "weather_get" in tool_names else "react"
+    if any(word in text for word in ("run python", "execute python", "script", "代码", "计算")):
+        return "code_as_action" if "code_as_action" in tool_names else "react"
+    if any(word in text for word in ("search", "fetch", "browse", "查", "搜索")):
+        web_tools = {"web_search", "web_fetch"} & tool_names
+        if len(web_tools) == 1:
+            return f"direct_tool:{next(iter(web_tools))}"
+    return "react"
+
+
 class _TurnBudget:
     """One shared token ledger for the parent turn and all dynamic children."""
 
@@ -69,6 +92,10 @@ async def run_agent(
     conversation_id: str | None = None,
     run_id: str | None = None,
     sub_agent_execution: Any | None = None,
+    max_iterations: int | None = None,
+    max_tokens_per_turn: int | None = None,
+    max_consecutive_errors: int | None = None,
+    authorized_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
 
@@ -103,8 +130,15 @@ async def run_agent(
     """
     iteration = 0
     tokens_used = 0
+    max_iterations = MAX_ITERATIONS if max_iterations is None else max_iterations
+    max_tokens_per_turn = (
+        MAX_TOKENS_PER_TURN if max_tokens_per_turn is None else max_tokens_per_turn
+    )
+    max_consecutive_errors = (
+        MAX_CONSECUTIVE_ERRORS if max_consecutive_errors is None else max_consecutive_errors
+    )
     run_id = run_id or str(uuid.uuid4())
-    turn_budget = None if sub_agent_execution is not None else _TurnBudget(MAX_TOKENS_PER_TURN)
+    turn_budget = None if sub_agent_execution is not None else _TurnBudget(max_tokens_per_turn)
     consecutive_errors = 0
     active_tools = ALL_TOOLS if tools is None else tools
     if is_sub_agent:
@@ -118,30 +152,33 @@ async def run_agent(
         for tool in active_tools
         if tool.get("function", {}).get("name")
     }
+    runtime_authorized_tool_names = (
+        None if authorized_tool_names is None else set(authorized_tool_names)
+    )
     configured_tool_risks = {
         tool.get("function", {}).get("name"): tool.get("risk")
         for tool in active_tools
         if tool.get("function", {}).get("name") and tool.get("risk")
     }
 
-    while iteration < MAX_ITERATIONS:
+    while iteration < max_iterations:
         # ---- Guard: token budget ----
         if turn_budget is not None:
             tokens_used = turn_budget.consumed
-        if tokens_used >= MAX_TOKENS_PER_TURN:
+        if tokens_used >= max_tokens_per_turn:
             yield {
                 "type": "error",
                 "code": "TOKEN_BUDGET_EXHAUSTED",
-                "message": f"Exceeded {MAX_TOKENS_PER_TURN} token budget",
+                "message": f"Exceeded {max_tokens_per_turn} token budget",
             }
             break
 
         # ---- Guard: circuit breaker ----
-        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+        if consecutive_errors >= max_consecutive_errors:
             yield {
                 "type": "error",
                 "code": "CIRCUIT_BREAKER",
-                "message": f"{MAX_CONSECUTIVE_ERRORS} consecutive tool errors",
+                "message": f"{max_consecutive_errors} consecutive tool errors",
             }
             break
 
@@ -157,8 +194,16 @@ async def run_agent(
                 await sub_agent_execution.consume_budget(1)
                 tokens_used += 1
             else:
-                await turn_budget.consume(1)
-                tokens_used = turn_budget.consumed
+                try:
+                    await turn_budget.consume(1)
+                    tokens_used = turn_budget.consumed
+                except RuntimeError:
+                    yield {
+                        "type": "error",
+                        "code": "TOKEN_BUDGET_EXHAUSTED",
+                        "message": f"Exceeded {max_tokens_per_turn} token budget",
+                    }
+                    return
 
             if delta["type"] == "text":
                 yield {"type": "text", "content": delta["content"]}
@@ -181,12 +226,21 @@ async def run_agent(
         # ---- Step 3: Execute each tool call ----
         destructive_hit = False
         for tc in tool_calls_buffer.values():
-            if tc["name"] not in allowed_tool_names:
+            if (
+                tc["name"] not in allowed_tool_names
+                or (
+                    runtime_authorized_tool_names is not None
+                    and tc["name"] not in runtime_authorized_tool_names
+                )
+            ):
                 consecutive_errors += 1
                 yield {
                     "type": "tool_error",
                     "tool_call_id": tc["id"],
                     "name": tc["name"],
+                    "code": "TOOL_NOT_AUTHORIZED",
+                    "blocked": True,
+                    "rejection_reason": "Tool is not pre-authorized for this run",
                     "error": f"tool is not authorized for this run: {tc['name']}",
                     "consecutive": consecutive_errors,
                 }

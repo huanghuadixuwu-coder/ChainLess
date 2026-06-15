@@ -17,6 +17,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.observability import increment_runtime_metric
 from app.models.artifact import Artifact
 
 
@@ -111,6 +112,7 @@ async def capture_file_write_artifact(
             )
             await db.commit()
         except Exception:
+            increment_runtime_metric("artifact_failures")
             await db.rollback()
             if artifact is not None:
                 _delete_artifact_files(artifact)
@@ -139,6 +141,7 @@ async def create_uploaded_artifact(
         tenant_uuid,
         requested_storage_bytes,
     ):
+        increment_runtime_metric("artifact_quota_rejections")
         raise ArtifactQuotaExceededError("Tenant artifact quota exceeded")
 
     now = datetime.now(timezone.utc)
@@ -260,10 +263,12 @@ async def read_artifact_content(artifact: Artifact, *, content_kind: str) -> str
     """Read stored content or diff from the managed artifact volume."""
     relative_path = artifact.content_path if content_kind == "content" else artifact.diff_path
     if not relative_path:
+        increment_runtime_metric("artifact_failures")
         raise FileNotFoundError(f"Artifact {content_kind} is not stored")
     path = _safe_storage_path(relative_path)
     if not path.is_file():
         artifact.state = ARTIFACT_STATE_MISSING
+        increment_runtime_metric("artifact_failures")
         raise FileNotFoundError(f"Artifact {content_kind} is missing")
     return path.read_text(encoding="utf-8")
 
@@ -314,6 +319,7 @@ async def _create_file_write_artifact(
         tenant_id,
         requested_storage_bytes,
     ):
+        increment_runtime_metric("artifact_quota_rejections")
         state = ARTIFACT_STATE_QUOTA_EXCEEDED
         storage_content = b""
         storage_diff = b""

@@ -9,6 +9,7 @@ const { cleanupConversations } = require("./qa/cleanup-registry.cjs");
 const { getSuite, registerSuite } = require("./qa/suite-registry.cjs");
 const { createArtifactsSuite } = require("./qa/artifacts-suite.cjs");
 const { createRichInputSuite } = require("./qa/rich-input-suite.cjs");
+const { createSpecCompleteSuite } = require("./qa/spec-complete.cjs");
 
 function parseArgs(argv) {
   const args = {
@@ -121,7 +122,11 @@ function nowStamp() {
 }
 
 function isIgnorableRequestFailure(url, errorText) {
-  return url.includes("_rsc=") && errorText.includes("net::ERR_ABORTED");
+  if (!errorText.includes("net::ERR_ABORTED")) return false;
+  if (url.includes("_rsc=")) return true;
+  if (url.includes("/favicon.ico")) return true;
+  if (/\/api\/v1\/conversations\/[0-9a-f-]{36}$/i.test(url)) return true;
+  return false;
 }
 
 async function waitForTextToDisappear(page, text, timeoutMs) {
@@ -153,7 +158,8 @@ function readRequestBody(request) {
   });
 }
 
-async function startOpenAiMockServer(prefix) {
+async function startOpenAiMockServer(prefix, options = {}) {
+  const mode = options.mode || "provider-switch";
   const calls = [];
   const server = http.createServer(async (request, response) => {
     try {
@@ -180,36 +186,120 @@ async function startOpenAiMockServer(prefix) {
       }
 
       if (request.url.endsWith("/chat/completions")) {
-        const content = `provider-switch-ok:${prefix}`;
+        const messages = Array.isArray(body.messages) ? body.messages : [];
+        const lastUserMessage = [...messages]
+          .reverse()
+          .find((message) => message && message.role === "user");
+        const prompt = String(lastUserMessage && lastUserMessage.content ? lastUserMessage.content : "")
+          .toLowerCase();
+        const lastMessage = messages[messages.length - 1] || {};
+        const base = {
+          id: "chatcmpl-chainless-qa",
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: body.model || "w5-browser-mock",
+        };
+        const writeFrame = (payload) => {
+          response.write(`data: ${JSON.stringify(payload)}\n\n`);
+        };
+        const writeTextStream = (content) => {
+          writeFrame({
+            ...base,
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+          });
+          writeFrame({
+            ...base,
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          });
+          response.write("data: [DONE]\n\n");
+          response.end();
+        };
+        const writeToolStream = (callId, name, args) => {
+          writeFrame({
+            ...base,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: callId,
+                      type: "function",
+                      function: { name, arguments: "" },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          });
+          writeFrame({
+            ...base,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      function: { arguments: JSON.stringify(args) },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          });
+          writeFrame({
+            ...base,
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          });
+          response.write("data: [DONE]\n\n");
+          response.end();
+        };
+
         if (body.stream) {
           response.writeHead(200, {
             "content-type": "text/event-stream",
             "cache-control": "no-cache",
             connection: "keep-alive",
           });
-          const base = {
-            id: "chatcmpl-chainless-qa",
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
-            model: body.model || "w5-browser-mock",
-          };
-          response.write(
-            `data: ${JSON.stringify({
-              ...base,
-              choices: [{ index: 0, delta: { content }, finish_reason: null }],
-            })}\n\n`
-          );
-          response.write(
-            `data: ${JSON.stringify({
-              ...base,
-              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-            })}\n\n`
-          );
-          response.write("data: [DONE]\n\n");
-          response.end();
+          if (mode === "workstream10") {
+            if (lastMessage.role === "tool") {
+              writeTextStream(`tool-result-ok:${prefix}`);
+              return;
+            }
+            if (prompt.includes("web_fetch") || prompt.includes("example.com")) {
+              writeToolStream(`call_${prefix}_web_fetch`, "web_fetch", {
+                url: "https://example.com",
+              });
+              return;
+            }
+            if (prompt.includes("code_as_action") || prompt.includes("prints 42")) {
+              writeToolStream(`call_${prefix}_code`, "code_as_action", {
+                script: "print(42)",
+              });
+              return;
+            }
+            if (prompt.includes("shell_exec") || prompt.includes("date")) {
+              writeToolStream(`call_${prefix}_shell`, "shell_exec", {
+                command: "date",
+              });
+              return;
+            }
+            writeTextStream("WS10 chat SSE ok.");
+            return;
+          }
+
+          writeTextStream(`provider-switch-ok:${prefix}`);
           return;
         }
 
+        const content =
+          mode === "workstream10"
+            ? "WS10 chat SSE ok."
+            : `provider-switch-ok:${prefix}`;
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
@@ -508,10 +598,13 @@ async function runSmoke(page, args, reportDir) {
 
 async function runWorkstream10(page, args, reportDir) {
   const apiBase = apiBaseFor(args.url, args.apiUrl);
+  const prefix = `ws10-${Date.now()}`;
   const steps = [];
   const screenshots = [];
   const createdConversationIds = [];
   let token = "";
+  let mockProvider = null;
+  let providerName = "";
 
   try {
     await prepareWorkstreamIdentity(apiBase, args);
@@ -519,6 +612,32 @@ async function runWorkstream10(page, args, reportDir) {
     if (!token) throw new Error("Login did not store a token");
     steps.push({ name: "auth-login", ok: true });
     screenshots.push(await screenshot(page, reportDir, "01-auth-login.png"));
+
+    mockProvider = await startOpenAiMockServer(prefix, { mode: "workstream10" });
+    providerName = `${prefix}-provider`;
+    await apiRequest(
+      apiBase,
+      "/api/v1/llm-providers/",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: providerName,
+          api_base: mockProvider.baseUrl,
+          api_key: `sk-${prefix}`,
+          model: "w10-browser-mock",
+          embedding_model: "embedding-3",
+          is_default: true,
+        }),
+      },
+      token
+    );
+    await apiRequest(
+      apiBase,
+      `/api/v1/llm-providers/${encodeURIComponent(providerName)}/default`,
+      { method: "POST" },
+      token
+    );
+    steps.push({ name: "mock-provider-default", ok: true, providerName });
 
     await page.getByRole("button", { name: "New Chat" }).first().click();
     await page.waitForFunction(() => Boolean(window.localStorage.getItem("activeConversationId")), null, {
@@ -557,20 +676,22 @@ async function runWorkstream10(page, args, reportDir) {
     await page.keyboard.press("Control+Enter");
     await page.getByText("web_fetch", { exact: true }).waitFor({ timeout: 60000 });
     steps.push({ name: "tool-card-web-fetch", ok: true });
-    await page.getByTitle("Toggle preview").click();
-    await page.getByRole("button", { name: "Files" }).click();
     await page
-      .getByRole("complementary")
-      .getByText(/url/i)
+      .getByText("https://example.com", { exact: false })
+      .first()
       .waitFor({ timeout: args.timeoutMs });
-    steps.push({ name: "right-panel-files", ok: true });
+    steps.push({ name: "tool-card-web-fetch-payload", ok: true });
     screenshots.push(await screenshot(page, reportDir, "03-tool-panel.png"));
 
     await input.fill("Use code_as_action to run Python that prints 42.");
     await page.keyboard.press("Control+Enter");
     await page.getByText("code_as_action", { exact: true }).waitFor({ timeout: 90000 });
     await page.getByText("42", { exact: true }).first().waitFor({ timeout: 90000 });
-    await page.getByRole("button", { name: "Terminal" }).click();
+    const terminalButton = page.getByRole("button", { name: "Terminal" });
+    if (!(await terminalButton.isVisible().catch(() => false))) {
+      await page.getByTitle("Toggle preview").click();
+    }
+    await terminalButton.click();
     await page
       .getByRole("complementary")
       .getByText("42", { exact: true })
@@ -593,6 +714,20 @@ async function runWorkstream10(page, args, reportDir) {
     if (token && createdConversationIds.length) {
       const cleanup = await cleanupConversations(apiBase, token, createdConversationIds);
       steps.push({ name: "cleanup-conversations", ok: cleanup.every((item) => item.ok), cleanup });
+    }
+    if (token && providerName) {
+      const cleanup = await safeApiCall("provider-delete", () =>
+        apiRequest(
+          apiBase,
+          `/api/v1/llm-providers/${encodeURIComponent(providerName)}`,
+          { method: "DELETE" },
+          token
+        )
+      );
+      steps.push({ name: "cleanup-mock-provider", ok: cleanup.ok, cleanup });
+    }
+    if (mockProvider) {
+      await mockProvider.close().catch(() => {});
     }
     await page.evaluate(() => window.localStorage.removeItem("activeConversationId")).catch(() => {});
   }
@@ -928,6 +1063,19 @@ registerSuite(
     screenshot,
     applyBootstrapAdminCredentials,
     readRequestBody,
+  })
+);
+registerSuite(
+  "spec-complete",
+  createSpecCompleteSuite({
+    apiBaseFor,
+    apiRequest,
+    loginViaUi,
+    applyBootstrapAdminCredentials,
+    runSmoke,
+    runWorkstream10,
+    runSettings,
+    getSuite,
   })
 );
 

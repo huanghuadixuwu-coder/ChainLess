@@ -10,24 +10,29 @@
 - [x] Workstream 5: platform settings and administration surface
 - [x] Workstream 6: real artifacts, files, and diff flow
 - [x] Workstream 7: rich input and keyboard shortcuts
-- [ ] Workstream 8: proactive safety, Feishu, eval, and hallucination guard
-- [ ] Workstream 9: three-tenant concurrency and isolation
-- [ ] Workstream 11: final spec-complete QA and evidence
+- [x] Workstream 8: proactive safety, Feishu, eval, and hallucination guard
+- [x] Workstream 9: three-tenant concurrency and isolation
+- [x] Workstream 11: final spec-complete QA and evidence
 
 ## Active Slice
 
-No active implementation slice. Workstream 7 is closed; Workstream 8 is next.
+No active implementation slice. Workstream 11 implementation and runtime QA are
+complete in local Docker; final state is waiting only for diff/review closeout
+and no commit is authorized.
 
 ### Slice Card
 
-- Goal: prepare to enter the next mandatory workstream after W7 closure.
+- Goal: close W11 with final spec-complete QA, cleanup, and evidence.
 - Parent plan/spec:
   `docs/aegis/plans/2026-06-05-chainless-v1-complete-spec-execution-plan.md`
-  Workstream 8.
-- Boundary: preserve closed W1-W7/W10 behavior and do not change frontend
+  Workstream 11.
+- Boundary: preserve closed W1-W8/W10 behavior and do not change frontend
   style.
-- Verification: defined by the Workstream 8 plan slice.
-- Stop: Workstream 8 acceptance is fully evidenced.
+- Verification: local Docker full backend/frontend tests, API probe, browser
+  QA, eval, backup/restore, performance probes, cleanup audit, and matrix/ledger
+  updates.
+- Stop: Workstream 11 acceptance is evidenced; live GLM and real Feishu receipt
+  remain explicit external-credential proof boundaries, not hidden tails.
 
 ## Completed Todos
 
@@ -294,6 +299,118 @@ No active implementation slice. Workstream 7 is closed; Workstream 8 is next.
   PostgreSQL, and zero matching `/data/artifacts` files.
 - W7 final independent review returned `REVIEW: PASS` with no Critical,
   Important, or Minor findings blocking W7 closure.
+- W8 completed proactive pre-authorization, blocked-tool logging, event and
+  delayed proactive triggers, real Feishu-compatible delivery proof, eval
+  deterministic fallback and CI gate, hallucination/citation/tool evidence
+  checks, agent route/budget/circuit-breaker contracts, memory source/index and
+  exact five-memory pgvector gate, Redis short-term context, safe instruction
+  reload, MCP stdio/HTTP/SSE lifecycle/risk behavior, OpenAI tool-schema
+  validation, real filesystem MCP discovery/invocation, risky/destructive
+  cancellation evidence, and secret-free metrics.
+- W8 found and fixed five runtime/spec gaps during verification: eval failed
+  when the default tenant had no configured LLM provider, `run_agent` default
+  constants were bound too early for monkeypatched budget tests, sandbox-proxy
+  health reported expired idle containers as healthy until first allocation,
+  fixed zero-value W8 metrics were upgraded to real runtime/file-backed
+  summaries, and an old W5 proactive test task remained in Redis.
+- W8 fresh local-Docker evidence: W8 target gate returned `40 passed`; full
+  backend returned `325 passed, 4 skipped, 1 warning`; clean-start returned
+  `ok: true`; `basic` eval passed `10 / 10`; `spec_complete` eval passed
+  `4 / 4`; deliberate impossible threshold `--min-pass-rate 1.1` exited `1`;
+  authenticated `/system/metrics` reported eval outcomes as `pass=14`,
+  `fail=0`, `error=0`; W8 Feishu/proactive live probe returned `ok: true`;
+  proactive Redis inspection returned zero tasks, zero runs, and zero unsafe
+  records.
+- W8 scope restraint: no frontend file, style, layout, spacing, color, or
+  visual-language change was made.
+- W9 completed the original three-tenant concurrency/isolation success
+  criterion in an isolated local-Docker test environment with fail-closed
+  environment guards, exact-prefix tenant creation, at least five concurrent
+  chat/tool/memory/provider/channel/proactive operations per tenant,
+  cross-tenant denial checks for conversation, artifact, provider, agent,
+  memory, skill, proactive task, and MCP/tool scope, and secret-free
+  metrics/error checks.
+- W9 fixed three runtime/test-boundary defects found by verification: MCP
+  manager state was globally visible across tenants, detailed health could
+  exceed p95 because sandbox proxy checks reused slow/unresolvable test
+  proxy configuration, and DB health used a widening asyncpg pool that could
+  create connection storms under concurrent health probes.
+- W9 post-review repair removed MCP Tools API `TypeError` fallbacks that could
+  retry without tenant owner scope, and expanded the isolation matrix to deny
+  cross-tenant provider, agent, and skill mutations plus prove source-resource
+  survival.
+- W9 fresh local-Docker evidence: exact pytest gate returned `1 passed`;
+  final Docker HTTP probe returned `ok: true`, `check_count: 42`,
+  `p95_ms: 393.4`, `failures: []`, and `mock_calls: 10`; focused post-review
+  gate returned `7 passed`; related regression returned `52 passed`.
+- W9 final read-only review found no Critical or Important findings remaining;
+  its only Minor test cleanup note was fixed by owner-scoping the API contract
+  test's MCP unregister cleanup.
+- W9 test-runtime boundary: non-live `backend-test` and `backend-test-server`
+  now use a loopback sandbox proxy URL for fast degraded health when the
+  live-docker proxy profile is not started; `backend-test-live` explicitly
+  keeps `http://sandbox-proxy-test:9001`.
+- W9 scope restraint: no frontend file, style, layout, spacing, color, or
+  visual-language change was made. `scripts/windows-browser-qa.cjs` was not
+  modified because W9 has no browser interaction surface; the standalone
+  Docker QA entrypoint is `scripts/qa/multitenant.cjs`.
+
+## Workstream 11 Checkpoint
+
+- W11 completed the final spec-complete QA and evidence bundle in local Docker
+  Desktop only. The retired remote server was not used.
+- Fresh production compose gate:
+  `docker-compose up -d --build` exited `0`; `docker-compose ps` showed
+  `chainless-nginx`, db, redis, backend, frontend, worker, sandbox-proxy, and
+  sandbox up/healthy where health checks apply.
+- Nginx stale upstream repair is verified: after backend rebuild, Nginx stayed
+  running and both public health plus in-container Nginx-to-backend health
+  returned `{"status":"ok"}`.
+- API/runtime probes:
+  `clean_start_probe.py` returned migrations `head`, seed `idempotent`, and
+  login-ready default admin; `production_boundary_probe.py` returned
+  `ok: true`, admin/member/no-auth boundary status codes, body-free audit, and
+  sandbox output `42`; `spec_complete_probe.py` returned `ok: true` and
+  residue zero.
+- Test gates:
+  full backend returned `339 passed, 4 skipped, 3 warnings`; frontend lint
+  exited `0`; frontend production build exited `0`; W11 probe/sandbox policy
+  focused tests returned `13 passed`.
+- Browser gate:
+  Windows Chrome `spec-complete` through `http://localhost` returned
+  `ok: true`, zero console/page/request/429 errors, and cleanup verification.
+  Report:
+  `.gstack/qa-reports/local/spec-complete-2026-06-15T06-13-38-067Z`.
+- Eval gates:
+  `basic` passed `10 / 10`; `spec_complete` passed `4 / 4` and logged two
+  real parallel `spawn_sub_agent` artifacts from Code-as-Action.
+- Backup/restore:
+  backup produced `/backups/chainless-20260615-061030.sql` (212K);
+  `restore_drill.py` restored into `chainless_restore_drill_989008f95c3b`,
+  verified default seed plus fixture records, then dropped the restore DB and
+  removed the dump/source fixture.
+- Performance:
+  Fibonacci Code-as-Action returned exact stdout `55`; HackerNews top-10
+  Code-as-Action ran one warmup plus five measured runs with max `757.6ms` and
+  p50 `707.61ms`, each below `5000ms` with sandbox
+  `allocated/completed/deleted` evidence.
+- Cleanup:
+  Postgres QA-prefix residue counts returned zero across tenant, user,
+  provider, agent, conversation, message, memory, skill, artifact, tool config,
+  channel config, and confirmation tables. Redis scan showed no QA-prefix keys.
+- External proof boundaries:
+  current local Docker has `GLM_API_KEY_SET|False`, `default_providers|0`, and
+  `all_providers|0`, so W11 verifies the configurable OpenAI-compatible
+  provider runtime with disposable mock providers and does not claim a live GLM
+  API call. Real Feishu group receipt remains credential-dependent by the
+  approved reconciliation.
+- Scope restraint:
+  W11 did not modify frontend styles, visual language, layout intent, scroll
+  behavior, or user-facing design. Browser script changes are QA logic only.
+- W11 stop condition:
+  all implementation/testable local-Docker spec-complete gates are evidenced,
+  no QA data remains, and the remaining non-claims are explicit
+  external-credential proof boundaries rather than hidden work items.
 
 ## Evidence Refs
 
@@ -317,29 +434,41 @@ None.
 
 ## Next Step
 
-Enter Workstream 8: proactive safety, Feishu, eval, and hallucination guard.
-Preserve closed W1-W7/W10 behavior, keep browser-created test data scoped and
-deleted, and
-continue using local Docker Desktop only.
+Run final diff/review closeout and do not commit or push unless the user
+explicitly asks.
 
 ## Resume State Hint
 
-Resume by reading this checkpoint and the W8 section of the parent execution
-plan. W1, W2, W3, W4, W5, W6, W7, and W10 are closed by direct evidence.
+Resume by reading this checkpoint, the W11 section of the parent execution
+plan, `90-evidence.md`, and `original-gate-ledger.md`. W1, W2, W3, W4, W5,
+W6, W7, W8, W9, W10, and W11 are closed by local-Docker evidence, except that
+live GLM and real Feishu group receipt remain external-credential proof
+boundaries.
 
 ## Drift Check
 
 - Original intent served: yes
 - Mandatory order preserved: yes
 - Compatibility boundary preserved: yes
-- New owner/fallback introduced: W7 intentionally adds
-  `backend/app/api/v1/uploads.py` as the upload route owner,
-  `backend/app/api/v1/tools.py` available-tools metadata for the picker,
-  `frontend/src/components/chat/tool-picker.tsx`,
-  `frontend/src/components/chat/file-attachment.tsx`, and
-  `frontend/src/components/chat/command-palette.tsx` as focused frontend owners
-  for the new input affordances. No duplicate upload or tool-picker owner is
-  permitted.
+- New owner/fallback introduced: W8 intentionally adds
+  `backend/app/core/memory/short_term.py`,
+  `backend/app/core/observability/runtime_metrics.py`,
+  `backend/app/core/tools/schema.py`,
+  `backend/scripts/w8_feishu_proactive_probe.py`, and
+  `.github/workflows/eval.yml` as focused owners for short-term Redis context,
+  tool-schema validation, live W8 Feishu/proactive proof, and eval CI. W8 also
+  adds `backend/scripts/mcp_filesystem_server.py` as the real filesystem MCP
+  verification fixture for the original `mcp__fs__list_directory` gate.
+  Runtime metrics are intentionally in-process plus file-backed for eval
+  results, and do not store prompts, responses, webhook URLs, or secrets. The
+  deterministic eval gateway is retained only as a no-secret eval fallback when
+  a default provider is absent; real chat runtime still uses configured DB
+  providers. W9 intentionally adds `backend/scripts/assert_test_environment.py`,
+  `backend/scripts/multitenant_probe.py`, `backend/tests/test_multitenant_concurrency.py`,
+  and `scripts/qa/multitenant.cjs` as isolated test/probe owners. W9 also
+  adds tenant-aware MCP manager scoping and bounded realtime health probes; the
+  old global MCP manager visibility is retired for tenant-authenticated paths.
 - Retirement track explicit: yes
 - Evidence sufficient for next action: yes
-- Decision: Workstream 7 closed; continue to Workstream 8
+- Decision: Workstream 11 implementation/QA closed; continue to final review
+  and handoff without committing.

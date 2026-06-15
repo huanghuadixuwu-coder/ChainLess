@@ -6,12 +6,15 @@ the API response is not blocked by the LLM embedding call.
 """
 
 import asyncio
+import json
 import logging
 import re
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.memory import Memory
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,7 @@ async def create_memory(
 
     if embedding is None:
         asyncio.ensure_future(_enqueue_embedding_safe(str(mem.id), content))
+    write_memory_source(mem)
 
     return mem
 
@@ -234,3 +238,87 @@ async def get_memories_for_session(
         return merged
 
     return await search_by_tags(db, tenant_id, [], limit)
+
+
+def memory_tenant_root(base_path: str, tenant_id: str) -> Path:
+    """Return the tenant-scoped memory source directory."""
+    return Path(base_path) / str(tenant_id) / "persistent"
+
+
+def memory_index_path(base_path: str, tenant_id: str) -> Path:
+    """Return the tenant-scoped MEMORY.md index path."""
+    return memory_tenant_root(base_path, tenant_id) / "MEMORY.md"
+
+
+def _memory_source_filename(memory: Memory) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", memory.name or "memory").strip("-")
+    return f"{memory.type}-{name}-{memory.id}.md"
+
+
+def render_memory_source(memory: Memory) -> str:
+    """Render one memory as a durable markdown source file."""
+    metadata = {
+        "id": str(memory.id),
+        "type": memory.type,
+        "name": memory.name,
+        "tags": memory.tags or [],
+        "description": memory.description,
+        "created_at": memory.created_at.isoformat() if memory.created_at else None,
+        "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
+    }
+    return (
+        "---\n"
+        f"{json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
+        "---\n\n"
+        f"# {memory.name}\n\n"
+        f"{memory.content or ''}\n"
+    )
+
+
+def write_memory_source(memory: Memory, base_path: str | None = None) -> Path:
+    """Write a memory source file and refresh the tenant MEMORY.md index."""
+    root = memory_tenant_root(base_path or settings.memory_base_path, str(memory.tenant_id))
+    root.mkdir(parents=True, exist_ok=True)
+    source_path = root / _memory_source_filename(memory)
+    source_path.write_text(render_memory_source(memory), encoding="utf-8")
+    _refresh_memory_index(root)
+    return source_path
+
+
+def _refresh_memory_index(root: Path) -> None:
+    entries = sorted(path for path in root.glob("*.md") if path.name != "MEMORY.md")
+    lines = [
+        "# MEMORY.md",
+        "",
+        "This tenant-scoped index is generated from durable memory source files.",
+        "",
+    ]
+    for path in entries:
+        lines.append(f"- [{path.stem}]({path.name})")
+    (root / "MEMORY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_memory_index(base_path: str, tenant_id: str) -> str:
+    """Read the tenant MEMORY.md index, returning an empty string if missing."""
+    path = memory_index_path(base_path, tenant_id)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def build_memory_context(memories: list[Memory], budget_chars: int | None = None) -> str:
+    """Render cited memories within a configurable injection budget."""
+    remaining = budget_chars if budget_chars is not None else settings.memory_injection_budget_chars
+    parts: list[str] = []
+    for memory in memories:
+        tag_str = " ".join(f"#{tag}" for tag in (memory.tags or []))
+        line = f"- [memory:{memory.name}] {memory.content or ''} {tag_str}".strip()
+        if len(line) > remaining:
+            if remaining <= 0:
+                break
+            line = line[: max(0, remaining - 15)] + " [truncated]"
+        parts.append(line)
+        remaining -= len(line)
+        if remaining <= 0:
+            break
+    return "\n".join(parts)

@@ -14,6 +14,7 @@ from arq.connections import RedisSettings
 
 from app.config import settings
 from app.core.channel.configuration import resolve_channel_configuration
+from app.core.tools.classifier import is_pre_authorized
 from app.core.secrets import is_sensitive_key, safe_error_message
 from app.core.ops.health import write_worker_heartbeat
 
@@ -46,6 +47,10 @@ class ProactiveTask:
         tenant_id: Optional[str] = None,
         enabled: bool = True,
         created_at: Optional[str] = None,
+        authorized_tools: Optional[list[str]] = None,
+        trigger_type: str = "cron",
+        event_type: Optional[str] = None,
+        execute_at: Optional[str] = None,
     ):
         self.task_id = task_id
         self.cron_expr = cron_expr
@@ -55,6 +60,10 @@ class ProactiveTask:
         self.tenant_id = tenant_id
         self.enabled = enabled
         self.created_at = created_at or datetime.now(timezone.utc).isoformat()
+        self.authorized_tools = authorized_tools or []
+        self.trigger_type = trigger_type
+        self.event_type = event_type
+        self.execute_at = execute_at
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +75,10 @@ class ProactiveTask:
             "tenant_id": self.tenant_id,
             "enabled": self.enabled,
             "created_at": self.created_at,
+            "authorized_tools": self.authorized_tools,
+            "trigger_type": self.trigger_type,
+            "event_type": self.event_type,
+            "execute_at": self.execute_at,
         }
 
     @classmethod
@@ -79,6 +92,10 @@ class ProactiveTask:
             tenant_id=d.get("tenant_id"),
             enabled=d.get("enabled", True),
             created_at=d.get("created_at"),
+            authorized_tools=list(d.get("authorized_tools") or []),
+            trigger_type=d.get("trigger_type") or d.get("type") or "cron",
+            event_type=d.get("event_type"),
+            execute_at=d.get("execute_at"),
         )
 
 
@@ -187,6 +204,14 @@ def _contains_retired_secret_field(value: object) -> bool:
     return False
 
 
+def _parse_utc_datetime(value: str) -> datetime:
+    """Parse ISO datetimes, accepting the common UTC ``Z`` suffix."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 async def inspect_redis_proactive_state() -> dict[str, Any]:
     """Inspect Redis without changing task state or returning secret values."""
     r = await _get_redis_client()
@@ -262,6 +287,27 @@ async def count_run_records(tenant_id: str | None = None) -> int:
         return 0
 
 
+async def summarize_run_records(tenant_id: str | None = None) -> dict[str, int]:
+    """Return secret-free proactive run counters for metrics."""
+    records = await list_run_records(ARQ_RUN_LOG_LIMIT, tenant_id)
+    summary = {
+        "total": len(records),
+        "blocked": 0,
+        "delivery_failed": 0,
+        "error": 0,
+        "completed": 0,
+    }
+    for record in records:
+        status = str(record.get("status") or "")
+        if status in summary:
+            summary[status] += 1
+        if record.get("blocked_tools"):
+            summary["blocked"] += 1
+        if record.get("delivery", {}).get("ok") is False:
+            summary["delivery_failed"] += 1
+    return summary
+
+
 async def schedule_task(
     task_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
@@ -269,10 +315,19 @@ async def schedule_task(
     agent_id: str = "default",
     prompt: str = "",
     channel_type: str = "feishu",
+    authorized_tools: Optional[list[str]] = None,
+    trigger_type: str = "cron",
+    event_type: Optional[str] = None,
+    execute_at: Optional[str] = None,
+    enabled: bool = True,
 ) -> ProactiveTask:
     """Register a proactive task for the ARQ worker to execute."""
     await _refresh_tasks_from_redis()
     tid = task_id or str(uuid4())
+    if execute_at and trigger_type == "cron":
+        trigger_type = "delayed"
+    if event_type and trigger_type == "cron":
+        trigger_type = "event"
     task = ProactiveTask(
         task_id=tid,
         cron_expr=cron_expr,
@@ -280,6 +335,11 @@ async def schedule_task(
         prompt=prompt,
         channel_type=channel_type,
         tenant_id=tenant_id,
+        authorized_tools=authorized_tools,
+        trigger_type=trigger_type,
+        event_type=event_type,
+        execute_at=execute_at,
+        enabled=enabled,
     )
     _tasks[tid] = task.to_dict()
     await _save_tasks_to_redis(_tasks)
@@ -334,6 +394,17 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
         }
         await _record_task_run({**result, "created_at": datetime.now(timezone.utc).isoformat()})
         return result
+    if not task.enabled:
+        result = {
+            "status": "skipped",
+            "task_id": task_id,
+            "tenant_id": task.tenant_id,
+            "delivered": False,
+            "error": "Task is disabled",
+        }
+        await _record_task_run({**result, "created_at": datetime.now(timezone.utc).isoformat()})
+        await _audit_proactive_result(task, result)
+        return result
 
     from app.core.agent.code_executor import CODE_AS_ACTION_TOOL
     from app.core.agent.engine import run_agent
@@ -376,7 +447,17 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
 
     response_text = ""
     tool_calls_made: list[str] = []
+    blocked_tools: list[dict[str, Any]] = []
+    blocked_tool_names: set[str] = set()
+    blocked_tool_attempts = 0
     error = None
+    all_tools = ALL_TOOLS + [CODE_AS_ACTION_TOOL]
+    authorized_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in all_tools
+        if tool.get("function", {}).get("name")
+        and is_pre_authorized(tool.get("function", {}).get("name", ""), task.authorized_tools)
+    }
 
     try:
         async for event in run_agent(
@@ -384,13 +465,25 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
             sandbox_manager=sandbox_manager,
             provider="default",
             messages=[{"role": "user", "content": task.prompt}],
-            tools=ALL_TOOLS + [CODE_AS_ACTION_TOOL],
+            tools=all_tools,
+            authorized_tool_names=authorized_tool_names,
             tenant_id=task.tenant_id,
         ):
             if event["type"] == "text":
                 response_text += event["content"]
             elif event["type"] == "tool_call_start":
                 tool_calls_made.append(event["name"])
+            elif event["type"] == "tool_error" and event.get("blocked"):
+                blocked_tool_attempts += 1
+                name = str(event.get("name") or "")
+                if name not in blocked_tool_names:
+                    blocked_tool_names.add(name)
+                    blocked_tools.append(
+                        {
+                            "name": name,
+                            "reason": event.get("rejection_reason") or event.get("error"),
+                        }
+                    )
             elif event["type"] == "error":
                 error = event.get("message", "Unknown error")
     except Exception as exc:
@@ -403,18 +496,32 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
     ]
     if tool_calls_made:
         content_parts.append(f"**Tools used**: {', '.join(tool_calls_made)}")
+    if blocked_tools:
+        content_parts.append(
+            "**Blocked tools**: "
+            + ", ".join(str(item.get("name")) for item in blocked_tools)
+        )
     if error:
         content_parts.append(f"**Error**: {error}")
 
-    delivery = await channel.send_with_result(
-        ChannelMessage(
-            title=f"Proactive Task: {task_id[:8]}",
-            content="\n\n".join(content_parts),
+    if blocked_tools:
+        delivery = {
+            "ok": False,
+            "attempts": 0,
+            "status_code": None,
+            "error": "Blocked unauthorized proactive tool call",
+            "skipped": True,
+        }
+    else:
+        delivery = await channel.send_with_result(
+            ChannelMessage(
+                title=f"Proactive Task: {task_id[:8]}",
+                content="\n\n".join(content_parts),
+            )
         )
-    )
 
     delivered = delivery["ok"]
-    status = "completed" if not error else "error"
+    status = "blocked" if blocked_tools else ("completed" if not error else "error")
     if not delivered and status == "completed":
         status = "delivery_failed"
 
@@ -424,6 +531,10 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
         "tenant_id": task.tenant_id,
         "response_length": len(response_text),
         "tool_calls": tool_calls_made,
+        "authorized_tools": task.authorized_tools,
+        "blocked_tools": blocked_tools,
+        "blocked_tool_attempts": blocked_tool_attempts,
+        "attempt": 1,
         "delivered": delivered,
         "delivery": delivery,
         "error": error,
@@ -431,7 +542,7 @@ async def execute_proactive_task(ctx: dict, task_id: str) -> dict:
     await _record_task_run(
         {
             **result,
-            "prompt": task.prompt[:200],
+            "prompt_sha256": hashlib.sha256(task.prompt.encode("utf-8")).hexdigest(),
             "tenant_id": task.tenant_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -484,6 +595,7 @@ async def _audit_proactive_result(task: ProactiveTask, result: dict[str, Any]) -
                         "status": result.get("status"),
                         "delivered": bool(result.get("delivered")),
                         "tool_calls": list(result.get("tool_calls") or []),
+                        "blocked_tools": list(result.get("blocked_tools") or []),
                     },
                 ),
             )
@@ -492,7 +604,7 @@ async def _audit_proactive_result(task: ProactiveTask, result: dict[str, Any]) -
 
 
 async def check_scheduled_tasks(ctx: dict) -> None:
-    """Enqueue enabled tasks whose cron expression matches the current minute."""
+    """Enqueue enabled cron and due delayed tasks."""
     from croniter import croniter
 
     await write_worker_heartbeat(ctx["redis"])
@@ -504,18 +616,73 @@ async def check_scheduled_tasks(ctx: dict) -> None:
     tasks = await list_tasks()
     enqueued = 0
     for task in tasks:
-        if not task.enabled or not croniter.match(task.cron_expr, min_window):
+        if not task.enabled:
             continue
-        job = await ctx["redis"].enqueue_job(
-            "execute_proactive_task",
-            task.task_id,
-            _job_id=f"proactive:{task.task_id}:{run_key}",
-            _queue_name=ARQ_QUEUE_NAME,
-        )
+        if task.trigger_type == "delayed":
+            if not task.execute_at or _parse_utc_datetime(task.execute_at) > now:
+                continue
+            job = await _enqueue_proactive_job(
+                ctx,
+                task,
+                job_key=f"delayed:{task.task_id}",
+            )
+            await cancel_task(task.task_id, task.tenant_id)
+        elif task.trigger_type != "cron" or not croniter.match(task.cron_expr, min_window):
+            continue
+        else:
+            job = await _enqueue_proactive_job(
+                ctx,
+                task,
+                job_key=f"proactive:{task.task_id}:{run_key}",
+            )
         if job is not None:
             enqueued += 1
             logger.info("Enqueued proactive task '%s' (cron: %s)", task.task_id, task.cron_expr)
     logger.debug("Checked %d tasks, enqueued %d", len(tasks), enqueued)
+
+
+async def trigger_event_tasks(
+    ctx: dict,
+    *,
+    tenant_id: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> int:
+    """Enqueue enabled event-triggered tasks for one tenant/event boundary."""
+    await write_worker_heartbeat(ctx["redis"])
+    enqueued = 0
+    for task in await list_tasks(tenant_id):
+        if (
+            not task.enabled
+            or task.trigger_type != "event"
+            or task.event_type != event_type
+        ):
+            continue
+        job = await _enqueue_proactive_job(
+            ctx,
+            task,
+            job_key=f"event:{task.task_id}:{uuid4().hex}",
+            payload=payload,
+        )
+        if job is not None:
+            enqueued += 1
+    return enqueued
+
+
+async def _enqueue_proactive_job(
+    ctx: dict,
+    task: ProactiveTask,
+    *,
+    job_key: str,
+    payload: dict[str, Any] | None = None,
+):
+    _ = payload
+    return await ctx["redis"].enqueue_job(
+        "execute_proactive_task",
+        task.task_id,
+        _job_id=job_key,
+        _queue_name=ARQ_QUEUE_NAME,
+    )
 
 
 async def startup(ctx: dict) -> None:

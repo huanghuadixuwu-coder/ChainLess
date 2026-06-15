@@ -23,7 +23,8 @@ from app.core.artifacts import (
 from app.core.agent.prompt_builder import build_context
 from app.core.llm.gateway import get_llm_gateway
 from app.core.memory.layered import load_layered_instructions
-from app.core.memory.persistent import get_memories_for_session
+from app.core.memory.persistent import build_memory_context, get_memories_for_session
+from app.core.memory.short_term import append_short_term_context, cleanup_short_term_context
 from app.core.sandbox.manager import get_sandbox_manager
 from app.models.agent import Agent
 from app.models.artifact import Artifact
@@ -233,6 +234,12 @@ async def chat(
         )
     )
     await db.commit()
+    await append_short_term_context(
+        current_user["tenant_id"],
+        str(conv_id),
+        role="user",
+        content=body.content,
+    )
 
     result = await db.execute(
         select(Message)
@@ -303,6 +310,7 @@ async def delete_conversation(
             tenant_id=current_user["tenant_id"],
             conversation_id=conv_id,
         )
+        await cleanup_short_term_context(current_user["tenant_id"], str(conv_id))
         await db.delete(conv)
     else:
         conv.status = "archived"
@@ -433,11 +441,12 @@ async def _build_session_context(
                 "Relevant context from previous sessions. "
                 "When using a memory fact, cite it as [memory:<name>]:"
             ]
-            for memory in memories:
-                tag_str = " ".join(f"#{tag}" for tag in (memory.tags or []))
-                lines.append(
-                    f"- [memory:{memory.name}] {memory.content or ''} {tag_str}".strip()
-                )
+            memory_context = build_memory_context(
+                memories,
+                budget_chars=settings.memory_injection_budget_chars,
+            )
+            if memory_context:
+                lines.append(memory_context)
             parts.append("\n".join(lines))
     except Exception:
         pass

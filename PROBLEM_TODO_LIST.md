@@ -1,8 +1,78 @@
 # Problem Todo List
 
-Last updated: 2026-06-14
+Last updated: 2026-06-15
 
 Purpose: track confirmed issues, suspected issues, and spec/plan verification gaps before and during QA.
+
+## Workstream 11 final spec-complete QA findings (2026-06-15)
+
+- [x] Nginx could keep a stale backend upstream IP after backend rebuild and return `502`.
+  Resolution:
+  [nginx/conf.d/chainless.conf](E:/Chainless/nginx/conf.d/chainless.conf)
+  now uses Docker DNS resolver variables for frontend/backend upstreams, so a
+  backend recreate no longer requires an Nginx restart to route `/api/v1/*`.
+  Evidence:
+  after fresh `docker-compose up -d --build`, Nginx was left running, then
+  `curl.exe -fsS http://127.0.0.1/api/v1/health` and
+  `docker-compose exec -T nginx wget -qO- http://backend:8000/api/v1/health`
+  both returned `{"status":"ok"}`.
+
+- [x] Final spec-complete browser QA needed a real provider path without
+  leaving QA providers behind.
+  Resolution:
+  `scripts/qa/spec-complete.cjs` and `scripts/windows-browser-qa.cjs` create
+  disposable OpenAI-compatible mock providers through the same UI/API provider
+  path, make them default only for the test, then delete them in `finally`.
+  Evidence:
+  Windows Chrome `spec-complete` at
+  `.gstack/qa-reports/local/spec-complete-2026-06-15T06-13-38-067Z`
+  returned `ok: true`, zero console/page/request/429 errors, and
+  cleanup-verification `ok: true`.
+
+- [x] HackerNews performance probe initially risked parsing stale HN markup.
+  Resolution:
+  `backend/scripts/performance_probe.py` parses current HN `athing submission`
+  rows and keeps the sandbox network-none boundary by fetching HN in the
+  backend, then parsing the captured top-10 payload in the sandbox.
+  Evidence:
+  W11 HN probe ran one warmup and five measured Code-as-Action executions; max
+  observed latency was `757.6ms`, p50 was `707.61ms`, every run returned
+  `count: 10`, and every run had sandbox `allocated/completed/deleted`
+  evidence.
+
+- [x] Original Fibonacci Code-as-Action gate was not satisfied by prior `42`
+  demos.
+  Resolution:
+  W11 added `backend/scripts/performance_probe.py --scenario fibonacci`.
+  Evidence:
+  the final W11 run returned exact stdout `55` with sandbox phases
+  `allocated`, `completed`, and `deleted`.
+
+- [x] Backup/restore proof was only partial before W11.
+  Resolution:
+  W11 added `backend/scripts/restore_drill.py`, guarded to the isolated test
+  database.
+  Evidence:
+  backup produced `/backups/chainless-20260615-061030.sql` (212K);
+  restore drill restored into `chainless_restore_drill_989008f95c3b`, verified
+  default tenant/admin/agent and fixture rows, then dropped the temporary
+  database and removed the dump/source fixture.
+
+- [x] Live GLM-4.5 Air proof cannot be claimed in the current local Docker
+  environment.
+  Evidence:
+  `GLM_API_KEY_SET|False`, `default_providers|0`, and `all_providers|0`.
+  Resolution:
+  W11 verifies the configurable OpenAI-compatible provider runtime path with
+  disposable mock providers and records live GLM as an external-credential proof
+  boundary instead of falsely claiming a real GLM API call.
+
+- [x] W11 cleanup must prove no QA data remains.
+  Evidence:
+  Postgres QA-prefix residue counts returned zero for tenant, user, provider,
+  agent, conversation, message, memory, skill, artifact, tool configuration,
+  channel configuration, and confirmation tables. Redis scan showed no
+  `ws10`, `w5-final`, `w6-artifacts`, `w7-rich`, or `w11-spec` QA-prefix keys.
 
 ## Workstream 1 authority findings captured (2026-06-05)
 
@@ -1086,3 +1156,209 @@ two-stage review.
   Verification:
   bundled Node `--check scripts\qa\rich-input-suite.cjs` passed, and Docker
   frontend lint/build passed.
+
+## Workstream 8 proactive/eval/runtime findings
+
+- [x] W8 planned target tests were absent before this slice.
+  Evidence:
+  the W8 plan referenced proactive authorization, eval, observability, runtime
+  limit, instruction reload, memory source, MCP transport, tool cancellation,
+  event trigger, and delayed task tests that did not exist yet.
+  Resolution:
+  added the W8 contract test set and included sandbox pool lifecycle regression
+  coverage after verification found a runtime pool bug.
+  Verification:
+  W8 target gate returned `40 passed`.
+
+- [x] Eval failed when the default tenant had no configured LLM provider.
+  Evidence:
+  `run-eval.py --suite basic --json --min-pass-rate 1.0` initially failed with
+  `Configured LLM provider was not found`; DB inspection showed the default
+  tenant had no default provider row.
+  Resolution:
+  eval now uses a deterministic no-secret gateway fallback only when no default
+  provider is configured, while runtime chat still uses the DB provider owner.
+  Verification:
+  final `basic` eval returned `10 / 10` and `spec_complete` returned `4 / 4`.
+
+- [x] `run_agent` runtime-limit defaults were bound too early.
+  Evidence:
+  full backend initially failed
+  `test_child_consumption_reduces_parent_turn_budget` because monkeypatched
+  runtime constants did not affect defaults captured at function definition.
+  Resolution:
+  `run_agent` now resolves default budgets/circuit-breaker limits at call time.
+  Verification:
+  focused regression passed, and final full backend returned
+  `325 passed, 4 skipped`.
+
+- [x] Sandbox-proxy health could report expired idle containers as healthy.
+  Evidence:
+  `spec_complete` failed once with both child artifacts containing correct
+  output but `status: timeout`; proxy logs showed `/health` had reported a
+  healthy pool, then first allocation removed expired idle containers and cold
+  created replacements inside the child deadline.
+  Resolution:
+  sandbox-proxy `/health` reconciliation now prunes expired containers before
+  reporting and warms fresh replacements.
+  Verification:
+  `test_health_prunes_expired_idle_container_and_replenishes` passed,
+  sandbox pool lifecycle returned `14 passed`, and final `spec_complete`
+  passed `4 / 4` with both child artifacts `success`.
+
+- [x] Proactive run history could leak prompt text or deliver after blocked
+  tool attempts.
+  Evidence:
+  W8 proactive safety required pre-authorized tool enforcement and no prompt or
+  secret leakage in logs/metrics.
+  Resolution:
+  proactive execution records prompt SHA-256 only, records blocked tools and
+  blocked attempts, skips channel delivery when an unauthorized tool is
+  attempted, and keeps delivery evidence bounded.
+  Verification:
+  W8 proactive authorization and observability tests passed, and
+  `inspect_proactive_redis.py` reported zero unsafe records after cleanup.
+
+- [x] MCP lifecycle and transport behavior was narrower than the spec.
+  Evidence:
+  previous evidence covered stdio echo registration/invocation but not HTTP,
+  SSE-style transport, idle reconnect, unavailable server behavior, or default
+  risk classification.
+  Resolution:
+  MCP clients now support stdio, HTTP, and SSE-style HTTP transports, reconnect
+  after idle timeout, stable missing-server errors, and default `risky`
+  classification. A safe filesystem MCP server fixture now registers
+  `mcp__fs__list_directory` for the original discovery/invocation gate.
+  Verification:
+  `tests/test_mcp_transports.py` and `tests/test_eval_contract.py` returned
+  `9 passed`; `spec_complete` includes both filesystem MCP default-risk and
+  real filesystem MCP discovery/invocation probes.
+
+- [x] W8 metrics originally exposed several fixed placeholder counters.
+  Evidence:
+  `/api/v1/system/metrics` included W8 metric names for sub-agent lifecycle,
+  SSE disconnect/errors, artifact failures/quota, and eval outcomes, but the
+  initial implementation returned fixed zero values for those non-proactive
+  counters.
+  Resolution:
+  added a focused runtime metrics owner for secret-free in-process counters and
+  file-backed eval result summaries; SSE, artifact, and sub-agent lifecycle
+  owners now increment their counters, and eval outcomes are summarized from
+  `tests/eval/results/*_results.json`.
+  Verification:
+  observability/upload/eval/streaming tests returned `23 passed`; final
+  authenticated metrics returned `chainless_eval_outcomes_total{status="pass"} 14`,
+  `fail=0`, and `error=0`, with the runtime counters present.
+
+- [x] Exact memory gate was initially weaker than the reconciled spec.
+  Evidence:
+  the first W8 memory test only inspected that source code used
+  `cosine_distance`, but the matrix required at least five memories across
+  different types and a real cosine-distance query.
+  Resolution:
+  added a real test DB gate that inserts five typed memories with
+  1536-dimensional pgvector embeddings and proves `search_memories()` returns
+  the nearest row through actual `cosine_distance` ordering.
+  Verification:
+  `tests/test_memory_source_contract.py` returned `5 passed`.
+
+- [x] A stale W5 proactive QA task remained in Redis.
+  Evidence:
+  W8 live probe cleanup left `task_count: 1`; read-only inspection showed the
+  remaining task prompt was `w5-final-*`, not a user task.
+  Resolution:
+  deleted the exact task id
+  `ab9ffb17-187c-49a3-aed7-0c83984e1822` for tenant
+  `2ded9ecf-0475-4a7d-a8d1-8ddfcd21dfc2`.
+  Verification:
+  final proactive Redis inspection returned `task_count: 0`, `run_count: 0`,
+  and zero unsafe records.
+
+## Workstream 9 multi-tenant concurrency/isolation findings
+
+- [x] MCP registrations were globally visible across tenants.
+  Evidence:
+  W9 resource-family review found `mcp_manager` was a process-global singleton
+  keyed only by server name. Tenant-authenticated tool routes and runtime
+  execution did not pass tenant ownership into list/register/test/delete or
+  execution paths.
+  Resolution:
+  MCP manager registrations now carry an optional owner key. Tools API,
+  conversation tool discovery, and agent tool execution pass `tenant_id`, while
+  `owner=None` remains the global/backward-compatible path.
+  Verification:
+  final W9 pytest and Docker HTTP probe proved tenant B cannot list, test, or
+  delete tenant A's MCP registration; the full W9 probe returned `ok: true`.
+
+- [x] MCP Tools API error compatibility fallbacks could retry without tenant
+  owner scope.
+  Evidence:
+  independent W9 review found `TypeError` fallback paths around MCP test/delete
+  could reopen the old global-manager behavior after tenant-scoped calls
+  failed.
+  Resolution:
+  the compatibility fallbacks were removed from the Tools API, so test and
+  unregister paths now fail closed through the tenant-scoped MCP manager
+  contract.
+  Verification:
+  post-review focused gate returned `7 passed`, and `rg` confirmed the Tools
+  API no longer contains those `TypeError` MCP fallback paths.
+
+- [x] Cross-tenant mutation coverage was incomplete for provider, agent, and
+  skill resources.
+  Evidence:
+  independent W9 review found the isolation matrix covered some denied reads
+  but did not prove provider update/default/delete, agent update/delete, and
+  skill update/delete could not mutate another tenant's resources.
+  Resolution:
+  W9 pytest and Docker HTTP probe now exercise those denied mutations and
+  verify the source tenant's provider, agent, and skill still exist afterward.
+  Verification:
+  exact W9 pytest returned `1 passed`, and the final Docker HTTP probe returned
+  `ok: true`, `check_count: 42`, `p95_ms: 393.4`, and `failures: []`.
+
+- [x] Detailed health p95 could exceed the W9 budget when sandbox proxy was
+  unavailable in the non-live test stack.
+  Evidence:
+  the first Docker HTTP probe had `p95_ms: 7052.11`, then `3959.31`, with
+  `system/health` as the slowest path. Direct diagnosis showed the non-live
+  compose stack configured `SANDBOX_PROXY_URL=http://sandbox-proxy-test:9001`
+  even though the `sandbox-proxy-test` service only starts under the
+  `live-docker` profile.
+  Resolution:
+  `SandboxManager.get_proxy_health()` uses a bounded realtime health timeout,
+  `collect_operational_health()` bounds sandbox checks, and non-live
+  `backend-test`/`backend-test-server` now use
+  `http://127.0.0.1:9001` so the absent proxy degrades fast. The live-docker
+  test service explicitly keeps `http://sandbox-proxy-test:9001`.
+  Verification:
+  three concurrent admin health calls returned about `84ms` each with sandbox
+  degraded by `ConnectError`, and the final W9 probe returned
+  `p95_ms: 393.4`.
+
+- [x] DB health used a widening asyncpg pool that could create connection
+  storms during concurrent health probes.
+  Evidence:
+  focused diagnosis of three concurrent `/api/v1/system/health` calls showed
+  DB checks timing out after about `3s` with `Database health check failed
+  (TimeoutError)`.
+  Resolution:
+  DB health now uses a single small asyncpg health connection with explicit
+  short acquire/query budgets instead of a multi-connection health pool.
+  Verification:
+  focused health tests passed, DB stayed `connected` in concurrent health
+  checks, and the W9 related regression returned `52 passed`.
+
+- [x] The W9 isolated test stack could accidentally point health at a
+  live-docker-only service name.
+  Evidence:
+  `docker-compose.test.yml` had `backend-test` and `backend-test-server`
+  configured to resolve `sandbox-proxy-test` without starting the profile that
+  provides that service.
+  Resolution:
+  production config tests now assert non-live test services use loopback
+  sandbox proxy URLs and `backend-test-live` is the only test service wired to
+  the live sandbox proxy dependency.
+  Verification:
+  `test_live_docker_tests_are_isolated_behind_a_healthy_proxy_dependency`
+  passed as part of the W9 focused gate.

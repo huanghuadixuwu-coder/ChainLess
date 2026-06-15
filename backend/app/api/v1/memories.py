@@ -14,10 +14,12 @@ from app.config import settings
 from app.core.memory.layered import load_layered_instructions
 from app.core.memory.persistent import (
     _compute_embedding_best_effort,
+    build_memory_context,
     create_memory,
     get_memories_for_session,
     search_memories,
     search_by_tags,
+    write_memory_source,
 )
 from app.models.memory import Memory
 
@@ -152,7 +154,10 @@ async def update_memory(
     changed = False
     if body.content is not None and body.content != mem.content:
         mem.content = body.content
-        mem.embedding = await _compute_embedding_best_effort(body.content)
+        mem.embedding = await _compute_embedding_best_effort(
+            current_user["tenant_id"],
+            body.content,
+        )
         changed = True
 
     if body.name is not None:
@@ -168,6 +173,7 @@ async def update_memory(
     if changed:
         await db.commit()
         await db.refresh(mem)
+        write_memory_source(mem)
 
     return _memory_to_response(mem)
 
@@ -204,8 +210,9 @@ async def merge_context(
     memories = await get_memories_for_session(
         db, tenant_id, body.task, limit=5
     )
-    memory_context = "\n\n".join(
-        f"## {m.name}\n{m.content or ''}" for m in memories
+    memory_context = build_memory_context(
+        memories,
+        budget_chars=settings.memory_injection_budget_chars,
     )
 
     instructions = load_layered_instructions(settings.memory_base_path, tenant_id)

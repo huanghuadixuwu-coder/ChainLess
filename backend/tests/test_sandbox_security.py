@@ -799,6 +799,38 @@ def test_terminal_parent_status_retention_is_ttl_and_capacity_bounded(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_manager_proxy_health_uses_bounded_timeout() -> None:
+    class Settings:
+        sandbox_proxy_url = "http://sandbox-proxy:8080"
+        proxy_auth_token = "token"
+        sandbox_pool_min = 0
+        sandbox_pool_max = 1
+
+    manager = SandboxManager(Settings())
+    captured: dict = {}
+
+    async def request(method, path, **kwargs):
+        captured.update({"method": method, "path": path, **kwargs})
+
+        class Response:
+            def json(self):
+                return {"pool_size": 2, "total_containers": 3}
+
+        return Response()
+
+    manager._request = request
+
+    health = await manager.get_proxy_health()
+
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/health"
+    assert captured["timeout"].read < 1
+    assert captured["timeout"].connect < 1
+    assert health == {"pool_size": 2, "total_containers": 3}
+    assert manager.pool_size == 2
+
+
+@pytest.mark.asyncio
 async def test_sandbox_manager_rejects_unconfirmed_disposable_parent_cleanup() -> None:
     class Settings:
         sandbox_proxy_url = "http://sandbox-proxy:8080"

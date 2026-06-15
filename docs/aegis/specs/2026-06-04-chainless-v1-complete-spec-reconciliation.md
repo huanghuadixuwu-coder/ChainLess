@@ -36,7 +36,7 @@ Therefore:
 - Anything previously marked `explicit defer` only remains deferred if the
   original spec itself made it V2 or the user explicitly approves deferral.
 - A feature is not complete because a route exists. It is complete only when
-  the live remote Docker runtime and browser/API/eval evidence prove it.
+  the local Docker runtime and browser/API/eval evidence prove it.
 - Every original P1-P6 verification gate and explicit `Verify:` step remains
   required unless this reconciliation explicitly classifies it as V2/non-goal.
   A similar substitute scenario does not retire an exact original gate.
@@ -377,7 +377,7 @@ them:
 | Dashboard/admin UI | Must ship through settings/dashboard surfaces | Configurable LLM, agent, tools, memory, channel, and proactive features must be user-operable, not API-only. |
 | Diff panel | Must ship real behavior | Design review required terminal + diff viewer; placeholder is insufficient. |
 | Feishu verification | Runtime must ship; real group receipt depends on user credentials | Cannot prove external Feishu receipt without webhook credentials. |
-| Runtime source of truth | Remote Docker | Local Windows is only browser QA/control plane. |
+| Runtime source of truth | Local Docker Desktop | Local Windows is the browser QA/control plane; the old remote server is retired. |
 
 ## Anti-Entropy Boundary
 
@@ -430,7 +430,7 @@ tenant data requires explicit scoped confirmation.
 - Product / Requirement Baseline:
   original design spec plus current user demand for one-pass full completion.
 - Architecture / Runtime Boundary Baseline:
-  remote Docker runtime, existing verified services, and Windows browser QA
+  local Docker runtime, existing verified services, and Windows browser QA
   path.
 - Result:
   both `Implementation Drift` and `Design Defect` exist.

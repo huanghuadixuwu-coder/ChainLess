@@ -173,6 +173,26 @@ async def test_health_prunes_unpingable_pool_container_and_replenishes(
     assert proxy.docker_client.containers.created == 3
 
 
+async def test_health_prunes_expired_idle_container_and_replenishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _load_proxy(monkeypatch)
+    await proxy._warm_pool(2)
+    expired_id = next(iter(proxy._container_objects))
+    expired = proxy._container_objects[expired_id]
+    proxy._container_meta[expired_id]["created_at"] = 0
+    monkeypatch.setattr(proxy, "MAX_LIFETIME_SECONDS", 1)
+
+    health = await proxy.health()
+
+    assert expired_id not in proxy._container_objects
+    assert expired_id not in proxy._pooled_ids
+    assert expired.removed is True
+    assert health["total_containers"] == 2
+    assert health["pool_size"] == 2
+    assert proxy.docker_client.containers.created == 3
+
+
 async def test_health_trims_surplus_idle_pool_back_to_min(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

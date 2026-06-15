@@ -1,0 +1,50 @@
+name: eval
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  backend-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend test image
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml build backend-test
+
+      - name: Run W8 runtime contract tests
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          run --rm backend-test pytest -q
+          tests/test_proactive_authorization.py
+          tests/test_eval_contract.py
+          tests/test_observability_contract.py
+          tests/test_agent_runtime_limits.py
+          tests/test_instruction_reload.py
+          tests/test_memory_source_contract.py
+          tests/test_mcp_transports.py
+          tests/test_tool_cancellation.py
+          tests/test_proactive_event_triggers.py
+          tests/test_delayed_proactive_tasks.py
+
+      - name: Build live eval images
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml --profile live-docker
+          build backend-test-live sandbox sandbox-proxy-test
+
+      - name: Run basic eval gate
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml --profile live-docker
+          run --rm backend-test-live
+          python scripts/run-eval.py --suite basic --json --min-pass-rate 1.0
+
+      - name: Run spec-complete eval gate
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml --profile live-docker
+          run --rm backend-test-live
+          python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.0

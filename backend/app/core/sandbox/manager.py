@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 _MAX_EXECUTIONS = 50
 # Maximum lifetime (seconds) for an allocated container before it must be replaced.
 _MAX_LIFETIME_SECONDS = 600
+# Health is on the request path for system diagnostics and must fail fast when
+# the proxy is absent, while execution streams still keep their longer timeout.
+_PROXY_HEALTH_TIMEOUT = httpx.Timeout(0.75, connect=0.25)
 
 
 class SandboxManager:
@@ -94,7 +97,7 @@ class SandboxManager:
 
     async def get_proxy_health(self) -> dict:
         """Fetch live health data from sandbox-proxy and refresh cache."""
-        resp = await self._request("GET", "/health")
+        resp = await self._request("GET", "/health", timeout=_PROXY_HEALTH_TIMEOUT)
         data = resp.json()
         self._pool_size = data.get("pool_size", 0)
         return data

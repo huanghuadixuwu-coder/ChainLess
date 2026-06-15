@@ -4,5 +4,23 @@
     "runner": "parallel_subagent_runtime_probe",
     "pass_criteria": "runtime_evidence",
     "prompt": "Use Code-as-Action to run two real parallel sub-agents and aggregate their results."
+  },
+  {
+    "id": "builtin-tool-openai-schema-contract",
+    "runner": "tool_schema_probe",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Validate every builtin tool definition against the OpenAI function schema contract."
+  },
+  {
+    "id": "mcp-filesystem-default-risk-contract",
+    "runner": "mcp_default_risk_probe",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify mcp__fs__list_directory defaults to risky unless explicitly pre-authorized."
+  },
+  {
+    "id": "mcp-filesystem-runtime-contract",
+    "runner": "mcp_filesystem_runtime_probe",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Start a real filesystem MCP server, discover mcp__fs__list_directory, invoke it, and verify the result."
   }
 ]

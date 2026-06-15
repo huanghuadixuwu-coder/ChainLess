@@ -26,6 +26,8 @@ from app.core.tools.configuration import (
     get_tool_configurations,
 )
 from app.core.llm.gateway import LLMGateway
+from app.core.memory.short_term import append_short_term_context
+from app.core.observability import increment_runtime_metric
 from app.core.secrets import safe_error_message
 from app.core.sandbox.manager import SandboxManager
 from app.core.tools.builtin import ALL_TOOLS
@@ -43,7 +45,7 @@ async def get_agent_tools(tenant_id: str) -> list[dict]:
 
     async with _async_session_factory() as db:
         configs = await get_tool_configurations(db, tenant_id)
-    tools = ALL_TOOLS + mcp_manager.get_all_tools() + [CODE_AS_ACTION_TOOL]
+    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + [CODE_AS_ACTION_TOOL]
     return filter_enabled_tools(
         [apply_tool_configuration(tool, configs.get(_tool_name(tool))) for tool in tools]
     )
@@ -315,6 +317,7 @@ async def build_chat_stream_response(
             while True:
                 if request is not None and await request.is_disconnected():
                     cancelled = True
+                    increment_runtime_metric("sse_disconnects")
                     break
 
                 try:
@@ -332,6 +335,7 @@ async def build_chat_stream_response(
 
                 if event_type == "error":
                     errored = True
+                    increment_runtime_metric("sse_errors")
                     yield sse_error(
                         data.get("code", "AGENT_STREAM_ERROR"),
                         data.get("message", "Agent stream error"),
@@ -357,6 +361,7 @@ async def build_chat_stream_response(
 
         except asyncio.CancelledError:
             cancelled = True
+            increment_runtime_metric("sse_disconnects")
         finally:
             heartbeat_task.cancel()
             if cancelled and not agent_task.done():
@@ -370,6 +375,12 @@ async def build_chat_stream_response(
             if not errored and not cancelled and full_content:
                 db.add(Message(conversation_id=conv_id, role="assistant", content=full_content))
                 await db.commit()
+                await append_short_term_context(
+                    tenant_id,
+                    str(conv_id),
+                    role="assistant",
+                    content=full_content,
+                )
 
             if not cancelled:
                 event_index += 1
@@ -419,6 +430,7 @@ async def run_agent_stream(
             if mapped is not None:
                 await queue.put(mapped)
     except Exception as exc:
+        increment_runtime_metric("sse_errors")
         await queue.put(
             ("error", {"code": "AGENT_STREAM_ERROR", "message": safe_error_message(exc, "Agent stream")})
         )
@@ -612,6 +624,7 @@ async def build_confirmation_stream_response(
                             timeout_s=data["timeout_s"],
                         )
                 elif event_name == "error":
+                    increment_runtime_metric("sse_errors")
                     yield sse_error(
                         data.get("code", "LLM_PROVIDER_ERROR"),
                         data.get("message", "Stream error"),
@@ -622,6 +635,7 @@ async def build_confirmation_stream_response(
                 yield sse_event(event_name, data, event_id=str(event_index))
         except Exception as exc:
             event_index += 1
+            increment_runtime_metric("sse_errors")
             yield sse_error(
                 "LLM_PROVIDER_ERROR",
                 safe_error_message(exc, "LLM provider"),

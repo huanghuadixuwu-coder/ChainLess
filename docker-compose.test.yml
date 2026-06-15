@@ -43,7 +43,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: admin123
       APP_ENV: test
       PROXY_AUTH_TOKEN: test-token
-      SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
+      SANDBOX_PROXY_URL: http://127.0.0.1:9001
       SANDBOX_POOL_MIN: 0
       FILE_TOOLS_BASE_DIR: /workspace
       FILE_TOOLS_MAX_READ_BYTES: 20000
@@ -119,6 +119,7 @@ services:
     container_name: chainless-backend-test-live
     environment:
       CHAINLESS_LIVE_DOCKER: "1"
+      SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
       SUBAGENT_MAX_CONNECTIONS_PER_RUN: 8
       SUBAGENT_MAX_CONNECTIONS_GLOBAL: 32
       SUBAGENT_READ_TIMEOUT_SECONDS: 2
@@ -147,7 +148,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: admin123
       APP_ENV: test
       PROXY_AUTH_TOKEN: test-token
-      SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
+      SANDBOX_PROXY_URL: http://127.0.0.1:9001
       SANDBOX_POOL_MIN: 0
       FILE_TOOLS_BASE_DIR: /workspace
       FILE_TOOLS_MAX_READ_BYTES: 20000

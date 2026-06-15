@@ -12,6 +12,7 @@ from typing import AsyncIterator, Any
 from app.config import settings
 from app.core.agent.subagent_control import CapabilityAuthority
 from app.core.agent.subagents import RunnerResult, SubAgentRuntime
+from app.core.observability import increment_runtime_metric
 
 MAX_SUB_AGENTS = 5
 SUB_AGENT_TIMEOUT = 15
@@ -392,6 +393,7 @@ async def _finalize_artifact_events(
     parent_run_id: str,
 ) -> list[dict]:
     snapshots = await runtime.finalize_parent_artifacts(parent_run_id)
+    increment_runtime_metric("subagent_lifecycle_events", len(snapshots))
     events = []
     for snapshot in snapshots:
         logger.info(

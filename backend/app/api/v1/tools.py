@@ -11,7 +11,7 @@ from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,9 +39,14 @@ logger = logging.getLogger(__name__)
 
 
 class _MCPConfig(BaseModel):
-    command: str
+    model_config = ConfigDict(extra="forbid")
+
+    transport: str = "stdio"
+    command: str | None = None
     args: list[str] = []
     env: dict[str, str] = {}
+    url: str | None = None
+    idle_timeout_s: float | None = None
 
 
 class _RegisterToolRequest(BaseModel):
@@ -64,7 +69,7 @@ class _ToolConfigurationRequest(BaseModel):
 
 async def _configured_tools(db: AsyncSession, tenant_id: str) -> list[dict]:
     builtin_tools = list(ALL_TOOLS) + [CODE_AS_ACTION_TOOL]
-    mcp_tools = mcp_manager.get_all_tools()
+    mcp_tools = mcp_manager.get_all_tools(tenant_id)
     configs = await get_tool_configurations(db, tenant_id)
     return [
         apply_tool_configuration(tool, configs.get(tool_name(tool)))
@@ -90,7 +95,7 @@ async def list_tools(
     Returns a combined list of tool definitions in OpenAI function format.
     """
     builtin_tools = list(ALL_TOOLS) + [CODE_AS_ACTION_TOOL]
-    mcp_tools = mcp_manager.get_all_tools()
+    mcp_tools = mcp_manager.get_all_tools(user["tenant_id"])
     all_tools = await _configured_tools(db, user["tenant_id"])
     total = len(all_tools)
     page = all_tools[offset:offset + limit]
@@ -122,7 +127,10 @@ async def list_available_tools(
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def register_tool(body: _RegisterToolRequest, _: dict = Depends(require_role("admin"))):
+async def register_tool(
+    body: _RegisterToolRequest,
+    user: dict = Depends(require_role("admin")),
+):
     """Register an MCP server and discover its tools.
 
     The server process is started on demand.  Discovered tool definitions
@@ -142,7 +150,11 @@ async def register_tool(body: _RegisterToolRequest, _: dict = Depends(require_ro
                 "command": body.config.command,
                 "args": body.config.args,
                 "env": body.config.env,
+                "transport": body.config.transport,
+                "url": body.config.url,
+                "idle_timeout_s": body.config.idle_timeout_s,
             },
+            owner=user["tenant_id"],
         )
     except Exception:
         logger.exception("Failed to connect to MCP server %s", body.name)
@@ -164,7 +176,7 @@ async def register_tool(body: _RegisterToolRequest, _: dict = Depends(require_ro
 async def test_mcp_tool(
     name: str,
     body: _TestToolRequest,
-    _: dict = Depends(require_role("admin")),
+    user: dict = Depends(require_role("admin")),
 ):
     """Test an MCP tool by calling it with the provided arguments.
 
@@ -178,7 +190,7 @@ async def test_mcp_tool(
         tool_name = f"mcp__{name}__{tool_name}"
 
     # Verify the owning client exists
-    client = mcp_manager.get_client_for_tool(tool_name)
+    client = mcp_manager.get_client_for_tool(tool_name, user["tenant_id"])
     if not client:
         raise not_found(
             "TOOL_NOT_FOUND",
@@ -186,7 +198,7 @@ async def test_mcp_tool(
         )
 
     try:
-        result = await mcp_manager.execute(tool_name, body.args)
+        result = await mcp_manager.execute(tool_name, body.args, user["tenant_id"])
     except Exception:
         logger.exception("MCP tool call failed for %s", tool_name)
         raise api_error(
@@ -206,7 +218,11 @@ async def configure_tool(
     db: AsyncSession = Depends(get_db),
 ):
     """Configure tenant-local activation and risk override for a tool."""
-    known_tools = list(ALL_TOOLS) + [CODE_AS_ACTION_TOOL] + mcp_manager.get_all_tools()
+    known_tools = (
+        list(ALL_TOOLS)
+        + [CODE_AS_ACTION_TOOL]
+        + mcp_manager.get_all_tools(user["tenant_id"])
+    )
     known = {tool_name(tool): tool for tool in known_tools}
     if name not in known:
         raise not_found("TOOL_NOT_FOUND", "Tool not found")
@@ -257,11 +273,11 @@ async def configure_tool(
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
-async def unregister_tool(name: str, _: dict = Depends(require_role("admin"))):
+async def unregister_tool(name: str, user: dict = Depends(require_role("admin"))):
     """Unregister an MCP server and disconnect it."""
-    client = mcp_manager.get_client_for_tool(f"mcp__{name}__")
+    client = mcp_manager.get_client_for_tool(f"mcp__{name}__", user["tenant_id"])
     if not client:
         raise not_found("TOOL_NOT_FOUND", f"MCP server '{name}' is not registered")
 
-    await mcp_manager.unregister(name)
+    await mcp_manager.unregister(name, user["tenant_id"])
     return None

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     # Memory
     memory_base_path: str = "/data/memory"
+    memory_injection_budget_chars: int = 4000
+    memory_embedding_model: str = "embedding-3"
+    short_term_context_ttl_seconds: int = 3600
 
     # Artifacts
     artifact_base_path: str = "/data/artifacts"

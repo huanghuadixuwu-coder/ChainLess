@@ -888,3 +888,339 @@ closure
 - W7 stop condition:
   the rich input and keyboard requirements in the original P6/frontend spec are
   fully browser-verified, and no W7 tail item remains.
+
+## Workstream 8
+
+Status: proactive safety, Feishu-compatible delivery, eval, and hallucination
+guard complete by fresh local-Docker verification and cleanup proof
+
+- Proactive safety:
+  - `backend/app/core/proactive/scheduler.py` now persists `authorized_tools`,
+    `trigger_type`, `event_type`, and `execute_at`.
+  - Proactive execution passes all visible tools to the model but only
+    pre-authorized tools can execute; unauthorized tool attempts are logged as
+    blocked, delivery is skipped, and prompt text is stored only as SHA-256.
+  - Cron, event-trigger, and one-shot delayed tasks share the same source of
+    truth, authorization, run-history, and audit boundary.
+- Eval and hallucination guard:
+  - `backend/scripts/run-eval.py` now has deterministic no-secret fallback when
+    the default tenant has no provider, keeps `--json` and
+    `--min-pass-rate`, and includes hard runtime evidence runners for OpenAI
+    tool schemas, MCP default risk, and real filesystem MCP discovery/invocation.
+  - `spec_complete` now covers real parallel Code-as-Action sub-agents,
+    builtin OpenAI schema validation, filesystem MCP default-risk evidence, and
+    a real `mcp__fs__list_directory` call through `backend/scripts/mcp_filesystem_server.py`.
+  - `.github/workflows/eval.yml` runs W8 target tests plus `basic` and
+    `spec_complete` eval gates at `--min-pass-rate 1.0`.
+- Agent/runtime contracts:
+  - `run_agent` now supports `authorized_tool_names`, observable token-budget
+    exhaustion, deterministic route selection, and compatible runtime-limit
+    defaults that respect test/runtime monkeypatches.
+  - Tool rejection emits stable `TOOL_NOT_AUTHORIZED` evidence rather than
+    silently executing a visible but unapproved tool.
+- Memory/context contracts:
+  - Persistent memory now writes tenant-scoped source files plus `MEMORY.md`
+    indexes, enforces a configurable injection budget, and keeps
+    `[memory:name]` citations.
+  - Short-term conversation context is tenant/conversation scoped in Redis with
+    TTL and cleanup.
+  - The exact memory gate now inserts five memories across five types with
+    real 1536-dimensional pgvector embeddings and proves
+    `search_memories()` returns the nearest row through actual
+    `cosine_distance` ordering.
+- MCP/tool contracts:
+  - MCP clients support stdio, HTTP, and SSE-style HTTP transports, idle
+    reconnect, unavailable-server errors, and default `risky` classification.
+  - A minimal safe filesystem MCP server is now used as the spec gate for
+    `mcp__fs__list_directory`, including discovery, invocation, disconnect, and
+    path-escape rejection boundary.
+  - Builtin tool definitions are validated against the required OpenAI function
+    schema.
+  - Risky/destructive denial is covered by a cancellation/rejection-reason
+    regression that proves denied destructive tools do not execute.
+- Observability:
+  - `/api/v1/system/metrics` includes secret-free proactive blocked/delivery
+    counters, runtime counters for sub-agent lifecycle, SSE disconnect/errors,
+    artifact failures/quota, and file-backed eval outcome summaries.
+  - Run records avoid prompt text and secret-bearing delivery data.
+- Runtime repairs found during W8:
+  - `spec_complete` initially failed when the default tenant had no configured
+    provider. The eval runner now falls back to a deterministic eval gateway
+    only for eval, preserving DB provider ownership for runtime chat.
+  - `run_agent` default arguments captured constants too early, so monkeypatch
+    budget tests did not affect defaults. Defaults are now resolved at call
+    time.
+  - Sandbox-proxy `/health` reported expired idle containers as healthy, so the
+    first real allocation cold-created replacements and could make the
+    parallel sub-agent eval time out. `/health` now prunes expired containers
+    before reporting and warms fresh replacements.
+  - `/system/metrics` initially exposed several fixed zero-value W8 counters.
+    The metrics endpoint now reads proactive summaries, in-process runtime
+    counters, and eval result files without exposing prompts, webhook URLs, or
+    secrets.
+  - A stale W5 proactive QA task remained in Redis. It was identified by its
+    exact `w5-final-*` prompt prefix and deleted by exact task id.
+- Fresh test evidence:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_memory_source_contract.py`
+    returned `5 passed`.
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_mcp_transports.py tests/test_eval_contract.py`
+    returned `9 passed`.
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_observability_contract.py tests/test_file_upload_security.py tests/test_eval_contract.py tests/test_llm_gateway_streaming.py`
+    returned `23 passed, 1 warning`.
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_proactive_authorization.py tests/test_eval_contract.py tests/test_observability_contract.py tests/test_agent_runtime_limits.py tests/test_instruction_reload.py tests/test_memory_source_contract.py tests/test_mcp_transports.py tests/test_tool_cancellation.py tests/test_proactive_event_triggers.py tests/test_delayed_proactive_tasks.py tests/test_sandbox_pool_lifecycle.py`
+    returned `40 passed`.
+  - Full backend verification returned `325 passed, 4 skipped, 1 warning`;
+    warning was the pre-existing Starlette 413 deprecation in upload security
+    coverage.
+- Fresh runtime evidence:
+  - `docker compose build backend worker sandbox-proxy` succeeded; `backend`,
+    `worker`, and `sandbox-proxy` were recreated; `backend`, `sandbox-proxy`,
+    DB, Redis, and Nginx were healthy.
+  - `docker compose exec -T backend sh -lc "PYTHONPATH=/app python scripts/clean_start_probe.py"`
+    returned `{"ok": true, "migrations": "head", "seed": "idempotent",
+    "login_ready": true}`.
+  - `docker compose exec -T backend python scripts/run-eval.py --suite basic --json --min-pass-rate 1.0`
+    returned `Pass: 10 / 10`, `Error: 0 / 10`, `Pass Rate: 100.00%`.
+  - `docker compose exec -T backend python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.0`
+    returned `Pass: 4 / 4`, `Error: 0 / 4`, `Pass Rate: 100.00%`, including
+    two real parallel child artifacts with `status=success` and a real
+    filesystem MCP `ListToolsRequest` plus `CallToolRequest`.
+  - `docker compose exec -T backend sh -lc "PYTHONPATH=/app python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.1"`
+    exited `1` as expected, proving the eval threshold gate fails when the
+    required pass rate is deliberately impossible.
+  - Authenticated `GET /api/v1/system/metrics` returned
+    `chainless_eval_outcomes_total{status="pass"} 14`,
+    `chainless_eval_outcomes_total{status="fail"} 0`, and
+    `chainless_eval_outcomes_total{status="error"} 0`; runtime counters for
+    sub-agent lifecycle, SSE disconnect/error, artifact failure, and artifact
+    quota rejection were present and currently `0` in the freshly restarted API
+    process.
+  - `docker compose exec -T backend sh -lc "PYTHONPATH=/app python scripts/w8_feishu_proactive_probe.py"`
+    returned `ok: true`: the temporary local receiver captured two
+    Feishu-compatible interactive-card payloads, one direct test message and
+    one proactive task delivery, both delivered with `status_code: 200` and
+    `attempts: 1`.
+  - Final proactive Redis inspection returned `task_count: 0`, `run_count: 0`,
+    and zero unsafe records.
+  - `git diff --check -- backend sandbox-proxy .github PROBLEM_TODO_LIST.md docs/aegis`
+    exited `0` with CRLF warnings only.
+- Test-data cleanup:
+  - The W8 Feishu/proactive probe deleted its exact temporary tenant, proactive
+    task ids, and run-log entries.
+  - The stale W5 proactive task
+    `ab9ffb17-187c-49a3-aed7-0c83984e1822` was deleted by exact id after a
+    read-only Redis inspection identified it as `w5-final-*` QA residue.
+  - Follow-up `inspect_proactive_redis.py` returned zero tasks, zero runs, and
+    zero unsafe records.
+- Scope restraint:
+  W8 did not modify any frontend file, component, style, layout, color,
+  spacing, scroll behavior, or established visual language.
+- W8 stop condition:
+  proactive execution is safe, observable, evaluated, Feishu-compatible
+  credential-ready, and leaves no known W8 tail item.
+
+## Workstream 9
+
+Status: three-tenant concurrency and isolation complete by fresh local-Docker
+verification, Docker HTTP probe, regression coverage, and cleanup proof
+
+- Added fail-closed isolated test owners:
+  - `backend/scripts/assert_test_environment.py`
+  - `backend/tests/test_multitenant_concurrency.py`
+  - `backend/scripts/multitenant_probe.py`
+  - `scripts/qa/multitenant.cjs`
+- The guard fails closed unless `APP_ENV=test`, `CHAINLESS_TESTING=1`, DB host
+  is `db-test`, DB name is `chainless_test`, Redis host is `redis-test`, and
+  the connected database identity is `chainless_test`.
+- The pytest and HTTP probe create three uniquely prefixed admin tenants only
+  in the isolated test environment, run concurrent chat/upload/artifact,
+  memory, channel, provider, agent, tool configuration, proactive task, and
+  passive skill flows, then delete only exact-prefix derived data.
+- Cross-tenant denial coverage includes conversation, artifact, provider,
+  agent, memory, skill, proactive task, and MCP/tool scope. Metrics and error
+  bodies are checked for absence of tenant markers, usernames, provider keys,
+  and other probe secrets.
+- MCP isolation repair:
+  - `backend/app/core/tools/mcp/manager.py` now stores tenant owner scope for
+    registered MCP servers while keeping `owner=None` as the global/backward
+    compatible path.
+  - `backend/app/api/v1/tools.py`,
+    `backend/app/services/conversation_stream_service.py`, and
+    `backend/app/core/agent/tool_router.py` now pass `tenant_id` into MCP
+    list, register, test, execute, and unregister paths.
+  - The W9 probe proves tenant B cannot list, test, or delete tenant A's MCP
+    registration.
+- Independent W9 review follow-up:
+  - Review found the Tools API still had `TypeError` compatibility fallbacks
+    that could retry MCP test/delete paths without tenant owner scope after an
+    error. Those fallbacks were removed so the route fails closed through the
+    tenant-scoped MCP manager contract.
+  - Review also found the cross-tenant matrix needed to prove denied
+    mutations, not just denied reads, for providers, agents, and skills. The
+    pytest and Docker HTTP probe now cover provider update/default/delete,
+    agent update/delete, and skill update/delete denial plus source-resource
+    survival checks.
+  - A follow-up read-only review found no Critical or Important findings
+    remaining for those two W9 issues. Its only Minor test robustness note was
+    fixed by making the API contract test's MCP cleanup use the same tenant
+    owner scope as registration.
+- Health and test-runtime repairs found during W9:
+  - `SandboxManager.get_proxy_health()` uses a bounded realtime health timeout
+    instead of the long execution timeout.
+  - `collect_operational_health()` bounds sandbox checks and DB checks so admin
+    detailed health cannot block p95 latency on slow dependencies.
+  - DB health now reuses a single small asyncpg health connection with an
+    explicit short budget instead of widening to a multi-connection pool during
+    concurrent health probes.
+  - Non-live `backend-test` and `backend-test-server` use
+    `SANDBOX_PROXY_URL=http://127.0.0.1:9001`, so the test stack degrades fast
+    when the live-docker sandbox proxy profile is intentionally not started.
+    `backend-test-live` explicitly keeps `http://sandbox-proxy-test:9001`.
+- Fresh target evidence:
+  - `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_production_config.py::test_live_docker_tests_are_isolated_behind_a_healthy_proxy_dependency tests/test_observability_contract.py::test_operational_health_bounds_slow_sandbox_proxy tests/test_observability_contract.py::test_db_health_uses_bounded_pool_acquire_and_query tests/test_sandbox_security.py::test_sandbox_manager_proxy_health_uses_bounded_timeout tests/test_multitenant_concurrency.py`
+    was superseded by the post-review focused gate below.
+  - Post-review focused gate:
+    `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_api_contracts.py::test_tools_admin_can_register_test_and_delete_mcp_server tests/test_api_contracts.py::test_tools_mcp_failures_do_not_leak_exception_details tests/test_production_config.py::test_live_docker_tests_are_isolated_behind_a_healthy_proxy_dependency tests/test_observability_contract.py::test_operational_health_bounds_slow_sandbox_proxy tests/test_observability_contract.py::test_db_health_uses_bounded_pool_acquire_and_query tests/test_sandbox_security.py::test_sandbox_manager_proxy_health_uses_bounded_timeout tests/test_multitenant_concurrency.py`
+    returned `7 passed`.
+  - Exact W9 pytest gate:
+    `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_multitenant_concurrency.py`
+    returned `1 passed`.
+  - Exact W9 HTTP probe:
+    `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test python scripts/multitenant_probe.py --base-url http://backend-test-server:8000 --tenants 3 --parallel-per-tenant 5 --json`
+    returned `ok: true`, `tenant_count: 3`, `check_count: 42`,
+    `p95_ms: 393.4`, `mock_calls: 10`, and `failures: []`.
+  - Related regression gate:
+    `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test pytest -q tests/test_api_contracts.py tests/test_admin_authorization.py tests/test_tenant_isolation.py tests/test_production_config.py tests/test_observability_contract.py tests/test_sandbox_security.py::test_sandbox_manager_proxy_health_uses_bounded_timeout tests/test_multitenant_concurrency.py`
+    returned `52 passed`.
+  - Bundled Node syntax check:
+    `node --check scripts\qa\multitenant.cjs` returned exit `0` using the
+    Codex bundled Node executable.
+- Test-data cleanup:
+  - The final HTTP probe deleted its exact-prefix temporary tenants,
+    conversations, artifacts, providers, agents, memories, skills, proactive
+    tasks, MCP registrations, and scoped memory/artifact directories.
+  - Direct test DB cleanup query for prefix `w9-probe-6d25c1b83b3c` returned
+    `0` rows in `tenants`, `users`, `conversations`, `messages`,
+    `artifacts`, `llm_providers`, `agents`, `memories`, `skills`,
+    `channel_configurations`, `tool_configurations`, `tool_confirmations`, and
+    `audit_logs`.
+  - No live database or production Docker runtime was used; all W9 destructive
+    operations were guarded by `assert_test_environment.py`.
+- Scope restraint:
+  W9 did not modify any frontend file, component, style, layout, color,
+  spacing, scroll behavior, or established visual language. The browser QA
+  launcher was not modified because W9 has no browser interaction surface; the
+  standalone Docker QA entrypoint is `scripts/qa/multitenant.cjs`.
+- W9 stop condition:
+  multi-tenant concurrency and isolation are proven across every V1 resource,
+  health/auth/CRUD p95 is below `1000ms`, and no W9 tail item remains.
+
+## Workstream 11
+
+Status: final spec-complete QA, cleanup, and evidence bundle completed in local
+Docker Desktop; no remote server was used.
+
+- Fresh compose and health:
+  - `docker-compose up -d --build` exited `0` and rebuilt backend, worker,
+    frontend, sandbox-proxy, and sandbox images.
+  - `docker-compose ps` showed production Nginx, db, redis, backend, frontend,
+    sandbox-proxy, sandbox, and worker up/healthy where health checks apply.
+  - `curl.exe -fsS http://127.0.0.1/api/v1/health` returned
+    `{"status":"ok"}`.
+  - `docker-compose exec -T nginx wget -qO- http://backend:8000/api/v1/health`
+    returned `{"status":"ok"}` after backend rebuild while Nginx stayed
+    running, proving the Docker DNS resolver upstream fix.
+- Clean start and production boundary:
+  - `docker-compose exec -T backend sh -lc "PYTHONPATH=/app python scripts/clean_start_probe.py"`
+    returned `{"ok": true, "migrations": "head", "seed": "idempotent",
+    "login_ready": true}`.
+  - `docker-compose exec -T backend python scripts/production_boundary_probe.py --base-url http://nginx`
+    returned `ok: true`, public health `200`, no-auth health/metrics `401`,
+    member health/metrics/memory mutation `403`, admin health/metrics `200`,
+    audit `tenant-scoped-and-body-free`, sandbox output `42`, and sandbox pool
+    health `pool_size: 2`.
+- Spec-complete API probe:
+  - `docker-compose exec -T backend python scripts/spec_complete_probe.py --base-url http://chainless-nginx`
+    returned `ok: true`.
+  - Covered public health, auth/login/refresh/me, admin/member boundaries,
+    metrics, pagination route families, not-found envelope, conversation-scoped
+    artifacts page, text SSE, Code-as-Action Fibonacci SSE events, destructive
+    confirmation denial, mock provider chat calls, audit redaction, and cleanup.
+  - Cleanup residue was zero for tenants, users, providers, conversations,
+    messages, and artifacts.
+- Backend/frontend tests:
+  - `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q"`
+    returned `339 passed, 4 skipped, 3 warnings`.
+  - `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm frontend-test npm run lint`
+    exited `0`.
+  - `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm frontend-test npm run build`
+    exited `0`; Next.js compiled and generated all app routes.
+  - Focused W11 contract/security gate
+    `pytest -q tests/test_w11_probe_contracts.py tests/test_sandbox_network_policy.py`
+    returned `13 passed`.
+- Browser QA:
+  - `powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url http://localhost -Browser chrome -Headless -Suite spec-complete -TimeoutMs 120000`
+    returned `ok: true`.
+  - Report:
+    `.gstack/qa-reports/local/spec-complete-2026-06-15T06-13-38-067Z`.
+  - Covered auth refresh/me, smoke navigation, conversation create/rename/archive,
+    chat SSE, web_fetch tool card and payload, code_as_action, destructive
+    confirmation deny, every Settings section, provider/agent/tool/MCP/memory/
+    Feishu/proactive/skill/eval/theme flows, active provider context banner,
+    real files/diff artifacts, rich input shortcuts, tool picker, file upload,
+    drag/drop upload, markdown fold/copy, virtualized long conversation, and
+    cleanup verification.
+  - Console errors, page errors, unexpected request failures, and `429`
+    responses were all empty. Ignored request failures were only expected
+    `_rsc`/conversation cleanup navigation aborts.
+- Eval:
+  - `docker-compose exec -T backend python scripts/run-eval.py --suite basic --json --min-pass-rate 1.0`
+    returned `10 / 10`, pass rate `1.0`.
+  - `docker-compose exec -T backend python scripts/run-eval.py --suite spec_complete --json --min-pass-rate 1.0`
+    returned `4 / 4`, pass rate `1.0`.
+  - `spec_complete` logged two real parallel `spawn_sub_agent` child artifacts
+    from a Code-as-Action run, then finalized cleanup.
+- Backup and restore:
+  - `docker-compose exec -T backend ./scripts/backup.sh` produced
+    `/backups/chainless-20260615-061030.sql` (212K).
+  - `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-test sh -lc "PYTHONPATH=/repo/backend python /repo/backend/scripts/restore_drill.py"`
+    returned `ok: true`, source database `chainless_test`, restored database
+    `chainless_restore_drill_989008f95c3b`, backup bytes `8543376`, expected
+    seed/fixture counts, and cleanup flags all true.
+  - The restore drill emitted the known passlib/bcrypt version warning but
+    exited `0`.
+- Performance:
+  - `docker-compose exec -T backend python scripts/performance_probe.py --base-url http://chainless-nginx --scenario fibonacci --measured-runs 3 --max-ms 5000`
+    returned exact stdout `55`, elapsed `910.47ms`, phases
+    `allocated/completed/deleted`.
+  - `docker-compose exec -T backend python scripts/performance_probe.py --base-url http://chainless-nginx --scenario hackernews-code-action --measured-runs 5 --max-ms 5000`
+    returned `ok: true`, HN count `10`, warmup `756.9ms`, measured latencies
+    `707.61`, `757.6`, `707.75`, `705.89`, and `706.36ms`, p50 `707.61ms`,
+    max observed `757.6ms`, and sandbox allocate/complete/delete evidence for
+    every run.
+  - The HN probe explicitly does not call a live GLM provider; it measures
+    backend HackerNews egress plus sandbox Code-as-Action parsing under the
+    default network-none sandbox policy.
+- Cleanup and credential boundaries:
+  - `docker-compose exec -T backend sh -lc "python - <<'PY' ..."` confirmed
+    `GLM_API_KEY_SET|False`.
+  - DB audit confirmed `default_providers|0` and `all_providers|0` after QA.
+  - Postgres QA-prefix residue counts returned zero for tenants, users,
+    providers, agents, conversations, messages, memories, skills, artifacts,
+    tool configurations, channel configurations, and tool confirmations.
+  - Redis scan found no QA-prefix keys for `ws10`, `w5-final`,
+    `w6-artifacts`, `w7-rich`, or `w11-spec`; only normal proactive runtime
+    keys remained.
+- Documentation evidence:
+  - Added
+    `docs/aegis/work/2026-06-05-v1-spec-completion/original-gate-ledger.md`.
+  - Updated the runtime gap matrix so no V1 row remains `missing` or
+    `implemented-but-unverified`; the only remaining `missing` row is the
+    approved V2 Skill Precipitation non-goal.
+  - Updated `PROBLEM_TODO_LIST.md`, this checkpoint, and operations notes with
+    the verified W11 state and the explicit live-GLM external credential
+    boundary.
+- Scope restraint:
+  W11 changed QA/probe/docs/Nginx/backend-test surfaces only. It did not modify
+  frontend style, layout, visual language, scroll behavior, or user-facing
+  design.

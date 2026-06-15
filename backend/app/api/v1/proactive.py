@@ -36,6 +36,10 @@ class CreateTaskRequest(BaseModel):
     agent_id: str = "default"
     prompt: str = ""
     channel_type: str = "feishu"
+    authorized_tools: list[str] = []
+    event_type: str | None = None
+    execute_at: str | None = None
+    enabled: bool = True
 
 
 class TaskResponse(BaseModel):
@@ -47,6 +51,10 @@ class TaskResponse(BaseModel):
     channel_type: str
     enabled: bool
     created_at: str
+    authorized_tools: list[str] = []
+    trigger_type: str = "cron"
+    event_type: str | None = None
+    execute_at: str | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -71,6 +79,11 @@ async def create_proactive_task(
         agent_id=body.agent_id,
         prompt=body.prompt,
         channel_type=body.channel_type,
+        authorized_tools=body.authorized_tools,
+        trigger_type=body.type,
+        event_type=body.event_type,
+        execute_at=body.execute_at,
+        enabled=body.enabled,
     )
     return TaskResponse(
         task_id=task.task_id,
@@ -81,6 +94,10 @@ async def create_proactive_task(
         channel_type=task.channel_type,
         enabled=task.enabled,
         created_at=task.created_at,
+        authorized_tools=task.authorized_tools,
+        trigger_type=task.trigger_type,
+        event_type=task.event_type,
+        execute_at=task.execute_at,
     )
 
 
@@ -103,6 +120,10 @@ async def list_proactive_tasks(
             channel_type=t.channel_type,
             enabled=t.enabled,
             created_at=t.created_at,
+            authorized_tools=t.authorized_tools,
+            trigger_type=t.trigger_type,
+            event_type=t.event_type,
+            execute_at=t.execute_at,
         )
         for t in tasks
     ]

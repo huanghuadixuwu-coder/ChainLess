@@ -479,7 +479,7 @@ async def _warm_pool(target: int = POOL_MIN) -> None:
 
 
 async def _reconcile_pool_state() -> None:
-    """Prune memory-only or unresponsive containers before reporting health."""
+    """Prune stale, expired, or unresponsive containers before reporting health."""
     async with _pool_maintenance_lock:
         _compact_pool()
         loop = asyncio.get_running_loop()
@@ -490,6 +490,13 @@ async def _reconcile_pool_state() -> None:
             )
             if not exists:
                 _forget_container_reference(cid, "missing from Docker")
+                continue
+            if _is_expired(cid):
+                try:
+                    _remove_container(cid)
+                except Exception as exc:
+                    logger.warning("Failed to remove expired container %s: %s", cid, exc)
+                    _forget_container_reference(cid, "expired")
                 continue
             if await _ping_container(cid):
                 continue
