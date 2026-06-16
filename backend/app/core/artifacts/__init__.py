@@ -8,6 +8,8 @@ from app.core.artifacts.service import (
     ARTIFACT_STATE_QUOTA_EXCEEDED,
     ArtifactQuotaExceededError,
     ToolExecutionResult,
+    artifact_display_filename,
+    artifact_download_filename,
     artifact_preview_contract,
     capture_file_write_artifact,
     cleanup_expired_artifacts,
@@ -15,9 +17,11 @@ from app.core.artifacts.service import (
     create_uploaded_artifact,
     delete_artifact_storage,
     delete_artifacts_for_conversation,
+    read_artifact_bytes,
     read_artifact_content,
     serialize_artifact,
 )
+from app.core.artifacts.workspace import RunWorkspace, cleanup_run_workspace, prepare_run_workspace
 
 __all__ = [
     "ARTIFACT_STATE_AVAILABLE",
@@ -27,6 +31,8 @@ __all__ = [
     "ARTIFACT_STATE_QUOTA_EXCEEDED",
     "ArtifactQuotaExceededError",
     "ToolExecutionResult",
+    "artifact_display_filename",
+    "artifact_download_filename",
     "artifact_preview_contract",
     "capture_file_write_artifact",
     "cleanup_expired_artifacts",
@@ -34,6 +40,10 @@ __all__ = [
     "create_uploaded_artifact",
     "delete_artifact_storage",
     "delete_artifacts_for_conversation",
+    "read_artifact_bytes",
     "read_artifact_content",
     "serialize_artifact",
+    "RunWorkspace",
+    "cleanup_run_workspace",
+    "prepare_run_workspace",
 ]

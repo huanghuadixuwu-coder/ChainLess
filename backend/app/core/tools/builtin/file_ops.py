@@ -8,13 +8,20 @@ _ALLOWED_BASE = os.environ.get("FILE_TOOLS_BASE_DIR", "/workspace")
 _MAX_READ_BYTES = int(os.environ.get("FILE_TOOLS_MAX_READ_BYTES", "20000"))
 
 
-def _ensure_workspace() -> None:
-    os.makedirs(os.path.realpath(_ALLOWED_BASE), exist_ok=True)
+def _workspace_base(context: dict | None = None) -> str:
+    candidate = (context or {}).get("workspace_base")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate
+    return _ALLOWED_BASE
 
 
-def _safe_resolve(path: str) -> str:
+def _ensure_workspace(base: str) -> None:
+    os.makedirs(os.path.realpath(base), exist_ok=True)
+
+
+def _safe_resolve(path: str, *, base: str) -> str:
     """Resolve a workspace path and reject traversal outside the workspace."""
-    allowed = os.path.realpath(_ALLOWED_BASE)
+    allowed = os.path.realpath(base)
     requested = path.lstrip("/\\")
     resolved = os.path.realpath(os.path.join(allowed, requested))
     if not resolved.startswith(allowed + os.sep) and resolved != allowed:
@@ -74,9 +81,10 @@ FILE_TOOLS = [
 
 async def execute(tool_name: str, args: dict, context: dict | None = None) -> str | ToolExecutionResult:
     """Execute a workspace file operation."""
-    _ensure_workspace()
+    workspace_base = _workspace_base(context)
+    _ensure_workspace(workspace_base)
     raw_path = args.get("path", ".")
-    path = _safe_resolve(raw_path)
+    path = _safe_resolve(raw_path, base=workspace_base)
 
     if tool_name == "file_read":
         with open(path, encoding="utf-8") as f:
@@ -97,7 +105,7 @@ async def execute(tool_name: str, args: dict, context: dict | None = None) -> st
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-        rel_path = os.path.relpath(path, os.path.realpath(_ALLOWED_BASE))
+        rel_path = os.path.relpath(path, os.path.realpath(workspace_base))
         artifacts = await capture_file_write_artifact(
             tenant_id=(context or {}).get("tenant_id"),
             conversation_id=(context or {}).get("conversation_id"),

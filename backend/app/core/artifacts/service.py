@@ -59,6 +59,11 @@ def serialize_artifact(artifact: Artifact) -> dict:
         "diff_bytes_stored": artifact.diff_bytes_stored,
         "has_content": bool(artifact.content_path),
         "has_diff": bool(artifact.diff_path),
+        "download_url": (
+            f"/api/v1/artifacts/{artifact.id}/download"
+            if artifact.content_path and artifact.state == ARTIFACT_STATE_AVAILABLE
+            else None
+        ),
         "before_sha256": artifact.before_sha256,
         "after_sha256": artifact.after_sha256,
         "preview": _preview_contract(artifact),
@@ -261,6 +266,11 @@ async def delete_artifacts_for_conversation(
 
 async def read_artifact_content(artifact: Artifact, *, content_kind: str) -> str:
     """Read stored content or diff from the managed artifact volume."""
+    return (await read_artifact_bytes(artifact, content_kind=content_kind)).decode("utf-8")
+
+
+async def read_artifact_bytes(artifact: Artifact, *, content_kind: str = "content") -> bytes:
+    """Read stored content or diff bytes from the managed artifact volume."""
     relative_path = artifact.content_path if content_kind == "content" else artifact.diff_path
     if not relative_path:
         increment_runtime_metric("artifact_failures")
@@ -270,7 +280,33 @@ async def read_artifact_content(artifact: Artifact, *, content_kind: str) -> str
         artifact.state = ARTIFACT_STATE_MISSING
         increment_runtime_metric("artifact_failures")
         raise FileNotFoundError(f"Artifact {content_kind} is missing")
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes()
+
+
+def artifact_download_filename(artifact: Artifact) -> str:
+    """Return a safe ASCII fallback filename for Content-Disposition."""
+    raw_name = artifact_display_filename(artifact)
+    safe_name = "".join(
+        char if ord(char) < 128 and (char.isalnum() or char in {".", "_", "-"}) else "_"
+        for char in raw_name
+    ).strip("._-")
+    if safe_name:
+        return safe_name[:160]
+    extension = mimetypes.guess_extension(artifact.mime_type or "") or ".txt"
+    return f"artifact-{artifact.id}{extension}"
+
+
+def artifact_display_filename(artifact: Artifact) -> str:
+    """Return a display filename for UTF-8 Content-Disposition filename*."""
+    raw_name = Path(_normalize_workspace_path(artifact.workspace_path)).name
+    display_name = "".join(
+        "_" if char in {'"', "\r", "\n", "\x00"} else char
+        for char in raw_name
+    ).strip(" .")
+    if display_name:
+        return display_name[:160]
+    extension = mimetypes.guess_extension(artifact.mime_type or "") or ".txt"
+    return f"artifact-{artifact.id}{extension}"
 
 
 async def _create_file_write_artifact(

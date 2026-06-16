@@ -14,7 +14,7 @@ param(
 
     [string]$ReportDir = ".gstack\\qa-reports\\local"
     ,
-    [ValidateSet("smoke", "workstream10", "settings", "artifacts", "rich-input", "spec-complete")]
+    [ValidateSet("smoke", "workstream10", "settings", "artifacts", "rich-input", "file-task-closure", "spec-complete")]
     [string]$Suite = "smoke",
 
     [string]$Tenant = "default",

@@ -15,7 +15,7 @@ interface InputAreaProps {
 interface PendingAttachment {
   id: string;
   name: string;
-  state: string;
+  state: "uploading" | "available" | "failed";
 }
 
 export function InputArea({
@@ -44,13 +44,24 @@ export function InputArea({
 
   const toolMention = getToolMention(value);
   const toolPickerOpen = !disabled && toolMention !== null;
+  const hasBlockedAttachments = attachments.some(
+    (attachment) => attachment.state === "uploading" || attachment.state === "failed"
+  );
 
   const handleSend = () => {
     const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled || isUploading) return;
+    if (
+      (!trimmed && attachments.length === 0) ||
+      disabled ||
+      hasBlockedAttachments
+    ) {
+      return;
+    }
     onSend(
       trimmed,
-      attachments.map((attachment) => attachment.id)
+      attachments
+        .filter((attachment) => attachment.state === "available")
+        .map((attachment) => attachment.id)
     );
     setValue("");
     setAttachments([]);
@@ -83,30 +94,47 @@ export function InputArea({
 
     setAttachmentError(null);
     setIsUploading(true);
-    const uploadedAttachments: PendingAttachment[] = [];
     try {
       for (const file of files) {
+        const pendingId = createPendingAttachmentId();
+        setAttachments((current) => [
+          ...current,
+          {
+            id: pendingId,
+            name: file.name,
+            state: "uploading",
+          },
+        ]);
         try {
           const artifact = await onUploadFile(file);
-          uploadedAttachments.push({
-            id: artifact.id,
-            name:
-              typeof artifact.path === "string" && artifact.path
-                ? artifact.path.split(/[\\/]/).pop() || file.name
-                : file.name,
-            state: typeof artifact.state === "string" ? artifact.state : "uploaded",
-          });
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.id === pendingId
+                ? {
+                    id: artifact.id,
+                    name:
+                      typeof artifact.path === "string" && artifact.path
+                        ? artifact.path.split(/[\\/]/).pop() || file.name
+                        : file.name,
+                    state: "available",
+                  }
+                : attachment
+            )
+          );
         } catch (err: unknown) {
           setAttachmentError(
             err instanceof Error
               ? `${file.name}: ${err.message}`
               : `${file.name}: failed to upload attachment`
           );
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.id === pendingId
+                ? { ...attachment, state: "failed" }
+                : attachment
+            )
+          );
         }
-      }
-
-      if (uploadedAttachments.length) {
-        setAttachments((current) => [...current, ...uploadedAttachments]);
       }
     } finally {
       setIsUploading(false);
@@ -236,7 +264,9 @@ export function InputArea({
         <Button
           onClick={handleSend}
           disabled={
-            disabled || isUploading || (!value.trim() && attachments.length === 0)
+            disabled ||
+            hasBlockedAttachments ||
+            (!value.trim() && attachments.length === 0)
           }
           size="icon"
           className="bg-zinc-200 text-zinc-900 hover:bg-zinc-300 h-10 w-10 shrink-0"
@@ -273,4 +303,11 @@ function getToolMention(value: string) {
     end: cursor,
     query: match[2],
   };
+}
+
+function createPendingAttachmentId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `pending-${crypto.randomUUID()}`;
+  }
+  return `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

@@ -13,6 +13,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const createConversation = useChatStore((state) => state.createConversation);
   const selectConversation = useChatStore((state) => state.selectConversation);
+  const loadConversations = useChatStore((state) => state.loadConversations);
   const { currentUser, isLoadingUser, loadCurrentUser, loadSettings } =
     usePlatformStore();
   const hasToken = useTokenPresent();
@@ -29,6 +30,8 @@ export default function SettingsPage() {
       return;
     }
 
+    void loadConversations();
+
     void (async () => {
       const user = await loadCurrentUser();
       if (!user) {
@@ -38,7 +41,7 @@ export default function SettingsPage() {
         }
       }
     })();
-  }, [router, loadCurrentUser, hasToken]);
+  }, [router, loadCurrentUser, loadConversations, hasToken]);
 
   useEffect(() => {
     if (currentUser?.role === "admin") {

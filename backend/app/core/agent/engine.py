@@ -96,6 +96,7 @@ async def run_agent(
     max_tokens_per_turn: int | None = None,
     max_consecutive_errors: int | None = None,
     authorized_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
+    workspace_base: str | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
 
@@ -320,6 +321,7 @@ async def run_agent(
                     "conversation_id": conversation_id,
                     "run_id": run_id,
                     "tool_call_id": tc["id"],
+                    "workspace_base": workspace_base,
                 }
                 if tc["name"] == "code_as_action":
                     if is_sub_agent:

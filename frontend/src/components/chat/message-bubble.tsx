@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Message } from "@/stores/chat-store";
 import Markdown from "react-markdown";
+import { AttachmentChip } from "@/components/chat/file-attachment";
 
 interface MessageBubbleProps {
   message: Message;
@@ -11,6 +12,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
+  const attachments = message.attachments || [];
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -24,7 +26,22 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {isUser ? (
-          <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+          <>
+            {message.content && (
+              <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+            )}
+            {attachments.length > 0 && (
+              <div className={message.content ? "mt-2 flex flex-wrap gap-2" : "flex flex-wrap gap-2"}>
+                {attachments.map((attachment) => (
+                  <AttachmentChip
+                    key={attachment.id}
+                    name={attachment.path.split(/[\\/]/).pop() || attachment.path}
+                    state="sent"
+                  />
+                ))}
+              </div>
+            )}
+          </>
         ) : isTool ? (
           <pre className="whitespace-pre-wrap text-xs text-zinc-300">
             {message.content}

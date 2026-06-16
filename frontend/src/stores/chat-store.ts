@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { api } from "@/lib/api";
-import type { StreamArtifact, StreamContext } from "@/lib/api";
+import type {
+  MessageAttachment,
+  StreamArtifact,
+  StreamContext,
+} from "@/lib/api";
 import { useArtifactStore } from "@/stores/artifact-store";
 
 const ACTIVE_CONVERSATION_STORAGE_KEY = "activeConversationId";
@@ -10,6 +14,7 @@ export interface Message {
   role: "user" | "assistant" | "tool";
   content: string;
   created_at: string;
+  attachments?: MessageAttachment[];
 }
 
 export interface Conversation {
@@ -114,6 +119,40 @@ const storeConversationId = (conversationId: string | null) => {
   window.localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
 };
 
+const normalizeMessages = (messages: Message[] = []) =>
+  messages.map((message) => ({
+    ...message,
+    attachments: Array.isArray(message.attachments)
+      ? message.attachments
+      : undefined,
+  }));
+
+const selectedAttachmentMetadata = (
+  conversationId: string,
+  attachmentArtifactIds: string[] = []
+): MessageAttachment[] => {
+  if (!attachmentArtifactIds.length) return [];
+
+  const artifacts = useArtifactStore.getState().artifacts[conversationId] || [];
+  const byId = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  return attachmentArtifactIds.map((id) => {
+    const artifact = byId.get(id);
+    return {
+      id,
+      path: artifact?.path || "attachment",
+      state: artifact?.state || "available",
+      size_bytes: artifact?.size_bytes,
+      mime_type: artifact?.mime_type,
+      download_url: artifact?.download_url,
+      conversation_id: artifact?.conversation_id,
+      type: artifact?.type,
+      operation: artifact?.operation,
+      has_content: artifact?.has_content,
+      has_diff: artifact?.has_diff,
+    };
+  });
+};
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
@@ -167,7 +206,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
           messages: {
             ...state.messages,
-            [restoredConversationId]: detail.messages || [],
+            [restoredConversationId]: normalizeMessages(detail.messages || []),
           },
           toolEvents: {
             ...state.toolEvents,
@@ -252,7 +291,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
           messages: {
             ...state.messages,
-            [id]: data.messages || [],
+            [id]: normalizeMessages(data.messages || []),
           },
           toolEvents: {
             ...state.toolEvents,
@@ -351,6 +390,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: "user",
       content,
       created_at: new Date().toISOString(),
+      attachments: selectedAttachmentMetadata(
+        targetConversationId,
+        options.attachmentArtifactIds
+      ),
     };
 
     set((state) => ({

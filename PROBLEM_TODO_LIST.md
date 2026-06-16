@@ -4,6 +4,62 @@ Last updated: 2026-06-15
 
 Purpose: track confirmed issues, suspected issues, and spec/plan verification gaps before and during QA.
 
+## Workstream 12 file task closure findings (2026-06-15)
+
+- [x] Uploaded files were visible in artifact storage but not reliably readable
+  by the agent's file tools.
+  Resolution:
+  artifacts remain the durable source of truth, and chat runs now materialize
+  sent attachments into a clean per-run workspace before agent execution.
+  `file_read`, `file_write`, and `file_list` receive that run workspace as
+  their tool root, so stale global `/workspace` files are not visible in chat
+  runs.
+  Evidence:
+  `tests/test_file_task_closure.py` covers uploaded-file materialization,
+  `file_read` through the tool loop, stale workspace isolation, and
+  fail-closed materialization errors; full backend returned
+  `346 passed, 4 skipped`.
+
+- [x] Sent attachments were not explicit durable UI/message objects.
+  Resolution:
+  conversation messages now serialize `attachments`, optimistic user messages
+  retain selected attachment metadata, and sent message bubbles render existing
+  attachment chips in a read-only `sent` state without changing the visual
+  style.
+  Evidence:
+  W12 browser QA `file-task-closure` passed
+  `upload-state-available` and `sent-message-attachment-visible`.
+
+- [x] Generated artifacts could be previewed but not downloaded.
+  Resolution:
+  added `GET /api/v1/artifacts/{artifact_id}/download`, token-safe frontend
+  download handling, and a Files panel download action using the existing
+  button style.
+  Evidence:
+  W12 browser QA passed `artifact-download-bytes-match`; backend download tests
+  prove tenant isolation and safe ASCII/UTF-8 `Content-Disposition` handling.
+
+- [x] Agent could continue normal reasoning when a required attachment failed
+  to materialize.
+  Resolution:
+  chat streaming now emits a typed `ATTACHMENT_MATERIALIZATION_FAILED` SSE
+  error before calling the LLM, asking the user to retry/re-upload/wait instead
+  of falling back to stale files or model inference.
+  Evidence:
+  `test_attachment_materialization_failure_fails_closed_before_llm_call`
+  passed and asserts the mock gateway call count stays zero.
+
+- [x] Settings page sidebar could show no conversations when opened directly,
+  so clicking an existing conversation from `/settings` was not a reliable
+  route back to `/chat`.
+  Resolution:
+  `/settings` now loads conversations through the same chat-store owner used by
+  `/chat`, and Sidebar selection still performs the existing logic-only push to
+  `/chat`.
+  Evidence:
+  first W12 browser QA failed at `settings-sidebar-navigates-chat`; after the
+  fix the rerun returned `ok: true` with that step passing.
+
 ## Workstream 11 final spec-complete QA findings (2026-06-15)
 
 - [x] Nginx could keep a stale backend upstream IP after backend rebuild and return `502`.

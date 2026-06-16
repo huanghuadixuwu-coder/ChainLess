@@ -3,7 +3,7 @@
 interface AttachmentChipProps {
   name: string;
   state?: string;
-  onRemove: () => void;
+  onRemove?: () => void;
 }
 
 interface AttachmentErrorProps {
@@ -23,14 +23,16 @@ export function AttachmentChip({
     >
       <span className="truncate">{name}</span>
       <span className="text-zinc-500">{state}</span>
-      <button
-        type="button"
-        onClick={onRemove}
-        className="text-zinc-500 hover:text-zinc-100"
-        aria-label={`Remove attachment ${name}`}
-      >
-        x
-      </button>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-zinc-500 hover:text-zinc-100"
+          aria-label={`Remove attachment ${name}`}
+        >
+          x
+        </button>
+      )}
     </span>
   );
 }

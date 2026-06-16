@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { api } from "@/lib/api";
 import { useArtifactStore } from "@/stores/artifact-store";
 import type { Artifact } from "@/stores/artifact-store";
 
@@ -30,6 +31,16 @@ export function FileArtifactList({ conversationId }: FileArtifactListProps) {
     ? Object.prototype.hasOwnProperty.call(contentById, selectedId)
     : false;
 
+  const handleDownload = async (artifact: Artifact) => {
+    try {
+      await api.downloadArtifact(artifact);
+    } catch (err: unknown) {
+      window.alert(
+        err instanceof Error ? err.message : "Failed to download artifact"
+      );
+    }
+  };
+
   useEffect(() => {
     if (!selected || !selected.has_content) return;
     void loadArtifactContent(selected.id);
@@ -51,32 +62,46 @@ export function FileArtifactList({ conversationId }: FileArtifactListProps) {
     <div className="space-y-3" data-testid="artifact-file-list">
       <div className="space-y-2">
         {items.map((artifact) => (
-          <button
+          <div
             key={artifact.id}
-            type="button"
-            data-testid="artifact-row"
-            onClick={() => {
-              selectArtifact(conversationId, artifact.id);
-              if (artifact.has_content) {
-                void loadArtifactContent(artifact.id);
-              }
-            }}
             className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
               selectedId === artifact.id
                 ? "border-zinc-600 bg-zinc-800 text-zinc-100"
                 : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900"
             }`}
+            data-testid="artifact-row"
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  selectArtifact(conversationId, artifact.id);
+                  if (artifact.has_content) {
+                    void loadArtifactContent(artifact.id);
+                  }
+                }}
+                className="min-w-0 flex-1 text-left"
+              >
                 <p className="truncate text-xs font-medium">{artifact.path}</p>
                 <p className="mt-1 text-[11px] text-zinc-500">
                   {artifact.operation} / {formatBytes(artifact.size_bytes)}
                 </p>
+              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                {artifact.state === "available" && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDownload(artifact)}
+                    className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                    aria-label={`Download ${artifact.path}`}
+                  >
+                    Download
+                  </button>
+                )}
+                <ArtifactStateBadge artifact={artifact} />
               </div>
-              <ArtifactStateBadge artifact={artifact} />
             </div>
-          </button>
+          </div>
         ))}
       </div>
 

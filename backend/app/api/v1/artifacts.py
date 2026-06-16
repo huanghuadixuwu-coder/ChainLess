@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +14,11 @@ from app.api.deps import get_current_user, get_db
 from app.api.pagination import paginated_response
 from app.core.artifacts.service import (
     ARTIFACT_STATE_AVAILABLE,
+    artifact_display_filename,
+    artifact_download_filename,
     artifact_preview_contract,
     cleanup_expired_artifacts,
+    read_artifact_bytes,
     read_artifact_content,
     serialize_artifact,
 )
@@ -95,6 +99,43 @@ async def get_artifact_diff(
     """Return stored unified diff for the artifact."""
     artifact = await _get_owned_artifact(db, artifact_id, current_user)
     return await _artifact_payload(db, artifact, "diff")
+
+
+@router.get("/{artifact_id}/download")
+async def download_artifact(
+    artifact_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Download stored artifact content bytes with tenant/user authorization."""
+    artifact = await _get_owned_artifact(db, artifact_id, current_user)
+    if artifact.state != ARTIFACT_STATE_AVAILABLE:
+        raise api_error(
+            409,
+            "ARTIFACT_NOT_DOWNLOADABLE",
+            f"Artifact is {artifact.state}",
+        )
+    try:
+        content = await read_artifact_bytes(artifact, content_kind="content")
+    except PermissionError:
+        raise api_error(403, "ARTIFACT_STORAGE_FORBIDDEN", "Artifact storage path is forbidden")
+    except FileNotFoundError:
+        await db.commit()
+        raise not_found("ARTIFACT_CONTENT_NOT_FOUND", "Artifact content not found")
+
+    filename = artifact_download_filename(artifact)
+    encoded_filename = quote(artifact_display_filename(artifact))
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        ),
+        "Content-Length": str(len(content)),
+    }
+    return Response(
+        content=content,
+        media_type=artifact.mime_type or "application/octet-stream",
+        headers=headers,
+    )
 
 
 async def _artifact_payload(db: AsyncSession, artifact: Artifact, content_kind: str) -> dict:

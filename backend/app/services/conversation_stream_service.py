@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.contracts import validation_error
 from app.api.sse import sse_error, sse_event
-from app.core.artifacts import ToolExecutionResult
+from app.core.artifacts import (
+    ToolExecutionResult,
+    cleanup_run_workspace,
+    prepare_run_workspace,
+)
 from app.core.agent.code_executor import CODE_AS_ACTION_TOOL, execute_code_as_action
 from app.core.agent.engine import run_agent
 from app.core.agent.prompt_builder import build_context
@@ -34,6 +38,7 @@ from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
 from app.models.conversation import Conversation, Message
+from app.models.artifact import Artifact
 from app.models.tool_confirmation import ToolConfirmation
 
 
@@ -284,9 +289,50 @@ async def build_chat_stream_response(
     user_id: str | None = None,
     provider: str = "default",
     context_summary: dict | None = None,
+    attachments: list[Artifact] | None = None,
 ) -> StreamingResponse:
     queue: asyncio.Queue = asyncio.Queue()
     run_id = str(uuid.uuid4())
+    run_workspace = None
+    workspace_base = None
+    if attachments:
+        try:
+            run_workspace = await prepare_run_workspace(
+                run_id=run_id,
+                artifacts=attachments,
+            )
+            workspace_base = str(run_workspace.base_path)
+            messages = [
+                *messages,
+                {
+                    "role": "system",
+                    "content": run_workspace.summary_for_prompt,
+                },
+            ]
+        except Exception as exc:
+            failure_reason = safe_error_message(exc, "Attachment materialization")
+
+            async def generate_materialization_error():
+                event_index = 0
+                if context_summary:
+                    event_index += 1
+                    yield sse_event("context", context_summary, event_id=str(event_index))
+                event_index += 1
+                yield sse_error(
+                    "ATTACHMENT_MATERIALIZATION_FAILED",
+                    "Attached files are unavailable. Please retry, wait for upload completion, or re-upload the file.",
+                    {"reason": failure_reason},
+                    event_id=str(event_index),
+                )
+                event_index += 1
+                yield sse_event("done", {"tokens_used": 0}, event_id=str(event_index))
+
+            return StreamingResponse(
+                generate_materialization_error(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
     agent_task = asyncio.create_task(
         run_agent_stream(
             gateway,
@@ -298,6 +344,7 @@ async def build_chat_stream_response(
             conversation_id=str(conv_id),
             user_id=user_id,
             run_id=run_id,
+            workspace_base=workspace_base,
         )
     )
     heartbeat_task = asyncio.create_task(heartbeat_loop(queue))
@@ -385,6 +432,8 @@ async def build_chat_stream_response(
             if not cancelled:
                 event_index += 1
                 yield sse_event("done", {"tokens_used": tokens_used}, event_id=str(event_index))
+            if run_workspace is not None:
+                cleanup_run_workspace(run_id=run_workspace.run_id)
 
     return StreamingResponse(
         generate(),
@@ -412,6 +461,7 @@ async def run_agent_stream(
     conversation_id: str | None = None,
     user_id: str | None = None,
     run_id: str | None = None,
+    workspace_base: str | None = None,
 ) -> None:
     try:
         tools = await get_agent_tools(tenant_id)
@@ -425,6 +475,7 @@ async def run_agent_stream(
             user_id=user_id,
             conversation_id=conversation_id,
             run_id=run_id,
+            workspace_base=workspace_base,
         ):
             mapped = public_agent_event(event)
             if mapped is not None:

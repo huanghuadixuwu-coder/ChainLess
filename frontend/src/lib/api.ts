@@ -58,6 +58,7 @@ interface StreamArtifact {
   diff_bytes_stored: number;
   has_content: boolean;
   has_diff: boolean;
+  download_url?: string | null;
   preview?: {
     mode: string;
     allowed: boolean;
@@ -81,6 +82,15 @@ interface UploadedArtifact extends Partial<StreamArtifact> {
   id: string;
   size?: number;
   [key: string]: unknown;
+}
+
+interface MessageAttachment extends Partial<StreamArtifact> {
+  id: string;
+  path: string;
+  state?: string;
+  size_bytes?: number;
+  mime_type?: string | null;
+  download_url?: string | null;
 }
 
 interface StreamContext {
@@ -244,6 +254,40 @@ class ApiClient {
     return data as UploadedArtifact;
   }
 
+  async downloadArtifact(artifact: Pick<StreamArtifact, "id" | "path"> & {
+    download_url?: string | null;
+  }) {
+    const url = artifact.download_url || `/api/v1/artifacts/${artifact.id}/download`;
+    const res = await this.fetchDownloadUrl(url);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = artifact.path.split(/[\\/]/).pop() || "artifact";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  private async fetchDownloadUrl(url: string) {
+    if (!/^https?:\/\//i.test(url)) {
+      return this.fetch(url);
+    }
+
+    const headers = new Headers();
+    const token = this.getToken();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error?.message || `HTTP ${res.status}`);
+    }
+    return res;
+  }
+
   private normalizeTools(data: unknown): ToolOption[] {
     const items = Array.isArray(data)
       ? data
@@ -375,4 +419,5 @@ export type {
   ChatStreamOptions,
   ToolOption,
   UploadedArtifact,
+  MessageAttachment,
 };

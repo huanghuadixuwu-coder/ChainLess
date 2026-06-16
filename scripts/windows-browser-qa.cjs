@@ -8,6 +8,7 @@ const { apiRequest } = require("./qa/api-client.cjs");
 const { cleanupConversations } = require("./qa/cleanup-registry.cjs");
 const { getSuite, registerSuite } = require("./qa/suite-registry.cjs");
 const { createArtifactsSuite } = require("./qa/artifacts-suite.cjs");
+const { createFileTaskClosureSuite } = require("./qa/file-task-closure-suite.cjs");
 const { createRichInputSuite } = require("./qa/rich-input-suite.cjs");
 const { createSpecCompleteSuite } = require("./qa/spec-complete.cjs");
 
@@ -1055,6 +1056,19 @@ registerSuite(
 registerSuite(
   "rich-input",
   createRichInputSuite({
+    apiBaseFor,
+    apiRequest,
+    cleanupConversations,
+    safeApiCall,
+    loginViaUi,
+    screenshot,
+    applyBootstrapAdminCredentials,
+    readRequestBody,
+  })
+);
+registerSuite(
+  "file-task-closure",
+  createFileTaskClosureSuite({
     apiBaseFor,
     apiRequest,
     cleanupConversations,

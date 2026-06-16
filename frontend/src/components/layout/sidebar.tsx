@@ -63,6 +63,13 @@ export function Sidebar({ onNewChat }: SidebarProps) {
     }
   };
 
+  const handleSelectConversation = async (id: string) => {
+    await selectConversation(id);
+    if (!pathname?.startsWith("/chat")) {
+      router.push("/chat");
+    }
+  };
+
   return (
     <div className="w-[260px] bg-zinc-900 border-r border-zinc-800 flex flex-col shrink-0">
       {/* Header */}
@@ -111,7 +118,7 @@ export function Sidebar({ onNewChat }: SidebarProps) {
               }`}
             >
               <button
-                onClick={() => selectConversation(conv.id)}
+                onClick={() => void handleSelectConversation(conv.id)}
                 className="min-w-0 flex-1 px-3 py-2 text-left"
               >
                 <span className="truncate block">{conv.title || "Untitled"}</span>

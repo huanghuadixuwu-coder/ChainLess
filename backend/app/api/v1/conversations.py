@@ -166,6 +166,12 @@ async def get_conversation(
     )
     rows: list[Message] = list(result.scalars().all())
 
+    serialized_messages = []
+    for message in rows:
+        serialized_messages.append(
+            await _serialize_message(db, message, current_user)
+        )
+
     return {
         "id": str(conv.id),
         "title": conv.title,
@@ -173,15 +179,7 @@ async def get_conversation(
         "created_at": conv.created_at.isoformat(),
         "updated_at": conv.updated_at.isoformat(),
         "agent_id": str(conv.agent_id) if conv.agent_id else None,
-        "messages": [
-            {
-                "id": str(m.id),
-                "role": m.role,
-                "content": m.content or "",
-                "created_at": m.created_at.isoformat(),
-            }
-            for m in rows
-        ],
+        "messages": serialized_messages,
     }
 
 
@@ -289,6 +287,7 @@ async def chat(
                 "provider": provider,
             },
         },
+        attachments=attachments,
     )
 
 
@@ -515,6 +514,60 @@ def _attachment_not_attachable_message(artifact: Artifact) -> str:
     return "Only uploaded artifacts can be attached to chat messages"
 
 
+async def _serialize_message(
+    db: AsyncSession,
+    message: Message,
+    current_user: dict,
+) -> dict:
+    serialized = {
+        "id": str(message.id),
+        "role": message.role,
+        "content": message.content or "",
+        "created_at": message.created_at.isoformat(),
+    }
+    attachments = [
+        serialize_artifact(artifact)
+        for artifact in await _get_message_attachment_artifacts(db, message, current_user)
+    ]
+    if attachments:
+        serialized["attachments"] = attachments
+    return serialized
+
+
+async def _get_message_attachment_artifacts(
+    db: AsyncSession,
+    message: Message,
+    current_user: dict,
+) -> list[Artifact]:
+    meta = message.meta_data or {}
+    attachment_ids = meta.get("attachment_artifact_ids") or []
+    if message.role != "user" or not attachment_ids:
+        return []
+
+    artifacts: list[Artifact] = []
+    for attachment_id in attachment_ids:
+        try:
+            parsed_artifact_id = uuid.UUID(str(attachment_id))
+        except (TypeError, ValueError):
+            continue
+        artifact = (
+            await db.execute(
+                select(Artifact)
+                .join(Conversation, Artifact.conversation_id == Conversation.id)
+                .where(
+                    Artifact.id == parsed_artifact_id,
+                    Artifact.tenant_id == uuid.UUID(current_user["tenant_id"]),
+                    Artifact.conversation_id == message.conversation_id,
+                    Conversation.user_id == uuid.UUID(current_user["user_id"]),
+                    Conversation.status != "archived",
+                )
+            )
+        ).scalar_one_or_none()
+        if artifact is not None and _is_attachable_upload_artifact(artifact):
+            artifacts.append(artifact)
+    return artifacts
+
+
 async def _message_content_with_attachments(
     message: Message,
     current_user: dict,
@@ -529,26 +582,11 @@ async def _message_content_with_attachments(
 
     attachment_blocks: list[str] = []
     async with _async_session_factory() as session:
-        for attachment_id in attachment_ids:
-            try:
-                parsed_artifact_id = uuid.UUID(str(attachment_id))
-            except (TypeError, ValueError):
-                continue
-            artifact = (
-                await session.execute(
-                    select(Artifact)
-                    .join(Conversation, Artifact.conversation_id == Conversation.id)
-                    .where(
-                        Artifact.id == parsed_artifact_id,
-                        Artifact.tenant_id == uuid.UUID(current_user["tenant_id"]),
-                        Artifact.conversation_id == message.conversation_id,
-                        Conversation.user_id == uuid.UUID(current_user["user_id"]),
-                        Conversation.status != "archived",
-                    )
-                )
-            ).scalar_one_or_none()
-            if artifact is None or not _is_attachable_upload_artifact(artifact):
-                continue
+        for artifact in await _get_message_attachment_artifacts(
+            session,
+            message,
+            current_user,
+        ):
             try:
                 attachment_content = await read_artifact_content(artifact, content_kind="content")
             except Exception:

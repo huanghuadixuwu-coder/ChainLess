@@ -14,3 +14,6 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-06-04 | spec | docs/aegis/specs/2026-06-04-chainless-v1-complete-spec-reconciliation.md | Chainless V1 Complete Spec Reconciliation |
 | 2026-06-05 | plan | docs/aegis/plans/2026-06-05-chainless-v1-complete-spec-execution-plan.md | Chainless V1 Complete Spec Execution Plan |
 | 2026-06-05 | work | docs/aegis/work/2026-06-05-v1-spec-completion/ | Chainless V1 Spec Completion Execution Record |
+| 2026-06-15 | spec | docs/aegis/specs/2026-06-15-file-task-closure-brief.md | W12 File Task Closure Spec Brief |
+| 2026-06-15 | plan | docs/aegis/plans/2026-06-15-w12-file-task-closure-execution-plan.md | W12 File Task Closure Execution Plan |
+| 2026-06-15 | work | docs/aegis/work/2026-06-15-w12-file-task-closure/ | W12 File Task Closure Execution Record |
