@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -14,8 +15,10 @@ from app.api.sse import sse_error, sse_event
 from app.core.artifacts import ToolExecutionResult
 from app.core.agent.code_executor import CODE_AS_ACTION_TOOL
 from app.core.agent.engine import run_agent
+from app.core.workers.runtime import MAX_CAPTURED_EVENTS
 from app.models.conversation import Message
 from app.models.tool_confirmation import ToolConfirmation
+from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
 from app.services.conversation_stream_service import (
     build_chat_stream_response,
@@ -39,9 +42,62 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
     return events
 
 
+async def _active_runtime_worker(
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    name: str,
+    description: str,
+    trigger: dict | None = None,
+    policy: dict | None = None,
+    definition: dict | None = None,
+) -> tuple[Worker, WorkerVersion]:
+    from app.api.deps import _async_session_factory
+
+    async with _async_session_factory() as db:
+        worker = Worker(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name=f"{name} {uuid.uuid4().hex}",
+            description=description,
+            status="active",
+            enabled=True,
+            trigger=trigger or {"examples": [description], "keywords": []},
+            policy=policy or {"allowed_tools": [], "risk": "low"},
+            activation_evidence={"approved_by": "test"},
+            activation_confirmed_at=datetime.now(timezone.utc),
+            activation_confirmed_by=user_id,
+        )
+        db.add(worker)
+        await db.flush()
+        version = WorkerVersion(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            worker_id=worker.id,
+            version=1,
+            status="active",
+            definition=definition or {"instructions": "Handle the matched request."},
+            verification_evidence={"tests": "passed"},
+        )
+        db.add(version)
+        await db.flush()
+        worker.active_version_id = version.id
+        await db.commit()
+        await db.refresh(worker)
+        await db.refresh(version)
+        return worker, version
+
+
 def test_sse_helper_formats_canonical_events_and_error_envelope() -> None:
     assert sse_event("text", {"delta": "hi"}, event_id="1") == (
         'id: 1\nevent: text\ndata: {"delta": "hi"}\n\n'
+    )
+    assert sse_event(
+        "capability_candidate",
+        {"candidate_type": "memory", "active": False},
+        event_id="2",
+    ) == (
+        'id: 2\nevent: capability_candidate\ndata: {"candidate_type": "memory", "active": false}\n\n'
     )
 
     error_frame = sse_error("AGENT_ERROR", "Agent failed")
@@ -281,6 +337,462 @@ async def test_chat_endpoint_emits_canonical_events_and_persists_once(
     assistant_messages = [row for row in rows if row.role == "assistant"]
     assert len(assistant_messages) == 1
     assert assistant_messages[0].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_auto_executes_allowed_high_match_worker(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Expense automator",
+        description="expense automator high confidence routing",
+    )
+
+    class WorkerGateway:
+        async def embed(self, provider, texts, tenant_id=None):
+            return [
+                [1.0, 0.0, 0.0]
+                if "expense automator" in text.casefold()
+                else [0.0, 1.0, 0.0]
+                for text in texts
+            ]
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            system_text = "\n".join(
+                message.get("content") or ""
+                for message in messages
+                if message.get("role") == "system"
+            )
+            if "activated Chainless Worker" in system_text:
+                yield {"type": "text", "content": "worker handled expense request"}
+            else:
+                yield {"type": "text", "content": "normal agent path"}
+
+    monkeypatch.setattr(app_state, "llm_gateway", WorkerGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-auto-runtime"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/conversations/{conv_id}/chat",
+        headers=tenant_a_headers,
+        json={"content": "Please use the expense automator for this report."},
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    event_names = [name for name, _ in events]
+    assert event_names == ["context", "worker_notice", "text", "done"]
+    assert events[1][1]["decision"] == "auto_notice"
+    assert events[1][1]["status"] == "started"
+    assert events[2][1]["delta"] == "worker handled expense request"
+    assert "normal agent path" not in response.text
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert len(runs) == 1
+    assert runs[0].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_long_worker_stream_terminates_after_persisted_trace_cap(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Long stream worker",
+        description="long stream worker high confidence route",
+    )
+
+    class LongWorkerGateway:
+        async def embed(self, provider, texts, tenant_id=None):
+            return [
+                [1.0, 0.0, 0.0]
+                if "long stream worker" in text.casefold()
+                else [0.0, 1.0, 0.0]
+                for text in texts
+            ]
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            system_text = "\n".join(
+                message.get("content") or ""
+                for message in messages
+                if message.get("role") == "system"
+            )
+            assert "activated Chainless Worker" in system_text
+            for index in range(MAX_CAPTURED_EVENTS + 1):
+                yield {"type": "text", "content": f"chunk-{index};"}
+
+    monkeypatch.setattr(app_state, "llm_gateway", LongWorkerGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-long-stream-runtime"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await asyncio.wait_for(
+        client.post(
+            f"/api/v1/conversations/{conv_id}/chat",
+            headers=tenant_a_headers,
+            json={"content": "Please use the long stream worker for this."},
+        ),
+        timeout=3,
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    event_names = [name for name, _ in events]
+    assert event_names[:2] == ["context", "worker_notice"]
+    assert event_names[-1] == "done"
+    text_events = [data for name, data in events if name == "text"]
+    assert len(text_events) == MAX_CAPTURED_EVENTS + 1
+    assert text_events[-1]["delta"] == f"chunk-{MAX_CAPTURED_EVENTS};"
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert len(runs) == 1
+    assert runs[0].status == "succeeded"
+    assert len(runs[0].output_payload["events"]) == MAX_CAPTURED_EVENTS
+    assert runs[0].output_payload["events"][-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Fallback failure worker",
+        description="fallback failure worker high confidence route",
+    )
+
+    class FailedWorkerAndFallbackGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def embed(self, provider, texts, tenant_id=None):
+            return [
+                [1.0, 0.0, 0.0]
+                if "fallback failure worker" in text.casefold()
+                else [0.0, 1.0, 0.0]
+                for text in texts
+            ]
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("worker boom")
+            raise RuntimeError("fallback boom")
+            if False:
+                yield {}
+
+    monkeypatch.setattr(app_state, "llm_gateway", FailedWorkerAndFallbackGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-fallback-failed-runtime"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await asyncio.wait_for(
+        client.post(
+            f"/api/v1/conversations/{conv_id}/chat",
+            headers=tenant_a_headers,
+            json={"content": "Please use the fallback failure worker for this."},
+        ),
+        timeout=3,
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    event_names = [name for name, _ in events]
+    assert event_names[-2:] == ["error", "done"]
+    fallback_notices = [
+        data
+        for name, data in events
+        if name == "worker_notice" and data.get("status") == "fallback_started"
+    ]
+    assert len(fallback_notices) == 1
+    assert "fallback" in fallback_notices[0]["message"]
+    error = events[-2][1]["error"]
+    assert error["code"] == "WORKER_FALLBACK_FAILED"
+    assert "fallback" in error["message"]
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert len(runs) == 1
+    assert runs[0].status == "failed_fallback_failed"
+    assert runs[0].output_payload["events"][-1]["type"] == "error"
+    assert runs[0].output_payload["events"][-1]["code"] == "WORKER_FALLBACK_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_fallback_failure_overrides_prior_worker_error_done(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Terminal worker failure",
+        description="terminal worker failure high confidence route",
+    )
+
+    class WorkerTerminalThenFallbackFailureGateway:
+        async def embed(self, provider, texts, tenant_id=None):
+            return [
+                [1.0, 0.0, 0.0]
+                if "terminal worker failure" in text.casefold()
+                else [0.0, 1.0, 0.0]
+                for text in texts
+            ]
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            system_text = "\n".join(
+                message.get("content") or ""
+                for message in messages
+                if message.get("role") == "system"
+            )
+            if "activated Chainless Worker" not in system_text:
+                raise RuntimeError("fallback terminal boom")
+            yield {
+                "type": "tool_call",
+                "index": 0,
+                "id": f"blocked-{uuid.uuid4().hex}",
+                "name": "web_fetch",
+                "arguments": '{"url":"https://example.com"}',
+            }
+
+    monkeypatch.setattr(app_state, "llm_gateway", WorkerTerminalThenFallbackFailureGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-terminal-then-fallback-failed"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await asyncio.wait_for(
+        client.post(
+            f"/api/v1/conversations/{conv_id}/chat",
+            headers=tenant_a_headers,
+            json={"content": "Please use the terminal worker failure route."},
+        ),
+        timeout=3,
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    event_names = [name for name, _ in events]
+    assert event_names[-2:] == ["error", "done"]
+    error = events[-2][1]["error"]
+    assert error["code"] == "WORKER_FALLBACK_FAILED"
+    assert "fallback terminal boom" in error["message"]
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert len(runs) == 1
+    assert runs[0].status == "failed_fallback_failed"
+    assert runs[0].output_payload["events"][-1]["type"] == "error"
+    assert runs[0].output_payload["events"][-1]["code"] == "WORKER_FALLBACK_FAILED"
+    assert all(event.get("type") != "done" for event in runs[0].output_payload["events"][:-1])
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_does_not_execute_medium_worker_match(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Medium route",
+        description="medium route target",
+    )
+
+    class MediumGateway:
+        async def embed(self, provider, texts, tenant_id=None):
+            vectors = []
+            for text in texts:
+                lowered = text.casefold()
+                if "medium-probe" in lowered:
+                    vectors.append([0.65, 0.76, 0.0])
+                elif "medium route target" in lowered:
+                    vectors.append([1.0, 0.0, 0.0])
+                else:
+                    vectors.append([0.0, 1.0, 0.0])
+            return vectors
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            yield {"type": "text", "content": "normal agent path"}
+
+    monkeypatch.setattr(app_state, "llm_gateway", MediumGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-medium-runtime"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/conversations/{conv_id}/chat",
+        headers=tenant_a_headers,
+        json={"content": "medium-probe"},
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert [name for name, _ in events] == ["context", "text", "done"]
+    assert events[1][1]["delta"] == "normal agent path"
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_chat_runtime_surfaces_notice_without_executing_confirmation_worker(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.deps import _async_session_factory
+    from app.main import app_state
+
+    identity = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_runtime_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Sensitive worker",
+        description="sensitive worker confirmation route",
+        policy={"allowed_tools": [], "risk": "high"},
+    )
+
+    class ConfirmationGateway:
+        async def embed(self, provider, texts, tenant_id=None):
+            return [
+                [1.0, 0.0, 0.0]
+                if "sensitive worker" in text.casefold()
+                else [0.0, 1.0, 0.0]
+                for text in texts
+            ]
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            system_text = "\n".join(
+                message.get("content") or ""
+                for message in messages
+                if message.get("role") == "system"
+            )
+            assert "activated Chainless Worker" not in system_text
+            yield {"type": "text", "content": "normal agent path"}
+
+    monkeypatch.setattr(app_state, "llm_gateway", ConfirmationGateway())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "worker-confirmation-runtime"},
+    )
+    conv_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/conversations/{conv_id}/chat",
+        headers=tenant_a_headers,
+        json={"content": "Use the sensitive worker for this."},
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert [name for name, _ in events] == ["context", "worker_notice", "text", "done"]
+    assert events[1][1]["decision"] == "needs_confirmation"
+    assert events[1][1]["status"] == "needs_confirmation"
+    assert events[2][1]["delta"] == "normal agent path"
+
+    async with _async_session_factory() as db:
+        runs = list(
+            (
+                await db.execute(select(WorkerRun).where(WorkerRun.worker_id == worker.id))
+            ).scalars()
+        )
+    assert runs == []
 
 
 @pytest.mark.asyncio

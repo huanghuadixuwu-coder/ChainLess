@@ -7,6 +7,7 @@ the Agent Engine resolves those separately.
 """
 
 from app.core.tools.builtin import TOOL_EXECUTORS
+from app.core.capabilities.policy import require_worker_tool_policy
 from app.core.tools.mcp.manager import mcp_manager
 
 
@@ -23,6 +24,8 @@ async def execute_tool(tool_name: str, args: dict, context: dict | None = None):
     Raises:
         ValueError: If *tool_name* is not recognised.
     """
+    require_worker_tool_policy(tool_name, (context or {}).get("worker_context"))
+
     if tool_name in TOOL_EXECUTORS:
         executor = TOOL_EXECUTORS[tool_name]
         if tool_name in {"file_read", "file_write", "file_list"}:

@@ -29,6 +29,9 @@ async def create_memory(
     tags: list[str] | None = None,
     user_id: str | None = None,
     description: str | None = None,
+    metadata: dict | None = None,
+    commit: bool = True,
+    write_source: bool = True,
 ) -> Memory:
     """Create a memory row and enqueue async embedding computation.
 
@@ -46,14 +49,19 @@ async def create_memory(
         description=description,
         tags=tags or [],
         embedding=embedding,
+        meta_data=metadata or {},
     )
     db.add(mem)
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     await db.refresh(mem)
 
-    if embedding is None:
+    if embedding is None and commit:
         asyncio.ensure_future(_enqueue_embedding_safe(str(mem.id), content))
-    write_memory_source(mem)
+    if write_source:
+        write_memory_source(mem)
 
     return mem
 
@@ -86,18 +94,23 @@ async def search_memories(
     tenant_id: str,
     query: str,
     limit: int = 5,
+    user_id: str | None = None,
 ) -> list[Memory]:
     """Semantic search via pgvector cosine distance."""
     from app.main import app_state
 
-    await _backfill_missing_embeddings(db, tenant_id)
+    await _backfill_missing_embeddings(db, tenant_id, user_id=user_id)
 
     gateway = app_state.llm_gateway
     query_embedding = (await gateway.embed("default", [query], tenant_id=tenant_id))[0]
 
     result = await db.execute(
         select(Memory)
-        .where(Memory.tenant_id == tenant_id, Memory.embedding.isnot(None))
+        .where(
+            Memory.tenant_id == tenant_id,
+            *_memory_visibility_conditions(user_id),
+            Memory.embedding.isnot(None),
+        )
         .order_by(Memory.embedding.cosine_distance(query_embedding))
         .limit(limit)
     )
@@ -108,10 +121,15 @@ async def _backfill_missing_embeddings(
     db: AsyncSession,
     tenant_id: str,
     limit: int = 25,
+    user_id: str | None = None,
 ) -> None:
     result = await db.execute(
         select(Memory)
-        .where(Memory.tenant_id == tenant_id, Memory.embedding.is_(None))
+        .where(
+            Memory.tenant_id == tenant_id,
+            *_memory_visibility_conditions(user_id),
+            Memory.embedding.is_(None),
+        )
         .order_by(Memory.created_at.desc())
         .limit(limit)
     )
@@ -134,12 +152,13 @@ async def search_by_tags(
     tenant_id: str,
     tags: list[str],
     limit: int = 5,
+    user_id: str | None = None,
 ) -> list[Memory]:
     """Tag-based search using PostgreSQL array overlap (&&)."""
     if not tags:
         result = await db.execute(
             select(Memory)
-            .where(Memory.tenant_id == tenant_id)
+            .where(Memory.tenant_id == tenant_id, *_memory_visibility_conditions(user_id))
             .order_by(Memory.created_at.desc())
             .limit(limit)
         )
@@ -147,7 +166,11 @@ async def search_by_tags(
 
     result = await db.execute(
         select(Memory)
-        .where(Memory.tenant_id == tenant_id, Memory.tags.overlap(tags))
+        .where(
+            Memory.tenant_id == tenant_id,
+            *_memory_visibility_conditions(user_id),
+            Memory.tags.overlap(tags),
+        )
         .order_by(Memory.created_at.desc())
         .limit(limit)
     )
@@ -169,6 +192,7 @@ async def _extract_task_tags(
     db: AsyncSession,
     tenant_id: str,
     task_description: str,
+    user_id: str | None = None,
 ) -> list[str]:
     """Extract explicit and keyword-matched tags from the current task."""
     explicit = {
@@ -178,7 +202,7 @@ async def _extract_task_tags(
     tokens = _task_tokens(task_description)
 
     result = await db.execute(
-        select(Memory.tags).where(Memory.tenant_id == tenant_id)
+        select(Memory.tags).where(Memory.tenant_id == tenant_id, *_memory_visibility_conditions(user_id))
     )
     known_tags: dict[str, str] = {}
     for tag_list in result.scalars().all():
@@ -219,13 +243,14 @@ async def get_memories_for_session(
     tenant_id: str,
     task_description: str,
     limit: int = 5,
+    user_id: str | None = None,
 ) -> list[Memory]:
     """Get relevant memories for a session, with tag matches taking priority."""
-    task_tags = await _extract_task_tags(db, tenant_id, task_description)
-    tag_matches = await search_by_tags(db, tenant_id, task_tags, limit) if task_tags else []
+    task_tags = await _extract_task_tags(db, tenant_id, task_description, user_id=user_id)
+    tag_matches = await search_by_tags(db, tenant_id, task_tags, limit, user_id=user_id) if task_tags else []
 
     try:
-        semantic_matches = await search_memories(db, tenant_id, task_description, limit)
+        semantic_matches = await search_memories(db, tenant_id, task_description, limit, user_id=user_id)
     except Exception:
         logger.warning(
             "Semantic search failed, falling back to tag search",
@@ -237,7 +262,13 @@ async def get_memories_for_session(
     if merged:
         return merged
 
-    return await search_by_tags(db, tenant_id, [], limit)
+    return await search_by_tags(db, tenant_id, [], limit, user_id=user_id)
+
+
+def _memory_visibility_conditions(user_id: str | None) -> list:
+    if user_id is None:
+        return []
+    return [(Memory.user_id.is_(None)) | (Memory.user_id == user_id)]
 
 
 def memory_tenant_root(base_path: str, tenant_id: str) -> Path:

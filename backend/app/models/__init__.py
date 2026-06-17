@@ -13,6 +13,8 @@ from app.models.channel_configuration import ChannelConfiguration
 from app.models.skill import Skill
 from app.models.tool_configuration import ToolConfiguration
 from app.models.artifact import Artifact
+from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
+from app.models.worker import Worker, WorkerMatchFeedback, WorkerRun, WorkerVersion
 
 __all__ = [
     "Base",
@@ -31,4 +33,10 @@ __all__ = [
     "Skill",
     "ToolConfiguration",
     "Artifact",
+    "CapabilityAnalysisJob",
+    "CapabilityCandidate",
+    "Worker",
+    "WorkerMatchFeedback",
+    "WorkerRun",
+    "WorkerVersion",
 ]

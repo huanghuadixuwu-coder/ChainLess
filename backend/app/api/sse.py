@@ -15,6 +15,8 @@ SSEEventName = Literal[
     "sandbox",
     "sandbox_output",
     "confirmation_required",
+    "worker_notice",
+    "capability_candidate",
     "done",
     "error",
     "heartbeat",

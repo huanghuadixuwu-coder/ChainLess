@@ -133,3 +133,28 @@ def test_mcp_filesystem_tool_defaults_to_risky_and_requires_preauthorization() -
     assert classify_tool(tool_name) == RiskLevel.RISKY
     assert is_pre_authorized(tool_name, []) is False
     assert is_pre_authorized(tool_name, ["mcp__fs__list_directory"]) is True
+
+
+@pytest.mark.asyncio
+async def test_stdio_mcp_does_not_retain_task_bound_context_between_calls() -> None:
+    client = MCPToolClient(
+        "echo",
+        command=sys.executable,
+        args=["scripts/mcp_echo_server.py"],
+    )
+
+    await client.connect()
+    try:
+        assert client.get_tool_definitions()[0]["function"]["name"] == "mcp__echo__echo"
+        assert client._session is None
+        assert client._stdio_ctx is None
+
+        first = json.loads(await client.call_tool("mcp__echo__echo", {"text": "first"}))
+        second = json.loads(await client.call_tool("mcp__echo__echo", {"text": "second"}))
+
+        assert first == ["first"]
+        assert second == ["second"]
+        assert client._session is None
+        assert client._stdio_ctx is None
+    finally:
+        await client.disconnect()

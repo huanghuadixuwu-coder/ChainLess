@@ -85,8 +85,7 @@ async def list_memories(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_role("admin")),
 ):
-    tenant_id = current_user["tenant_id"]
-    conditions = [Memory.tenant_id == tenant_id]
+    conditions = _visible_memory_conditions(current_user)
 
     if type:
         conditions.append(Memory.type == type)
@@ -122,11 +121,19 @@ async def search_memories_endpoint(
 ):
     try:
         mems = await search_memories(
-            db, current_user["tenant_id"], query=q, limit=limit
+            db,
+            current_user["tenant_id"],
+            query=q,
+            limit=limit,
+            user_id=current_user["user_id"],
         )
     except Exception:
         mems = await search_by_tags(
-            db, current_user["tenant_id"], [], limit=limit
+            db,
+            current_user["tenant_id"],
+            [],
+            limit=limit,
+            user_id=current_user["user_id"],
         )
 
     items = [_memory_to_response(m) for m in mems]
@@ -144,7 +151,7 @@ async def update_memory(
     result = await db.execute(
         select(Memory).where(
             Memory.id == memory_id,
-            Memory.tenant_id == current_user["tenant_id"],
+            *_visible_memory_conditions(current_user),
         )
     )
     mem = result.scalar_one_or_none()
@@ -187,7 +194,7 @@ async def delete_memory(
     result = await db.execute(
         select(Memory).where(
             Memory.id == memory_id,
-            Memory.tenant_id == current_user["tenant_id"],
+            *_visible_memory_conditions(current_user),
         )
     )
     mem = result.scalar_one_or_none()
@@ -208,7 +215,11 @@ async def merge_context(
     tenant_id = current_user["tenant_id"]
 
     memories = await get_memories_for_session(
-        db, tenant_id, body.task, limit=5
+        db,
+        tenant_id,
+        body.task,
+        limit=5,
+        user_id=current_user["user_id"],
     )
     memory_context = build_memory_context(
         memories,
@@ -246,3 +257,10 @@ def _memory_to_response(mem: Memory) -> _MemoryResponse:
         created_at=mem.created_at.isoformat() if mem.created_at else "",
         updated_at=mem.updated_at.isoformat() if mem.updated_at else "",
     )
+
+
+def _visible_memory_conditions(current_user: dict) -> list:
+    return [
+        Memory.tenant_id == current_user["tenant_id"],
+        (Memory.user_id.is_(None)) | (Memory.user_id == current_user["user_id"]),
+    ]

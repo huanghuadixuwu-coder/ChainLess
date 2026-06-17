@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -24,6 +24,12 @@ from app.core.agent.code_executor import CODE_AS_ACTION_TOOL, execute_code_as_ac
 from app.core.agent.engine import run_agent
 from app.core.agent.prompt_builder import build_context
 from app.core.agent.tool_router import execute_tool
+from app.core.capabilities.policy import (
+    evaluate_worker_policy,
+    require_worker_tool_policy,
+    unpack_confirmation_args,
+)
+from app.core.capabilities.service import analyze_run_tail_for_candidates
 from app.core.tools.configuration import (
     apply_tool_configuration,
     filter_enabled_tools,
@@ -37,9 +43,12 @@ from app.core.sandbox.manager import SandboxManager
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
+from app.core.workers.matcher import WorkerMatchDecision, match_workers
+from app.core.workers.runtime import execute_worker_run
 from app.models.conversation import Conversation, Message
 from app.models.artifact import Artifact
 from app.models.tool_confirmation import ToolConfirmation
+from app.models.worker import Worker, WorkerVersion
 
 
 DEFAULT_CONFIRMATION_TIMEOUT_S = 30
@@ -117,13 +126,17 @@ async def persist_confirmation_required(
     args: dict,
     risk: str,
     timeout_s: int,
+    worker_policy_context: dict | None = None,
 ) -> None:
+    persisted_args = dict(args or {})
+    if worker_policy_context:
+        persisted_args["__worker_policy_context"] = worker_policy_context
     db.add(
         ToolConfirmation(
             conversation_id=conversation_id,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            args=args,
+            args=persisted_args,
             risk=risk,
             timeout_s=timeout_s,
             status="pending",
@@ -135,7 +148,7 @@ async def persist_confirmation_required(
             confirmation="pending",
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            args=args,
+            args=persisted_args,
             risk=risk,
             timeout_s=timeout_s,
         )
@@ -266,6 +279,13 @@ def public_agent_event(event: dict) -> tuple[str, dict] | None:
             "args": event.get("args") or {},
             "risk": event.get("risk", "destructive"),
             "timeout_s": event.get("timeout_s", DEFAULT_CONFIRMATION_TIMEOUT_S),
+            "worker_policy_context": event.get("worker_policy_context"),
+        }
+    if event_type == "worker_notice":
+        return "worker_notice", {
+            key: value
+            for key, value in event.items()
+            if key != "type"
         }
     if event_type == "done":
         return "done", {"tokens_used": event.get("tokens_used", 0)}
@@ -355,6 +375,7 @@ async def build_chat_stream_response(
         errored = False
         cancelled = False
         event_index = 0
+        capability_hint: dict | None = None
 
         try:
             if context_summary:
@@ -402,6 +423,7 @@ async def build_chat_stream_response(
                         args=data["args"],
                         risk=data["risk"],
                         timeout_s=data["timeout_s"],
+                        worker_policy_context=data.get("worker_policy_context"),
                     )
 
                 yield sse_event(event_type, data, event_id=str(event_index))
@@ -428,8 +450,27 @@ async def build_chat_stream_response(
                     role="assistant",
                     content=full_content,
                 )
+                if user_id:
+                    try:
+                        capability_hint = await analyze_run_tail_for_candidates(
+                            db,
+                            gateway=gateway,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            conversation_id=str(conv_id),
+                            source_run_id=run_id,
+                            user_messages=_user_messages_for_analysis(messages),
+                            assistant_content=full_content,
+                            provider=provider,
+                            artifacts=_artifact_refs_for_analysis(attachments or []),
+                        )
+                    except Exception:
+                        increment_runtime_metric("capability_analysis_failures")
 
             if not cancelled:
+                if capability_hint is not None:
+                    event_index += 1
+                    yield sse_event("capability_candidate", capability_hint, event_id=str(event_index))
                 event_index += 1
                 yield sse_event("done", {"tokens_used": tokens_used}, event_id=str(event_index))
             if run_workspace is not None:
@@ -440,6 +481,24 @@ async def build_chat_stream_response(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _user_messages_for_analysis(messages: list[dict]) -> list[str]:
+    user_messages: list[str] = []
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            user_messages.append(content)
+    return user_messages[-5:]
+
+
+def _artifact_refs_for_analysis(artifacts: list[Artifact]) -> list[dict[str, str]]:
+    return [
+        {"id": str(artifact.id), "path": artifact.workspace_path}
+        for artifact in artifacts
+    ]
 
 
 async def heartbeat_loop(queue: asyncio.Queue) -> None:
@@ -465,6 +524,20 @@ async def run_agent_stream(
 ) -> None:
     try:
         tools = await get_agent_tools(tenant_id)
+        worker_executed = await _maybe_execute_worker_for_stream(
+            gateway=gateway,
+            sandbox_manager=sandbox_manager,
+            provider=provider,
+            messages=messages,
+            queue=queue,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            source_run_id=run_id,
+            tools=tools,
+        )
+        if worker_executed:
+            return
         async for event in run_agent(
             gateway,
             sandbox_manager,
@@ -487,6 +560,171 @@ async def run_agent_stream(
         )
 
 
+async def _maybe_execute_worker_for_stream(
+    *,
+    gateway: LLMGateway,
+    sandbox_manager: SandboxManager,
+    provider: str,
+    messages: list[dict],
+    queue: asyncio.Queue,
+    tenant_id: str,
+    user_id: str | None,
+    conversation_id: str | None,
+    source_run_id: str | None,
+    tools: list[dict],
+) -> bool:
+    if not user_id or not conversation_id:
+        return False
+
+    matched_request = _latest_user_request(messages)
+    if not matched_request:
+        return False
+
+    input_payload = _worker_input_payload(matched_request)
+    try:
+        tenant_uuid = uuid.UUID(str(tenant_id))
+        user_uuid = uuid.UUID(str(user_id))
+    except ValueError:
+        return False
+
+    from app.api.deps import _async_session_factory
+
+    async with _async_session_factory() as worker_db:
+        decisions = await match_workers(
+            worker_db,
+            tenant_id=tenant_uuid,
+            user_id=user_uuid,
+            request=matched_request,
+            input_payload=input_payload,
+            gateway=gateway,
+            limit=3,
+        )
+        selected = _selected_worker_decision(decisions)
+        if selected is None:
+            return False
+
+        worker = await worker_db.get(Worker, selected.worker_id)
+        version = await worker_db.get(WorkerVersion, selected.version_id)
+        if worker is None or version is None:
+            return False
+
+        if selected.decision == "needs_confirmation":
+            await queue.put(
+                (
+                    "worker_notice",
+                    _worker_selection_notice(
+                        worker=worker,
+                        decision=selected,
+                        status="needs_confirmation",
+                        message=(
+                            f"Worker '{worker.name}' matched this request but requires confirmation; "
+                            "continuing with the normal Agent path."
+                        ),
+                    ),
+                )
+            )
+            return False
+
+        policy = evaluate_worker_policy(worker, version, input_payload=input_payload)
+        if policy.action == "confirm":
+            await queue.put(
+                (
+                    "worker_notice",
+                    _worker_selection_notice(
+                        worker=worker,
+                        decision=selected,
+                        status="needs_confirmation",
+                        message=(
+                            f"Worker '{worker.name}' requires confirmation before execution; "
+                            "continuing with the normal Agent path."
+                        ),
+                        reason=policy.reason,
+                    ),
+                )
+            )
+            return False
+        if policy.action != "allow":
+            return False
+
+        await queue.put(
+            (
+                "worker_notice",
+                _worker_selection_notice(
+                    worker=worker,
+                    decision=selected,
+                    status="started",
+                    message=f"Worker '{worker.name}' matched this request and is running.",
+                ),
+            )
+        )
+        result = await execute_worker_run(
+            worker_db,
+            gateway=gateway,
+            sandbox_manager=sandbox_manager,
+            provider=provider,
+            worker=worker,
+            version=version,
+            messages=messages,
+            input_payload=input_payload,
+            matched_request=matched_request,
+            match_score=selected.score,
+            source_run_id=source_run_id,
+            tools=tools,
+        )
+
+    for event in result.get("events", []):
+        mapped = public_agent_event(event)
+        if mapped is not None:
+            await queue.put(mapped)
+    return True
+
+
+def _latest_user_request(messages: list[dict]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
+def _worker_input_payload(request: str) -> dict[str, str]:
+    return {"request": request}
+
+
+def _selected_worker_decision(
+    decisions: list[WorkerMatchDecision],
+) -> WorkerMatchDecision | None:
+    for decision in decisions:
+        if decision.decision in {"auto_notice", "needs_confirmation"}:
+            return decision
+    return None
+
+
+def _worker_selection_notice(
+    *,
+    worker: Worker,
+    decision: WorkerMatchDecision,
+    status: str,
+    message: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "worker_id": str(decision.worker_id),
+        "version_id": str(decision.version_id),
+        "worker_name": worker.name,
+        "decision": decision.decision,
+        "status": status,
+        "score": decision.score,
+        "message": message,
+        "reasons": decision.reasons,
+    }
+    if reason:
+        data["reason"] = reason
+    return data
+
+
 async def execute_confirmed_tool(
     tool_name: str,
     args: dict,
@@ -498,7 +736,11 @@ async def execute_confirmed_tool(
     conversation_id: str | None = None,
     tool_call_id: str | None = None,
     run_id: str | None = None,
+    worker_context: dict | None = None,
 ) -> str | ToolExecutionResult:
+    args, persisted_worker_context = unpack_confirmation_args(args)
+    effective_worker_context = worker_context or persisted_worker_context
+    require_worker_tool_policy(tool_name, effective_worker_context)
     if tool_name == "code_as_action":
         return await execute_code_as_action(
             args.get("script", ""),
@@ -518,6 +760,7 @@ async def execute_confirmed_tool(
             "conversation_id": conversation_id,
             "tool_call_id": tool_call_id,
             "run_id": run_id,
+            "worker_context": effective_worker_context,
         },
     )
     return result
@@ -559,7 +802,7 @@ async def build_confirmation_stream_response(
             claimed.status,
         )
         resolved_tool_name = claimed.tool_name
-        resolved_args = claimed.args
+        resolved_args, resolved_worker_context = unpack_confirmation_args(claimed.args)
         timeout_s = claimed.timeout_s
         risk = claimed.risk
 
@@ -603,6 +846,7 @@ async def build_confirmation_stream_response(
                     conversation_id=str(conv_uuid),
                     tool_call_id=tool_call_id,
                     run_id=str(uuid.uuid4()),
+                    worker_context=resolved_worker_context,
                 )
                 confirmed_artifacts: list[dict] = []
                 if isinstance(confirmed_execution, ToolExecutionResult):
@@ -653,6 +897,7 @@ async def build_confirmation_stream_response(
                 tenant_id=user["tenant_id"],
                 user_id=user["user_id"],
                 conversation_id=str(conv_uuid),
+                worker_context=resolved_worker_context,
             ):
                 mapped = public_agent_event(event)
                 if mapped is None:
@@ -673,6 +918,7 @@ async def build_confirmation_stream_response(
                             args=data["args"],
                             risk=data["risk"],
                             timeout_s=data["timeout_s"],
+                            worker_policy_context=data.get("worker_policy_context"),
                         )
                 elif event_name == "error":
                     increment_runtime_metric("sse_errors")

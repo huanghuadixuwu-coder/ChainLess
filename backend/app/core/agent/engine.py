@@ -20,6 +20,7 @@ from typing import AsyncIterator, Any
 from app.core.artifacts import ToolExecutionResult
 from app.core.agent.code_executor import stream_code_as_action
 from app.core.agent.tool_router import execute_tool
+from app.core.capabilities.policy import enforce_worker_tool_policy
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.classifier import RiskLevel, classify_tool
@@ -96,6 +97,7 @@ async def run_agent(
     max_tokens_per_turn: int | None = None,
     max_consecutive_errors: int | None = None,
     authorized_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
+    worker_context: dict[str, Any] | None = None,
     workspace_base: str | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
@@ -247,6 +249,22 @@ async def run_agent(
                 }
                 continue
 
+            worker_tool_policy = enforce_worker_tool_policy(tc["name"], worker_context)
+            if worker_tool_policy.action == "block":
+                consecutive_errors += 1
+                yield {
+                    "type": "tool_error",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "code": "WORKER_TOOL_NOT_ALLOWED",
+                    "blocked": True,
+                    "rejection_reason": worker_tool_policy.reason,
+                    "error": f"worker policy disallows tool: {tc['name']}",
+                    "consecutive": consecutive_errors,
+                    "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                }
+                continue
+
             try:
                 args = json.loads(tc["arguments"]) if tc["arguments"] else {}
                 if not isinstance(args, dict):
@@ -322,6 +340,7 @@ async def run_agent(
                     "run_id": run_id,
                     "tool_call_id": tc["id"],
                     "workspace_base": workspace_base,
+                    "worker_context": worker_context,
                 }
                 if tc["name"] == "code_as_action":
                     if is_sub_agent:

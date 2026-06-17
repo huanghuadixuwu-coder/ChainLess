@@ -1,15 +1,13 @@
 """MCP tool client wrapping the ``mcp`` Python SDK.
 
-Manages a single MCP server connection over stdio transport, discovers
-available tools on connect, and provides a ``call_tool`` method for
-invoking them by name.
+Discovers available tools on connect and provides a ``call_tool`` method
+for invoking them by name.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Awaitable
 from typing import Any
 
 import httpx
@@ -73,23 +71,10 @@ class MCPToolClient:
         if not self.command:
             raise ValueError("MCP stdio transport requires command")
 
-        params = StdioServerParameters(
-            command=self.command,
-            args=self.args,
-            env=self.env,
-        )
-        # Use stdio_client context manager
-        self._stdio_ctx = stdio_client(params)
-        read, write = await self._stdio_ctx.__aenter__()
-        try:
-            self._session = ClientSession(read, write)
-            await self._session.__aenter__()
-            await self._session.initialize()
-
-            result = await self._session.list_tools()
-        except Exception:
-            await self._stdio_ctx.__aexit__(None, None, None)
-            raise
+        async with stdio_client(self._stdio_params()) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.list_tools()
         self._tools = [
             self._openai_tool_definition(
                 t.name,
@@ -104,6 +89,23 @@ class MCPToolClient:
         ]
         self._connected = True
         self._last_used_monotonic = time.monotonic()
+
+    def _stdio_params(self) -> StdioServerParameters:
+        if self.transport != "stdio":
+            raise ValueError(f"Unsupported MCP transport: {self.transport}")
+        if not self.command:
+            raise ValueError("MCP stdio transport requires command")
+        return StdioServerParameters(
+            command=self.command,
+            args=self.args,
+            env=self.env,
+        )
+
+    async def _call_stdio_tool(self, local_name: str, args: dict[str, Any]) -> Any:
+        async with stdio_client(self._stdio_params()) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session.call_tool(local_name, args)
 
     async def _connect_http(self) -> None:
         if not self.url:
@@ -219,7 +221,7 @@ class MCPToolClient:
                 return json.dumps(payload["content"], ensure_ascii=False)
             return json.dumps(payload, ensure_ascii=False)
 
-        result = await self._session.call_tool(local_name, args)
+        result = await self._call_stdio_tool(local_name, args)
         self._last_used_monotonic = time.monotonic()
 
         if result.content:

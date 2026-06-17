@@ -263,6 +263,7 @@ async def chat(
     session_context, context_summary = await _build_session_context(
         db,
         current_user["tenant_id"],
+        current_user["user_id"],
         body.content,
     )
     if session_context:
@@ -418,6 +419,7 @@ async def _get_owned_conversation(
 async def _build_session_context(
     db: AsyncSession,
     tenant_id: str,
+    user_id: str,
     content: str,
 ) -> tuple[str, dict]:
     """Fetch relevant memories and layered instructions for the session."""
@@ -431,7 +433,11 @@ async def _build_session_context(
 
     try:
         memories = await get_memories_for_session(
-            db, tenant_id, content, MEMORY_CONTEXT_LIMIT
+            db,
+            tenant_id,
+            content,
+            MEMORY_CONTEXT_LIMIT,
+            user_id=user_id,
         )
         if memories:
             summary["memory_count"] = len(memories)

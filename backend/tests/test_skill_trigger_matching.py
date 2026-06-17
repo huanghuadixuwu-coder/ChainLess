@@ -9,14 +9,20 @@ from httpx import AsyncClient
 from sqlalchemy import update
 
 from app.api.deps import _async_session_factory
+from app.core.capabilities.service import create_candidate
+from app.models.skill import Skill
 from app.models.user import User
 from app.services.auth_service import decode_token
 
 pytestmark = pytest.mark.asyncio
 
 
+def _identity(headers: dict[str, str]) -> dict[str, str]:
+    return decode_token(headers["Authorization"].split(" ", 1)[1])
+
+
 async def _promote(headers: dict[str, str]) -> None:
-    payload = decode_token(headers["Authorization"].split(" ", 1)[1])
+    payload = _identity(headers)
     async with _async_session_factory() as db:
         await db.execute(
             update(User)
@@ -24,6 +30,44 @@ async def _promote(headers: dict[str, str]) -> None:
             .values(role="admin")
         )
         await db.commit()
+
+
+async def _register_same_tenant_user(
+    client: AsyncClient,
+    tenant_name: str,
+) -> dict[str, str]:
+    suffix = uuid.uuid4().hex
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "tenant_name": tenant_name,
+            "username": f"user-{suffix}",
+            "password": "secret123",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+async def _seed_skill_candidate(headers: dict[str, str], trigger: str) -> uuid.UUID:
+    identity = _identity(headers)
+    async with _async_session_factory() as db:
+        candidate = await create_candidate(
+            db,
+            tenant_id=uuid.UUID(identity["tenant_id"]),
+            user_id=uuid.UUID(identity["user_id"]),
+            candidate_type="skill",
+            title=f"Private accepted skill {uuid.uuid4().hex}",
+            body="A private passive skill.",
+            source_run_id=f"run-{uuid.uuid4().hex}",
+            source_kind="conversation",
+            dedupe_key=f"skill:{uuid.uuid4().hex}",
+            evidence={"source_evidence": ["owner asked for a reusable skill"]},
+            payload={"trigger_terms": [trigger]},
+        )
+        await db.commit()
+        await db.refresh(candidate)
+        return candidate.id
 
 
 async def test_skill_crud_and_trigger_matching_are_tenant_scoped(
@@ -152,3 +196,70 @@ async def test_skill_duplicate_name_is_tenant_local(
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "SKILL_EXISTS"
     assert other_tenant.status_code == 201
+
+
+async def test_accepted_private_skill_match_is_user_scoped_and_legacy_scope_is_explicit(
+    client: AsyncClient,
+) -> None:
+    tenant_name = f"accepted-skill-{uuid.uuid4().hex}"
+    owner_headers = await _register_same_tenant_user(client, tenant_name)
+    same_tenant_other = await _register_same_tenant_user(client, tenant_name)
+    await _promote(owner_headers)
+    await _promote(same_tenant_other)
+    owner = _identity(owner_headers)
+    tenant_id = uuid.UUID(owner["tenant_id"])
+    private_trigger = f"private-trigger-{uuid.uuid4().hex}"
+    hidden_trigger = f"hidden-trigger-{uuid.uuid4().hex}"
+    legacy_trigger = f"legacy-trigger-{uuid.uuid4().hex}"
+    candidate_id = await _seed_skill_candidate(owner_headers, private_trigger)
+
+    accepted = await client.post(
+        f"/api/v1/capability-candidates/{candidate_id}/accept",
+        headers=owner_headers,
+    )
+    assert accepted.status_code == 200, accepted.text
+    skill_id = accepted.json()["metadata"]["target"]["skill_id"]
+
+    async with _async_session_factory() as db:
+        db.add_all(
+            [
+                Skill(
+                    tenant_id=tenant_id,
+                    user_id=None,
+                    scope="tenant_draft",
+                    name=f"non-shared-null-user-{uuid.uuid4().hex}",
+                    trigger_terms=[hidden_trigger],
+                ),
+                Skill(
+                    tenant_id=tenant_id,
+                    user_id=None,
+                    scope="shared_legacy",
+                    name=f"explicit-legacy-{uuid.uuid4().hex}",
+                    trigger_terms=[legacy_trigger],
+                ),
+            ]
+        )
+        await db.commit()
+
+    owner_match = await client.post(
+        "/api/v1/skills/match",
+        headers=owner_headers,
+        json={"text": f"{private_trigger} {hidden_trigger} {legacy_trigger}"},
+    )
+    other_match = await client.post(
+        "/api/v1/skills/match",
+        headers=same_tenant_other,
+        json={"text": f"{private_trigger} {hidden_trigger} {legacy_trigger}"},
+    )
+    other_list = await client.get("/api/v1/skills/?limit=100", headers=same_tenant_other)
+
+    assert owner_match.status_code == 200, owner_match.text
+    assert skill_id in {item["skill"]["id"] for item in owner_match.json()["items"]}
+    assert other_match.status_code == 200, other_match.text
+    other_names = {item["skill"]["name"] for item in other_match.json()["items"]}
+    assert any(name.startswith("explicit-legacy-") for name in other_names)
+    assert not any(item["skill"]["id"] == skill_id for item in other_match.json()["items"])
+    assert not any(
+        name.startswith("non-shared-null-user-")
+        for name in {item["name"] for item in other_list.json()["items"]}
+    )

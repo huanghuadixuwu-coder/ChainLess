@@ -18,6 +18,7 @@ from app.models.skill import Skill
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 Admin = Depends(require_role("admin"))
+SHARED_SKILL_SCOPES = ("shared", "shared_legacy")
 
 
 class SkillCreate(BaseModel):
@@ -72,6 +73,16 @@ def _tenant_id(user: dict) -> uuid.UUID:
     return uuid.UUID(user["tenant_id"])
 
 
+def _user_id(user: dict) -> uuid.UUID:
+    return uuid.UUID(user["user_id"])
+
+
+def _visible_skill_condition(user_id: uuid.UUID):
+    return (Skill.user_id == user_id) | (
+        Skill.user_id.is_(None) & Skill.scope.in_(SHARED_SKILL_SCOPES)
+    )
+
+
 def _normalize_terms(terms: list[str]) -> list[str]:
     seen: set[str] = set()
     normalized: list[str] = []
@@ -93,6 +104,7 @@ def _normalize_terms(terms: list[str]) -> list[str]:
 async def _skill_or_404(
     db: AsyncSession,
     tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
     skill_id: uuid.UUID,
 ) -> Skill:
     skill = (
@@ -100,6 +112,7 @@ async def _skill_or_404(
             select(Skill).where(
                 Skill.id == skill_id,
                 Skill.tenant_id == tenant_id,
+                _visible_skill_condition(user_id),
             )
         )
     ).scalar_one_or_none()
@@ -112,6 +125,8 @@ def _serialize(skill: Skill) -> dict[str, Any]:
     return {
         "id": str(skill.id),
         "tenant_id": str(skill.tenant_id),
+        "user_id": str(skill.user_id) if skill.user_id else None,
+        "scope": skill.scope,
         "name": skill.name,
         "description": skill.description,
         "trigger_terms": list(skill.trigger_terms or []),
@@ -131,6 +146,8 @@ async def create_skill(
     tenant_id = _tenant_id(user)
     skill = Skill(
         tenant_id=tenant_id,
+        user_id=None,
+        scope="shared_legacy",
         name=body.name,
         description=body.description,
         trigger_terms=body.trigger_terms,
@@ -159,7 +176,12 @@ async def list_skills(
     total = int(
         (
             await db.execute(
-                select(func.count()).select_from(Skill).where(Skill.tenant_id == tenant_id)
+                select(func.count())
+                .select_from(Skill)
+                .where(
+                    Skill.tenant_id == tenant_id,
+                    _visible_skill_condition(_user_id(user)),
+                )
             )
         ).scalar()
         or 0
@@ -168,7 +190,10 @@ async def list_skills(
         (
             await db.execute(
                 select(Skill)
-                .where(Skill.tenant_id == tenant_id)
+                .where(
+                    Skill.tenant_id == tenant_id,
+                    _visible_skill_condition(_user_id(user)),
+                )
                 .order_by(Skill.name)
                 .offset(offset)
                 .limit(limit)
@@ -198,6 +223,7 @@ async def match_skills(
                 select(Skill)
                 .where(
                     Skill.tenant_id == tenant_id,
+                    _visible_skill_condition(_user_id(user)),
                     Skill.enabled.is_(True),
                 )
                 .order_by(Skill.name)
@@ -228,7 +254,7 @@ async def get_skill(
     db: AsyncSession = Depends(get_db),
     user: dict = Admin,
 ):
-    return _serialize(await _skill_or_404(db, _tenant_id(user), skill_id))
+    return _serialize(await _skill_or_404(db, _tenant_id(user), _user_id(user), skill_id))
 
 
 @router.put("/{skill_id}")
@@ -238,7 +264,7 @@ async def update_skill(
     db: AsyncSession = Depends(get_db),
     user: dict = Admin,
 ):
-    skill = await _skill_or_404(db, _tenant_id(user), skill_id)
+    skill = await _skill_or_404(db, _tenant_id(user), _user_id(user), skill_id)
     if body.name is not None:
         skill.name = body.name
     if "description" in body.model_fields_set:
@@ -262,7 +288,7 @@ async def delete_skill(
     db: AsyncSession = Depends(get_db),
     user: dict = Admin,
 ):
-    skill = await _skill_or_404(db, _tenant_id(user), skill_id)
+    skill = await _skill_or_404(db, _tenant_id(user), _user_id(user), skill_id)
     await db.delete(skill)
     await db.commit()
     return None

@@ -1,8 +1,286 @@
 # Problem Todo List
 
-Last updated: 2026-06-15
+Last updated: 2026-06-17
 
 Purpose: track confirmed issues, suspected issues, and spec/plan verification gaps before and during QA.
+
+## W1 capability layer closure findings (2026-06-17)
+
+- [x] MCP stdio registration could return an empty response body despite a
+  `201` JSON response contract.
+  Scope:
+  This is a W1-discovered regression-fix slice, not part of the Capability
+  Candidate/Worker skeleton and not an Agent semantics change.
+  Root cause:
+  `MCPToolClient` kept a long-lived `stdio_client` context opened inside a
+  request task. Its AnyIO task group/cancel scope could later be finalized from
+  a different task, corrupting the Starlette response stream.
+  Resolution:
+  stdio discovery and tool calls now open short-lived stdio contexts and
+  sessions in the same task that closes them; HTTP/SSE transports remain
+  persistent.
+  Evidence:
+  `tests/test_api_contracts.py::test_tools_admin_can_register_test_and_delete_mcp_server`
+  passed, and `tests/test_mcp_transports.py` passed.
+
+- [x] Worker rollback could bypass the normal activation request/token gate.
+  Resolution:
+  rollback now requires a prior activation request and matching activation
+  token, then records confirmation evidence, confirming user, timestamp, and
+  rollback reason before switching the active version.
+  Evidence:
+  W1 targeted tests assert rollback without evidence, without a request token,
+  and with a wrong token are rejected; rollback with the requested token passes.
+
+- [x] Worker activation tokens were not bound to the requested WorkerVersion.
+  Resolution:
+  Workers now persist `activation_requested_version_id` alongside the token.
+  Normal activation and rollback require both token match and requested version
+  match, then clear both fields after success.
+  Evidence:
+  W1 targeted tests assert a token issued for v1 cannot activate v2 and cannot
+  rollback to v2.
+
+- [x] App JSON bounds could pass while PostgreSQL `jsonb::text` checks failed.
+  Resolution:
+  app validation now uses a conservative byte limit below the DB check, and
+  Worker public write paths translate residual bounds/status check failures to
+  `422 VALIDATION_ERROR`.
+  Evidence:
+  W1 targeted tests cover a many-key public Worker create payload that now
+  returns 422 before persistence instead of a 500.
+
+- [x] Capability-layer downgrade could fail late after scoped Skill duplicates.
+  Resolution:
+  migration `0008` now preflights duplicate `(tenant_id, name)` Skill rows and
+  raises a clear `RuntimeError` before dropping `scope`/`user_id` or restoring
+  `uq_skills_tenant_name`.
+  Evidence:
+  W1 targeted tests assert the migration contains the duplicate Skill-name
+  preflight and explicit rollback failure message.
+
+- [x] Capability-layer JSON/error metadata lacked explicit bounds.
+  Resolution:
+  write paths now validate JSON byte size/depth through a small shared helper,
+  analysis-job error messages are truncated to the bounded durable size, and
+  database checks bound JSON/error text storage.
+  Evidence:
+  W1 targeted tests cover oversized candidate evidence, deeply nested analysis
+  job payloads, deeply nested Worker trigger metadata, and truncated analysis
+  job error messages.
+
+- [x] Capability and Worker durable status/type fields were unconstrained.
+  Resolution:
+  model `CheckConstraint`s and migration `0009` now constrain Candidate type,
+  Candidate status, analysis job status, Worker status, WorkerVersion status,
+  and WorkerRun status.
+  Evidence:
+  W1 targeted tests assert invalid durable Candidate/Job/Worker/Version/Run
+  states are rejected by PostgreSQL.
+
+- [x] Candidate retrieval helper exposed unaccepted candidates.
+  Resolution:
+  `ACTIVE_RETRIEVAL_STATUSES` is now limited to `accepted` and
+  `edited_accepted`.
+  Evidence:
+  W1 targeted tests assert `new`, `seen`, `snoozed`, `dismissed`, `merged`,
+  `archived`, and `muted_pattern` candidates are not returned, while accepted
+  states are returned only for the same tenant/user.
+
+- [x] Capability analysis outbox enqueue/claim was not atomic enough for
+  PostgreSQL concurrency.
+  Resolution:
+  enqueue now uses a single PostgreSQL upsert returning the durable row id,
+  claim uses `FOR UPDATE SKIP LOCKED`, and `skipped_duplicate` has an explicit
+  lifecycle helper.
+  Evidence:
+  W1 targeted tests now include concurrent enqueue/claim and skipped-duplicate
+  coverage; `tests/test_capability_candidates.py tests/test_worker_runtime.py`
+  passed.
+
+- [x] Private Skill direct get/update/delete could leak across same-tenant
+  users by id.
+  Resolution:
+  direct Skill lookup now scopes to the current user's private rows plus
+  shared/legacy rows only.
+  Evidence:
+  W1 targeted tests assert same-tenant users cannot get, update, or delete
+  another user's private Skill by id.
+
+- [x] Worker rollback could reactivate a prior version without confirmation
+  evidence.
+  Resolution:
+  rollback now requires confirmation evidence and records the confirming user,
+  timestamp, evidence, and reason while reactivating the verified prior version.
+  Evidence:
+  W1 targeted tests assert rollback without evidence is rejected and rollback
+  with evidence records the audit fields.
+
+## V2 W2 capability generation closure findings (2026-06-17)
+
+- [x] Useful chat runs needed a noise-controlled candidate generation path.
+  Resolution:
+  added a deterministic rule gate for remember/next-time/always text, tool-chain,
+  artifact, user-correction, and fallback useful-run signals before any analyzer
+  spend. Pure greeting chat remains below the analysis threshold.
+  Evidence:
+  W2 rule tests are included in `tests/test_capability_candidates.py`.
+
+- [x] Analyzer output needed strict parsing before durable candidate writes.
+  Resolution:
+  added strict JSON-only analyzer parsing for inactive Memory, Skill, and Worker
+  candidates, with allowed candidate types, confidence clamping, bounded source
+  evidence, and invalid-output fallback to no candidates.
+  Evidence:
+  fake-gateway analyzer tests cover all three candidate types plus invalid JSON.
+
+- [x] Eligible stream-tail analysis could be lost on timeout.
+  Resolution:
+  eligible runs are durably enqueued before best-effort stream-tail analysis;
+  timeout increments a bounded runtime metric and leaves the job pending for the
+  ARQ-compatible processor. Analyzer failures persist bounded error metadata.
+  Evidence:
+  W2 tests cover timeout, pending background completion, idempotent duplicate
+  processing, and failure metrics.
+
+- [x] Candidate generation needed to avoid inbox spam and accidental activation.
+  Resolution:
+  candidate persistence dedupes by tenant/user/type/dedupe key, updates active
+  inbox candidates instead of creating duplicates, suppresses dismissed/muted
+  repeats, and emits only a lightweight `capability_candidate` SSE hint with
+  `active: false`.
+  Evidence:
+  Docker verification passed:
+  `pytest -q tests/test_capability_candidates.py tests/test_sse_contract.py`
+  returned `37 passed in 15.33s`.
+
+- [x] W2 spec review found `capability_candidate` was emitted outside the
+  canonical SSE event-name contract.
+  Resolution:
+  added `capability_candidate` to `SSEEventName` and a focused SSE helper
+  assertion for the inactive candidate hint frame.
+  Evidence:
+  W2 review-fix Docker verification returned `38 passed in 16.37s`; broad
+  regression returned `43 passed in 30.03s`.
+
+- [x] W2 muted-pattern suppression only checked exact dedupe matches.
+  Resolution:
+  before creating or hinting a new analyzed candidate, the capability service
+  now scans same tenant/user/type `muted_pattern` rows and applies the stored
+  pattern against the new dedupe key/title. Exact dismissed dedupe matches
+  still suppress exact repeats.
+  Evidence:
+  `test_broad_muted_pattern_suppresses_new_matching_candidate_and_hint` proves
+  a broad mute pattern suppresses a new matching candidate and emits no hint.
+
+- [x] W2 background analysis jobs could remain `running` forever.
+  Resolution:
+  pending analysis claim now also reclaims stale `running` jobs whose claim
+  lease has expired, and background analyzer execution is bounded by
+  `asyncio.wait_for`; hung background analyzers mark the job failed with
+  bounded `ANALYZER_TIMEOUT` metadata and metrics.
+  Evidence:
+  `test_stale_running_analysis_job_is_reclaimed` and
+  `test_background_hung_analyzer_times_out_and_marks_job_failed` cover lease
+  reclaim and bounded hung-gateway behavior.
+
+- [x] W2 future-snoozed candidates could be updated and hinted early.
+  Resolution:
+  candidate persistence now suppresses exact dedupe repeats while
+  `snoozed_until` is still in the future, and only reopens an expired snooze
+  back to `new` when updating.
+  Evidence:
+  `test_future_snoozed_candidate_suppresses_update_and_hint` proves the
+  candidate body/title stay unchanged and no hint is emitted before expiry.
+
+- [x] W2 dedupe lookup could select a latest merged row and create spam.
+  Resolution:
+  exact dedupe lookup now follows `merge_target_candidate_id` and otherwise
+  resolves by status priority so existing inbox/accepted/suppressed rows are
+  handled before creating a new candidate.
+  Evidence:
+  `test_merged_latest_dedupe_repeat_updates_merge_target_without_spam` proves a
+  repeat updates the merge target and does not create a third duplicate row.
+
+## V2 W3 capability acceptance closure findings (2026-06-17)
+
+- [x] Capability Candidate acceptance only changed candidate status instead of
+  creating real reusable capability objects.
+  Resolution:
+  `/api/v1/capability-candidates/{id}/accept` now creates private Memory rows,
+  private passive Skill rows, or inactive Worker draft/version rows. Worker
+  improvement candidates create a new draft version instead of overwriting an
+  existing version.
+  Evidence:
+  `tests/test_capability_acceptance.py` covers Memory, Skill, Worker draft,
+  Worker improvement, edited proposals, owner-only candidate access, and
+  inactive-candidate rejection.
+
+- [x] Accepted private Memory and Skill needed explicit same-tenant user
+  isolation.
+  Resolution:
+  Memory list/search/merge and chat session context now retrieve current-user
+  private Memory plus tenant-level shared rows only. Skill list/match/direct
+  access now returns current-user private Skills plus explicit `shared` or
+  `shared_legacy` rows.
+  Evidence:
+  W3 targeted tests cover accepted private Memory list/search/merge isolation,
+  accepted private Skill match isolation, and explicit legacy Skill visibility.
+
+- [x] Accepted private Memory could still leak into another same-tenant user's
+  chat context.
+  Evidence:
+  spec review found `conversations.py` built session context with only
+  `tenant_id`, so `get_memories_for_session()` could read another user's
+  private accepted Memory.
+  Resolution:
+  chat context now passes `current_user["user_id"]` through
+  `_build_session_context()` into persistent memory retrieval.
+  Verification:
+  `tests/test_conversation_memory_context.py` exercises the real
+  `/conversations/{id}/chat` SSE path and proves the other user's private
+  accepted Memory is not injected.
+
+- [x] Concurrent candidate acceptance could create duplicate target resources.
+  Evidence:
+  code-quality review found target Memory/Skill/Worker creation happened before
+  the candidate status transition without a row lock or conditional update.
+  Resolution:
+  candidate acceptance now loads the scoped candidate row with
+  `SELECT ... FOR UPDATE` before checking status and creating target resources.
+  The losing concurrent accept sees the updated status and returns
+  `409 CAPABILITY_CANDIDATE_NOT_ACCEPTABLE`.
+  Verification:
+  `test_concurrent_memory_candidate_acceptance_is_exactly_once` proves one
+  success, one conflict, and exactly one target Memory row.
+
+- [x] Memory acceptance side effects could be enqueued before the outer
+  acceptance transaction committed.
+  Resolution:
+  `create_memory(commit=False, write_source=False)` no longer enqueues an
+  embedding job before the acceptance transaction commits; acceptance enqueues
+  embedding and writes the memory source after the DB commit.
+  Evidence:
+  W3 quality re-review returned `QUALITY_PASS`.
+
+- [ ] Accepted Memory source-file write is post-commit and synchronous.
+  Risk:
+  if the filesystem write fails after DB acceptance is durable, the request can
+  surface an error even though acceptance succeeded in the database.
+  Recommended future fix:
+  move source-file write into a retryable/logged outbox path or catch/log with
+  a repair task.
+  Status:
+  non-blocking W3 residual risk; DB acceptance correctness is preserved.
+
+- [ ] Memory acceptance can hold the candidate row lock while inline embedding
+  runs.
+  Risk:
+  slow embedding can extend lock wait time during concurrent accepts.
+  Recommended future fix:
+  prefer async embedding after commit for acceptance-created Memory.
+  Status:
+  non-blocking W3 residual risk; exactly-once correctness is preserved.
 
 ## Workstream 12 file task closure findings (2026-06-15)
 
@@ -1418,3 +1696,121 @@ two-stage review.
   Verification:
   `test_live_docker_tests_are_isolated_behind_a_healthy_proxy_dependency`
   passed as part of the W9 focused gate.
+
+## V2 W4 Worker runtime closure findings
+
+- [x] Active Workers were not actually callable from normal chat.
+  Evidence:
+  the first W4 spec review found `get_agent_tools()` exposed only built-in,
+  MCP, and code tools, while `run_agent_stream()` called `run_agent()`
+  directly and `execute_worker_run()` had no production app call site.
+  Resolution:
+  normal chat now runs semantic Worker matching before the ordinary Agent path.
+  `auto_notice` Workers execute through `execute_worker_run`, while medium and
+  confirmation-required matches keep the normal Agent path.
+  Verification:
+  W4 spec re-review returned `SPEC_PASS`, and SSE contract tests prove
+  auto-execute, medium non-execute, and confirmation notice behavior.
+
+- [x] Worker fallback was not transparent enough for users or stream clients.
+  Evidence:
+  first W4 spec review found fallback status could be stored without a visible
+  Worker failure/fallback notice.
+  Resolution:
+  fallback now emits `worker_notice` before fallback events and records
+  `failed_fallback_succeeded` or `failed_fallback_failed`.
+  Verification:
+  W4 targeted tests include fallback notice and status assertions.
+
+- [x] Worker live streaming reused bounded persisted trace and could drop
+  terminal events.
+  Evidence:
+  first W4 quality review found `execute_worker_run()` returned
+  `output_payload["events"]`, but persisted events are capped at
+  `MAX_CAPTURED_EVENTS`, so long Worker streams could lose final `done` and
+  leave SSE waiting on heartbeats.
+  Resolution:
+  runtime now separates live stream events from DB-bounded trace, keeps
+  persisted events capped, and preserves terminal events when clipping.
+  Verification:
+  regression `test_chat_runtime_long_worker_stream_terminates_after_persisted_trace_cap`
+  passes and proves `MAX_CAPTURED_EVENTS + 1` chunks still terminate.
+
+- [x] `failed_fallback_failed` could be masked by an earlier Worker
+  `error`/`done` terminal pair.
+  Evidence:
+  second W4 quality review found final-status semantics could be lost if the
+  failed Worker already emitted terminal events before fallback failed.
+  Resolution:
+  fallback execution strips terminal events from the failed Worker before
+  appending fallback events, and `failed_fallback_failed` appends canonical
+  `WORKER_FALLBACK_FAILED` as final live and persisted terminal event.
+  Verification:
+  exact regression `test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+  passed, final targeted W4 suite returned `39 passed`, and full backend
+  returned `413 passed, 4 skipped`.
+
+- [x] Full backend Docker test command was missing required isolated-test
+  environment variables.
+  Evidence:
+  first full backend run failed because `APP_ENV` was not `test`,
+  `CHAINLESS_TESTING` was not `1`, and sandbox-proxy tests import
+  `SANDBOX_IMAGE` at module load.
+  Resolution:
+  use full backend Docker tests with `APP_ENV=test`,
+  `CHAINLESS_TESTING=1`, and `SANDBOX_IMAGE=chainless-sandbox:latest`.
+  Verification:
+  corrected full backend command returned `410 passed`, later `412 passed`,
+  and final `413 passed`.
+
+- [x] PowerShell raw double-quoted `rg` patterns can break when the pattern
+  itself contains JSON/code quotes.
+  Evidence:
+  a W4 inspection command failed with `The string is missing the terminator:
+  "`.
+  Resolution:
+  use single-quoted `rg` patterns, or use `Get-Content` slices for code
+  inspection when matching quote-heavy snippets.
+  Verification:
+  later inspections used quoted paths and `Get-Content` without repeating the
+  parser failure.
+
+- [ ] Worker matching is not yet backed by persisted Worker embedding/index
+  rows.
+  Evidence:
+  W4 spec reviewer marked this as non-blocking: semantic matching is
+  embedding-backed, but worker-side embeddings are computed at match time
+  rather than stored/indexed as pgvector rows.
+  Required follow-up:
+  later workstream should persist Worker match embeddings or otherwise bound
+  matching cost before large-scale production use.
+
+- [ ] Minimal Worker policy vocabulary needs tightening in later policy/hook
+  work.
+  Evidence:
+  W4 policy is intentionally minimal. Non-empty allowed-tool lists are enforced
+  in normal execution and confirmation resume, but empty allow-list semantics
+  are still ambiguous between "no tools" and "unrestricted" across helpers.
+  Required follow-up:
+  W6 policy/hook expansion should make empty/absent allowed-tools semantics
+  explicit and test them in both normal and confirmation resume paths.
+
+- [ ] `WorkerRun.error_code/error_message` final-status metadata can be less
+  precise than live/persisted terminal events.
+  Evidence:
+  final quality re-review passed but noted secondary run metadata may still
+  reflect the initial Worker failure while terminal events correctly represent
+  final fallback failure.
+  Required follow-up:
+  align `WorkerRun.error_code/error_message` with final fallback status, or add
+  explicit separate fields for initial Worker failure and final fallback
+  outcome.
+
+- [ ] `conversation_stream_service.py` is a large facade after W4.
+  Evidence:
+  W4 added chat/Worker orchestration to an already central stream service. The
+  implementation still calls matcher/runtime/policy seams rather than owning
+  internals, but file size is now a maintainability pressure.
+  Required follow-up:
+  avoid growing the stream service further; extract a small Worker stream
+  orchestration seam if W5/W6 need more chat-runtime logic.

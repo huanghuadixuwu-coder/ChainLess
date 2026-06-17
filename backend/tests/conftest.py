@@ -11,6 +11,8 @@ from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 
+os.environ.setdefault("CHAINLESS_TESTING", "1")
+
 from app.main import app
 
 
