@@ -3,7 +3,7 @@
 ## TodoCheckpointDraft
 
 Current todo:
-- W5 next
+- W6 next
 
 Completed todos:
 - W1 RED tests added for Capability Candidate contract, analysis outbox, Skill personal scope, and Worker activation gates.
@@ -67,9 +67,25 @@ Completed todos:
 - W4 full backend Docker verification passed: `413 passed, 4 skipped`.
 - Independent W4 spec review returned `SPEC_PASS`; independent W4 code-quality
   re-review returned `QUALITY_PASS`.
+- W5 implementation added `app.core.capabilities.retrieval` as the canonical
+  Agent capability context facade, source-traced accepted Memory/Skill/Worker
+  planning sections, prompt-builder soft merge support, and stream-service
+  integration through the retrieval facade.
+- W5 review fixes tightened Capability planning scope so Memory is current-user
+  private only, Skill is current-user private plus explicit `shared_legacy`
+  only, unaccepted candidates remain inert, and current user request text is
+  rendered as untrusted user-role data inside the system prompt.
+- W5 also added a default-compatible `include_userless` switch to existing
+  Memory retrieval helpers so capability planning can be private-only without
+  changing legacy chat/memory API behavior.
+- W5 targeted Docker verification passed: `30 passed`.
+- W5 W1-W5 broad Docker regression passed: `87 passed`.
+- W5 full backend Docker verification passed: `416 passed, 4 skipped`.
+- W5 read-only code review found three Important issues; all were fixed and
+  reverified. The reviewer subagent was closed after completion.
 
 Active slice:
-- W5 next.
+- W6 next.
 
 Evidence refs:
 - Worktree created at `C:/Users/11367/.config/aegis/worktrees/Chainless/codex-v2-capability-layer`
@@ -144,35 +160,63 @@ Evidence refs:
   only Git CRLF conversion warnings.
 - W4 final independent review results: spec reviewer returned `SPEC_PASS`;
   code-quality re-review returned `QUALITY_PASS`.
+- W5 initial RED: `docker run ... pytest -q tests/test_capability_planning.py`
+  failed with `ImportError: cannot import name 'render_capability_context'`.
+- W5 first GREEN: `docker run ... pytest -q tests/test_capability_planning.py -vv`
+  passed with `3 passed`.
+- W5 first targeted regression GREEN:
+  `docker run ... pytest -q tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py -vv`
+  passed with `30 passed`.
+- W5 first broad regression GREEN:
+  `docker run ... pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py -vv`
+  passed with `87 passed`.
+- W5 first full backend GREEN: `docker run ... pytest -q` passed with
+  `416 passed, 4 skipped, 1 warning`.
+- W5 read-only review returned `Ready to merge: With fixes`; findings were
+  tenant-level Memory entering planning, overly broad Skill visibility, and raw
+  current request rendered into system prompt without explicit untrusted-data
+  labeling.
+- W5 review-fix RED:
+  `docker run ... pytest -q tests/test_capability_planning.py -vv` failed with
+  `3 failed` against the newly added reviewer-gap assertions.
+- W5 review-fix targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py`
+  passed with `30 passed`.
+- W5 review-fix broad GREEN:
+  `docker run ... pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py`
+  passed with `87 passed`.
+- W5 final full backend GREEN: `docker run ... pytest -q` passed with
+  `416 passed, 4 skipped, 1 warning`.
 
 Blocked-on:
 - none.
 
 Next step:
-- Proceed to W5. No commit.
+- Proceed to W6. No commit.
 
 ## ResumeStateHint
 
 Resume by reading this file, `10-intent.md`, and the V2 execution plan.
-Current active workstream is W5 next; W1, W2, W3, and W4 are closed with spec
-and quality review pass.
+Current active workstream is W6 next; W1, W2, W3, W4, and W5 are closed with
+fresh Docker evidence. No commit has been made for W5.
 
 ## DriftCheckDraft
 
-- Scope: aligned with W4 packet; implemented runtime Worker matching/execution,
-  activation gates, recursion guards, fallback transparency, and feedback
-  without frontend edits, commits, or host Python/Node app runtime use.
-- Compatibility: normal Agent flow remains the fallback for no match, medium
-  match, and confirmation-required Worker matches; high-risk Workers do not
-  execute unguarded.
-- New owners: W4 added `app.core.workers.matcher`,
-  `app.core.workers.runtime`, and `app.core.capabilities.policy`; the chat
-  stream service remains a facade boundary that invokes these seams.
-- Constraint track: persisted Worker traces are bounded for DB safety, while
-  live stream events remain liveness-safe and terminate with final-status
-  canonical events.
-- Retirement track: no old live data deleted; Worker execution reuses the
-  existing Agent engine and tool confirmation paths instead of creating a
-  parallel executor.
-- Decision: W4 targeted scope is implemented, reviewed, and Docker-verified;
-  proceed to W5.
+- Scope: aligned with W5 packet; implemented accepted capability retrieval and
+  Claude Code-style soft merge for Agent planning without frontend edits,
+  commits, or host Python/Node app runtime use.
+- Compatibility: existing legacy chat Memory/layered instruction context still
+  works; W5 capability planning is stricter and only admits current-user
+  private Memory, current-user private Skill, explicit `shared_legacy` Skill,
+  and active user-owned Worker matches.
+- New owners: W5 added `app.core.capabilities.retrieval`; stream service calls
+  the retrieval facade rather than direct Worker matching for normal chat
+  selection.
+- Constraint track: unaccepted Capability Candidates are not queried by the
+  planning facade; current user request text is labeled as untrusted user-role
+  data before being included in system prompt context.
+- Retirement track: direct chat-stream Worker matching was retired in favor of
+  the retrieval facade. Existing W3 session Memory context remains as a
+  compatibility path until a future Memory-context consolidation decision.
+- Decision: W5 targeted scope is implemented, reviewed, and Docker-verified;
+  proceed to W6.

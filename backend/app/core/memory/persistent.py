@@ -95,11 +95,17 @@ async def search_memories(
     query: str,
     limit: int = 5,
     user_id: str | None = None,
+    include_userless: bool = True,
 ) -> list[Memory]:
     """Semantic search via pgvector cosine distance."""
     from app.main import app_state
 
-    await _backfill_missing_embeddings(db, tenant_id, user_id=user_id)
+    await _backfill_missing_embeddings(
+        db,
+        tenant_id,
+        user_id=user_id,
+        include_userless=include_userless,
+    )
 
     gateway = app_state.llm_gateway
     query_embedding = (await gateway.embed("default", [query], tenant_id=tenant_id))[0]
@@ -108,7 +114,7 @@ async def search_memories(
         select(Memory)
         .where(
             Memory.tenant_id == tenant_id,
-            *_memory_visibility_conditions(user_id),
+            *_memory_visibility_conditions(user_id, include_userless=include_userless),
             Memory.embedding.isnot(None),
         )
         .order_by(Memory.embedding.cosine_distance(query_embedding))
@@ -122,12 +128,13 @@ async def _backfill_missing_embeddings(
     tenant_id: str,
     limit: int = 25,
     user_id: str | None = None,
+    include_userless: bool = True,
 ) -> None:
     result = await db.execute(
         select(Memory)
         .where(
             Memory.tenant_id == tenant_id,
-            *_memory_visibility_conditions(user_id),
+            *_memory_visibility_conditions(user_id, include_userless=include_userless),
             Memory.embedding.is_(None),
         )
         .order_by(Memory.created_at.desc())
@@ -153,12 +160,16 @@ async def search_by_tags(
     tags: list[str],
     limit: int = 5,
     user_id: str | None = None,
+    include_userless: bool = True,
 ) -> list[Memory]:
     """Tag-based search using PostgreSQL array overlap (&&)."""
     if not tags:
         result = await db.execute(
             select(Memory)
-            .where(Memory.tenant_id == tenant_id, *_memory_visibility_conditions(user_id))
+            .where(
+                Memory.tenant_id == tenant_id,
+                *_memory_visibility_conditions(user_id, include_userless=include_userless),
+            )
             .order_by(Memory.created_at.desc())
             .limit(limit)
         )
@@ -168,7 +179,7 @@ async def search_by_tags(
         select(Memory)
         .where(
             Memory.tenant_id == tenant_id,
-            *_memory_visibility_conditions(user_id),
+            *_memory_visibility_conditions(user_id, include_userless=include_userless),
             Memory.tags.overlap(tags),
         )
         .order_by(Memory.created_at.desc())
@@ -193,6 +204,7 @@ async def _extract_task_tags(
     tenant_id: str,
     task_description: str,
     user_id: str | None = None,
+    include_userless: bool = True,
 ) -> list[str]:
     """Extract explicit and keyword-matched tags from the current task."""
     explicit = {
@@ -202,7 +214,10 @@ async def _extract_task_tags(
     tokens = _task_tokens(task_description)
 
     result = await db.execute(
-        select(Memory.tags).where(Memory.tenant_id == tenant_id, *_memory_visibility_conditions(user_id))
+        select(Memory.tags).where(
+            Memory.tenant_id == tenant_id,
+            *_memory_visibility_conditions(user_id, include_userless=include_userless),
+        )
     )
     known_tags: dict[str, str] = {}
     for tag_list in result.scalars().all():
@@ -244,13 +259,38 @@ async def get_memories_for_session(
     task_description: str,
     limit: int = 5,
     user_id: str | None = None,
+    include_userless: bool = True,
 ) -> list[Memory]:
     """Get relevant memories for a session, with tag matches taking priority."""
-    task_tags = await _extract_task_tags(db, tenant_id, task_description, user_id=user_id)
-    tag_matches = await search_by_tags(db, tenant_id, task_tags, limit, user_id=user_id) if task_tags else []
+    task_tags = await _extract_task_tags(
+        db,
+        tenant_id,
+        task_description,
+        user_id=user_id,
+        include_userless=include_userless,
+    )
+    tag_matches = (
+        await search_by_tags(
+            db,
+            tenant_id,
+            task_tags,
+            limit,
+            user_id=user_id,
+            include_userless=include_userless,
+        )
+        if task_tags
+        else []
+    )
 
     try:
-        semantic_matches = await search_memories(db, tenant_id, task_description, limit, user_id=user_id)
+        semantic_matches = await search_memories(
+            db,
+            tenant_id,
+            task_description,
+            limit,
+            user_id=user_id,
+            include_userless=include_userless,
+        )
     except Exception:
         logger.warning(
             "Semantic search failed, falling back to tag search",
@@ -262,12 +302,21 @@ async def get_memories_for_session(
     if merged:
         return merged
 
-    return await search_by_tags(db, tenant_id, [], limit, user_id=user_id)
+    return await search_by_tags(
+        db,
+        tenant_id,
+        [],
+        limit,
+        user_id=user_id,
+        include_userless=include_userless,
+    )
 
 
-def _memory_visibility_conditions(user_id: str | None) -> list:
+def _memory_visibility_conditions(user_id: str | None, *, include_userless: bool = True) -> list:
     if user_id is None:
         return []
+    if not include_userless:
+        return [Memory.user_id == user_id]
     return [(Memory.user_id.is_(None)) | (Memory.user_id == user_id)]
 
 

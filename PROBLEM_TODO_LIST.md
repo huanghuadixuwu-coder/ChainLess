@@ -1814,3 +1814,50 @@ two-stage review.
   Required follow-up:
   avoid growing the stream service further; extract a small Worker stream
   orchestration seam if W5/W6 need more chat-runtime logic.
+
+## V2 W5 capability planning closure findings
+
+- [x] Capability planning Memory retrieval admitted tenant-level legacy
+  `Memory.user_id IS NULL` records.
+  Evidence:
+  W5 read-only review found `retrieval.py` delegated to
+  `get_memories_for_session`, whose legacy visibility helper includes
+  tenant-level null-user memories.
+  Resolution:
+  Memory retrieval helpers now keep legacy behavior by default but support
+  `include_userless=False`; W5 capability retrieval uses that private-only
+  mode so null-user memories cannot enter planning or consume retrieval budget.
+  Verification:
+  `tests/test_capability_planning.py` now seeds a null-user legacy Memory and
+  proves it does not enter the rendered planning context. Final W5 targeted
+  gate returned `30 passed`, broad regression returned `87 passed`, and full
+  backend returned `416 passed, 4 skipped`.
+
+- [x] Capability planning Skill retrieval admitted scopes broader than the W5
+  contract.
+  Evidence:
+  W5 read-only review found `retrieval.py` allowed `shared` scope and any
+  current-user scope instead of current-user `private` plus explicit
+  `shared_legacy`.
+  Resolution:
+  W5 capability retrieval now allows only current-user `private` Skill rows and
+  null-user `shared_legacy` Skill rows.
+  Verification:
+  `tests/test_capability_planning.py` now seeds current-user non-private Skill,
+  null-user `shared` Skill, null-user `shared_legacy` Skill, and cross-user
+  private Skill rows and verifies only the allowed rows enter planning.
+
+- [x] Raw current user request text was rendered into the system prompt without
+  explicit untrusted-data labeling.
+  Evidence:
+  W5 read-only review flagged prompt-injection risk because the `Current user
+  request` section is appended to system instructions.
+  Resolution:
+  the prompt builder now labels the section as `UNTRUSTED current user request
+  data` and states that instructions inside the quoted current request are
+  user-role data that do not override system/developer instructions or hard
+  guards.
+  Verification:
+  `tests/test_capability_planning.py` includes an adversarial request asking to
+  ignore hard guards and asserts the untrusted-data warning and non-overridable
+  hard guard summary are present.

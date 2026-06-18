@@ -646,3 +646,129 @@ W4 execution hygiene notes:
 W4 non-goals preserved:
 - No frontend style or UI edits.
 - No commit.
+
+## W5 Agent Soft Merge and Capability Retrieval Evidence
+
+W5 implementation summary:
+- Added `backend/app/core/capabilities/retrieval.py` as the source-traced
+  capability context facade for Agent planning.
+- Extended existing Memory retrieval helpers with a default-compatible
+  `include_userless` switch so W5 can request private-only Memory planning
+  without changing legacy chat/memory API behavior.
+- Added separate planning sections for `Current user request`,
+  `Relevant private memories`, `Relevant private skills`,
+  `Matched worker candidates`, and `Hard guard summary`.
+- Added prompt-builder support for `render_capability_context(...)`,
+  `merge_capability_context_into_messages(...)`, and
+  `build_context(..., capability_context=...)` while preserving existing
+  callers.
+- Updated `conversation_stream_service.py` so normal chat calls the retrieval
+  facade once, injects the accepted capability context into Agent planning, and
+  reuses the same Worker match decisions for Worker auto-execution.
+- Kept inactive `CapabilityCandidate` rows inert by not querying candidate
+  tables in the planning facade.
+
+W5 initial RED command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_planning.py`
+
+W5 initial RED result:
+- Exit code: 1
+- Output: `ImportError: cannot import name 'render_capability_context' from 'app.core.agent.prompt_builder'`.
+
+W5 first targeted GREEN command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_planning.py -vv`
+
+W5 first targeted GREEN result:
+- Exit code: 0
+- Output: `3 passed in 2.23s`.
+
+W5 plan-required GREEN command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py -vv`
+
+W5 plan-required GREEN result:
+- Exit code: 0
+- Output: `30 passed in 16.05s`.
+
+W5 first broad regression command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py -vv`
+
+W5 first broad regression result:
+- Exit code: 0
+- Output: `87 passed in 47.69s`.
+
+W5 first full backend command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q`
+
+W5 first full backend result:
+- Exit code: 0
+- Output: `416 passed, 4 skipped, 1 warning in 134.88s`.
+
+W5 read-only code review findings:
+- Important: Capability Memory retrieval admitted `Memory.user_id IS NULL`
+  tenant-level legacy memories through the existing persistent memory helper.
+- Important: Capability Skill retrieval admitted `shared` scope and current-user
+  non-private scopes, broader than the W5 contract.
+- Important: Raw current user request text was rendered into the system prompt
+  without explicitly labeling it as untrusted user-role data.
+
+W5 review fixes:
+- Capability planning now filters Memory results to `memory.user_id ==
+  current_user_id` by calling the existing Memory service in
+  `include_userless=False` mode before relevance results are returned.
+- Capability planning Skill visibility is current-user `private` plus null-user
+  `shared_legacy` only.
+- The `Current user request` section now labels the text as
+  `UNTRUSTED current user request data` and states that instructions inside it
+  do not override system/developer instructions or hard guards.
+- Added regression assertions for tenant-level Memory exclusion, non-private
+  Skill exclusion, `shared` Skill exclusion, and adversarial request text.
+- Closed the reviewer subagent after completion.
+
+W5 review-fix RED command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_planning.py -vv`
+
+W5 review-fix RED result:
+- Exit code: 1
+- Output: `3 failed in 2.96s`.
+
+W5 final targeted GREEN command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py`
+
+W5 final targeted GREEN result:
+- Exit code: 0
+- Output: `30 passed in 15.42s`.
+
+W5 final broad regression command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py`
+
+W5 final broad regression result:
+- Exit code: 0
+- Output: `87 passed in 46.48s`.
+
+W5 final full backend command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q`
+
+W5 final full backend result:
+- Exit code: 0
+- Output: `416 passed, 4 skipped, 1 warning in 133.90s`.
+
+W5 stop condition coverage:
+- Agent context supports separate Claude Code-style soft-merge sections for
+  accepted Memory, Skill, Worker, current request, and hard guards.
+- Memory, Skill, and Worker retrieval are user-scoped for W5 planning.
+- Semantic Worker matches are source-traced and reused for chat Worker
+  execution.
+- Unaccepted Capability Candidates remain behaviorally inert.
+
+W5 residual risks:
+- `conversation_stream_service.py` remains a large facade. W5 reduced direct
+  matcher ownership there, but W6 should keep extracting policy/hook behavior
+  instead of adding more orchestration branches to the file.
+- Legacy `_build_session_context` still injects Memory/layered instruction
+  context separately for compatibility. W5 capability planning is stricter; a
+  later consolidation can decide whether the older Memory path should be
+  folded fully into the capability context facade.
+
+W5 non-goals preserved:
+- No frontend style or UI edits.
+- No commit.

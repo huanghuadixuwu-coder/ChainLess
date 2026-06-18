@@ -22,8 +22,9 @@ from app.core.artifacts import (
 )
 from app.core.agent.code_executor import CODE_AS_ACTION_TOOL, execute_code_as_action
 from app.core.agent.engine import run_agent
-from app.core.agent.prompt_builder import build_context
+from app.core.agent.prompt_builder import build_context, merge_capability_context_into_messages
 from app.core.agent.tool_router import execute_tool
+from app.core.capabilities.retrieval import CapabilityContext, CapabilityWorkerMatch, get_capability_context
 from app.core.capabilities.policy import (
     evaluate_worker_policy,
     require_worker_tool_policy,
@@ -43,7 +44,6 @@ from app.core.sandbox.manager import SandboxManager
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
-from app.core.workers.matcher import WorkerMatchDecision, match_workers
 from app.core.workers.runtime import execute_worker_run
 from app.models.conversation import Conversation, Message
 from app.models.artifact import Artifact
@@ -524,6 +524,13 @@ async def run_agent_stream(
 ) -> None:
     try:
         tools = await get_agent_tools(tenant_id)
+        capability_context = await _capability_context_for_stream(
+            gateway=gateway,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            messages=messages,
+        )
+        messages = merge_capability_context_into_messages(messages, capability_context)
         worker_executed = await _maybe_execute_worker_for_stream(
             gateway=gateway,
             sandbox_manager=sandbox_manager,
@@ -535,6 +542,7 @@ async def run_agent_stream(
             conversation_id=conversation_id,
             source_run_id=run_id,
             tools=tools,
+            capability_context=capability_context,
         )
         if worker_executed:
             return
@@ -560,6 +568,39 @@ async def run_agent_stream(
         )
 
 
+async def _capability_context_for_stream(
+    *,
+    gateway: LLMGateway,
+    tenant_id: str,
+    user_id: str | None,
+    messages: list[dict],
+) -> CapabilityContext | None:
+    if not user_id:
+        return None
+    matched_request = _latest_user_request(messages)
+    if not matched_request:
+        return None
+    try:
+        tenant_uuid = uuid.UUID(str(tenant_id))
+        user_uuid = uuid.UUID(str(user_id))
+    except ValueError:
+        return None
+
+    try:
+        from app.api.deps import _async_session_factory
+
+        async with _async_session_factory() as db:
+            return await get_capability_context(
+                db,
+                tenant_id=tenant_uuid,
+                user_id=user_uuid,
+                task_text=matched_request,
+                gateway=gateway,
+            )
+    except Exception:
+        return None
+
+
 async def _maybe_execute_worker_for_stream(
     *,
     gateway: LLMGateway,
@@ -572,6 +613,7 @@ async def _maybe_execute_worker_for_stream(
     conversation_id: str | None,
     source_run_id: str | None,
     tools: list[dict],
+    capability_context: CapabilityContext | None,
 ) -> bool:
     if not user_id or not conversation_id:
         return False
@@ -581,24 +623,11 @@ async def _maybe_execute_worker_for_stream(
         return False
 
     input_payload = _worker_input_payload(matched_request)
-    try:
-        tenant_uuid = uuid.UUID(str(tenant_id))
-        user_uuid = uuid.UUID(str(user_id))
-    except ValueError:
-        return False
 
     from app.api.deps import _async_session_factory
 
     async with _async_session_factory() as worker_db:
-        decisions = await match_workers(
-            worker_db,
-            tenant_id=tenant_uuid,
-            user_id=user_uuid,
-            request=matched_request,
-            input_payload=input_payload,
-            gateway=gateway,
-            limit=3,
-        )
+        decisions = list(capability_context.workers if capability_context else [])
         selected = _selected_worker_decision(decisions)
         if selected is None:
             return False
@@ -694,8 +723,8 @@ def _worker_input_payload(request: str) -> dict[str, str]:
 
 
 def _selected_worker_decision(
-    decisions: list[WorkerMatchDecision],
-) -> WorkerMatchDecision | None:
+    decisions: list[CapabilityWorkerMatch],
+) -> CapabilityWorkerMatch | None:
     for decision in decisions:
         if decision.decision in {"auto_notice", "needs_confirmation"}:
             return decision
@@ -705,7 +734,7 @@ def _selected_worker_decision(
 def _worker_selection_notice(
     *,
     worker: Worker,
-    decision: WorkerMatchDecision,
+    decision: CapabilityWorkerMatch,
     status: str,
     message: str,
     reason: str | None = None,
