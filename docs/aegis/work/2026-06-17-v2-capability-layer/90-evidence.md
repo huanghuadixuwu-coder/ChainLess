@@ -772,3 +772,173 @@ W5 residual risks:
 W5 non-goals preserved:
 - No frontend style or UI edits.
 - No commit.
+
+## W6 Minimal Hard Guards and Internal Hooks Evidence
+
+W6 implementation summary:
+- Added `app.core.capabilities.hooks` as a bounded in-process hook event
+  recorder for `before_worker_match`, `before_worker_run`,
+  `after_worker_run`, `before_tool_call`, `after_tool_call`,
+  `on_worker_failure`, and `on_capability_candidate_created`.
+- Expanded `app.core.capabilities.policy` into the canonical Worker/tool
+  policy facade for activation/input/risk checks, allowed-tool enforcement,
+  destructive/external-delivery confirmation, and confirmation-resume parity.
+- Added `app.core.capabilities.orchestration` as the conversation stream
+  boundary seam so stream orchestration does not import policy internals
+  directly.
+- Wired Worker match/run, Agent tool calls, Worker failure feedback, Candidate
+  creation, and confirmation resume through the policy/hook seams without
+  letting hooks override denied decisions.
+- Persisted Worker confirmation context for destructive tool pauses without
+  leaking secret arguments into `WorkerRun.confirmation_metadata`. This claim
+  is limited to WorkerRun confirmation metadata; pending confirmation records
+  still persist tool arguments for replay.
+- Tightened `failed_fallback_failed` audit metadata so the persisted
+  `WorkerRun.error_code/error_message` reflects the final fallback failure
+  (`WORKER_FALLBACK_FAILED`) rather than stale initial Worker/tool errors.
+
+W6 initial RED command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py -vv`
+
+W6 initial RED result:
+- Exit code: 1
+- Output: `ModuleNotFoundError: No module named 'app.core.capabilities.hooks'`.
+
+W6 policy/hooks targeted GREEN command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py -vv`
+
+W6 policy/hooks targeted GREEN result:
+- Exit code: 0
+- Output: `5 passed in 2.26s`.
+
+W6 plan-required regression command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py`
+
+W6 plan-required regression result:
+- Exit code: 0
+- Output: `15 passed in 7.58s`.
+
+W6 W1-W6 broad regression command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_capability_policy_hooks.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py`
+
+W6 W1-W6 broad regression result:
+- Exit code: 0
+- Output: `102 passed in 53.49s`.
+
+W6 fallback-audit RED command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done -vv`
+
+W6 fallback-audit RED result:
+- Exit code: 1
+- Output: stale persisted `WorkerRun.error_code` values
+  `WORKER_RUNTIME_ERROR` and `TOOL_NOT_AUTHORIZED` while final events already
+  reported `WORKER_FALLBACK_FAILED`.
+
+W6 fallback-audit GREEN result:
+- Same command after runtime fix returned `2 passed in 1.98s`.
+
+W6 final targeted command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+
+W6 final targeted result:
+- Exit code: 0
+- Output: `17 passed in 9.33s`.
+
+W6 final full backend command:
+`docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q`
+
+W6 final full backend result:
+- Exit code: 0
+- Output: `421 passed, 4 skipped, 1 warning in 136.29s`.
+
+W6 stream-service policy-boundary check:
+`Select-String -Path 'backend\app\services\conversation_stream_service.py' -Pattern 'capabilities\.policy|evaluate_worker_policy|require_worker_tool_policy|unpack_confirmation_args'`
+
+W6 stream-service policy-boundary result:
+- Exit code: 0
+- Output: no matches.
+
+W6 post-facade targeted result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+- Exit code: 0
+- Output: `17 passed in 9.20s`.
+
+W6 post-facade full backend result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q`
+- Exit code: 0
+- Output: `421 passed, 4 skipped, 1 warning in 137.52s`.
+
+W6 code-review findings:
+- Independent read-only reviewer returned no Critical findings and two
+  Important findings: normal Worker runtime disallowed tools could be blocked
+  by generic `authorized_tool_names` before Worker policy/hook evaluation, and
+  `definition.external_delivery` did not participate in the same confirmation
+  policy/matcher model.
+- Advisory findings: secret-free evidence only covered
+  `WorkerRun.confirmation_metadata`, not persisted confirmation replay args;
+  and Worker runtime direct improvement candidates did not emit the
+  candidate-created hook.
+- Reviewer subagent was closed after returning feedback.
+
+W6 review-fix RED result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py::test_worker_policy_requires_external_delivery_and_destructive_confirmation tests/test_capability_policy_hooks.py::test_empty_worker_allowed_tools_blocks_normal_and_confirmation_resume -vv`
+- Exit code: 1
+- Output: `2 failed`, proving `definition.external_delivery` returned
+  `allow` and real Worker runtime disallowed tools emitted
+  `TOOL_NOT_AUTHORIZED`.
+
+W6 review-fix lifecycle RED result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py::test_worker_failure_hook_records_event_and_improvement_candidate -vv`
+- Exit code: 1
+- Output: missing `on_capability_candidate_created` hook for Worker runtime
+  direct improvement candidates.
+
+W6 review-fix implementation:
+- Added `requires_worker_confirmation()` as the shared policy helper for risk,
+  explicit confirmation, external delivery, and external confirmation flags
+  from both Worker policy and WorkerVersion definition.
+- Updated Worker matcher to use the shared helper.
+- Removed Worker runtime's use of generic `authorized_tool_names`; Worker
+  allow-lists now go through `evaluate_worker_tool_policy` and emit the W6
+  before/after tool hooks.
+- Added risky confirmation-resume context enforcement so Worker destructive or
+  external-delivery resume requires a stored confirmation context.
+- Added `on_capability_candidate_created` emission for Worker runtime direct
+  improvement candidates after `db.flush()`.
+
+W6 review-fix targeted result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py tests/test_worker_runtime.py::test_worker_match_decisions_use_semantics_schema_risk_and_active_state -vv`
+- Exit code: 0
+- Output: `7 passed in 3.32s`.
+
+W6 review-fix extended result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q tests/test_capability_policy_hooks.py tests/test_worker_runtime.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+- Exit code: 0
+- Output: `36 passed in 21.45s`.
+
+W6 review-fix final full backend result:
+- Command: `docker run --rm --network chainless_default -e APP_ENV='test' -e CHAINLESS_TESTING='1' -e DATABASE_URL='postgresql+asyncpg://chainless:chainless_test@db-test:5432/chainless_test' -e REDIS_URL='redis://redis-test:6379/0' -e SECRET_KEY='test-secret' -e SANDBOX_IMAGE='chainless-sandbox:latest' -e PYTHONPATH='/repo/backend' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer:/repo' -w /repo/backend chainless-w1-backend-test:local pytest -q`
+- Exit code: 0
+- Output: `422 passed, 4 skipped, 1 warning in 134.21s`.
+
+W6 stop condition coverage:
+- Worker/capability execution paths now pass explicit policy/hook seams for
+  matching, execution, tool calls, confirmation pause/resume, failure feedback,
+  and candidate creation.
+- Denied Worker/tool policy decisions are enforced before execution and cannot
+  be overridden by prompt text or hook recording.
+- Empty allowed-tool allow-lists now mean no tools when the allow-list key is
+  present, and this is verified in normal execution and confirmation resume.
+- Destructive Worker tool confirmations carry Worker context, tool name, risk,
+  run id, and allowed-tool state without persisting secret tool arguments in
+  `WorkerRun.confirmation_metadata`.
+
+W6 residual risks:
+- Hooks are currently bounded in-process observability events. Durable external
+  hook sinks or admin observability UI remain future scope.
+- Worker matching is still embedding-backed at runtime rather than backed by
+  persisted Worker-side pgvector rows.
+
+W6 non-goals preserved:
+- No frontend style or UI edits.
+- No W6 commit.

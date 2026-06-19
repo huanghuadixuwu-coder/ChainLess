@@ -208,6 +208,13 @@ async def test_worker_match_decisions_use_semantics_schema_risk_and_active_state
         name="High risk forecast",
         policy={"allowed_tools": ["weather_get"], "risk": "high"},
     )
+    external_delivery, _ = await _active_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="External delivery forecast",
+        policy={"allowed_tools": ["weather_get"], "risk": "low"},
+        definition={"instructions": "Deliver externally.", "external_delivery": True},
+    )
     disabled, _ = await _active_worker(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -252,6 +259,7 @@ async def test_worker_match_decisions_use_semantics_schema_risk_and_active_state
     assert all(decision.worker_id not in {disabled.id, soft_deleted.id} for decision in missing_input)
     assert next(decision for decision in auto if decision.worker_id == active.id).decision == "auto_notice"
     assert next(decision for decision in auto if decision.worker_id == high_risk.id).decision == "needs_confirmation"
+    assert next(decision for decision in auto if decision.worker_id == external_delivery.id).decision == "needs_confirmation"
     assert next(decision for decision in medium if decision.worker_id == active.id).decision == "skip_and_suggest_after"
 
 

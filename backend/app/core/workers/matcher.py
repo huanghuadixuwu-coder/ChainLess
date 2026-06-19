@@ -11,7 +11,13 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.capabilities.policy import input_schema_for, risk_for, validate_input_schema
+from app.core.capabilities.hooks import emit_capability_hook
+from app.core.capabilities.policy import (
+    input_schema_for,
+    risk_for,
+    requires_worker_confirmation,
+    validate_input_schema,
+)
 from app.models.worker import Worker, WorkerMatchFeedback, WorkerRun, WorkerVersion
 
 EmbeddingFn = Callable[[str], list[float]] | Callable[[str], Awaitable[list[float]]]
@@ -48,6 +54,16 @@ async def match_workers(
     Semantic similarity is primary. Keyword/example overlap can raise or lower
     confidence slightly, but cannot produce an auto/suggest decision by itself.
     """
+
+    await emit_capability_hook(
+        "before_worker_match",
+        {
+            "tenant_id": str(tenant_id),
+            "user_id": str(user_id),
+            "request_preview": request[:240],
+            "limit": limit,
+        },
+    )
 
     input_payload = input_payload or {}
     rows = (
@@ -92,7 +108,7 @@ async def match_workers(
         elif semantic_score < MIN_SEMANTIC_THRESHOLD:
             decision = "no_match"
             reasons.append("semantic_score_below_minimum")
-        elif risk_for(worker, version) in {"high", "destructive"} or (worker.policy or {}).get("requires_confirmation"):
+        elif requires_worker_confirmation(worker, version):
             decision = "needs_confirmation"
             reasons.append("risk_requires_confirmation")
         elif score >= AUTO_NOTICE_THRESHOLD:

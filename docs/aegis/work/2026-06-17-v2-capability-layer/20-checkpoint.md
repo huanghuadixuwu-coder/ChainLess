@@ -3,7 +3,7 @@
 ## TodoCheckpointDraft
 
 Current todo:
-- W6 next
+- W7 next
 
 Completed todos:
 - W1 RED tests added for Capability Candidate contract, analysis outbox, Skill personal scope, and Worker activation gates.
@@ -83,9 +83,29 @@ Completed todos:
 - W5 full backend Docker verification passed: `416 passed, 4 skipped`.
 - W5 read-only code review found three Important issues; all were fixed and
   reverified. The reviewer subagent was closed after completion.
+- W5 was committed and pushed to `origin/codex/v2-capability-layer` as
+  `24ad0ad feat: add capability planning retrieval`.
+- W6 implementation added a bounded internal capability hook recorder,
+  explicit Worker/tool policy decisions, hook emission for Worker match/run,
+  tool call, Worker failure, and candidate creation seams, and confirmation
+  context persistence for destructive Worker tool pauses.
+- W6 added `app.core.capabilities.orchestration` so
+  `conversation_stream_service.py` calls a capability orchestration seam
+  instead of importing policy internals directly.
+- W6 also tightened runtime audit metadata so `failed_fallback_failed`
+  WorkerRuns persist final `WORKER_FALLBACK_FAILED` error metadata instead of
+  stale initial Worker/tool errors.
+- W6 code-review fixes made normal Worker runtime disallowed tools pass the
+  same Worker policy/hook gate as confirmation resume, made
+  `definition.external_delivery` require confirmation in both policy and
+  matcher, and made Worker runtime improvement candidates emit
+  `on_capability_candidate_created`.
+- W6 targeted Docker verification passed: `36 passed`.
+- W6 W1-W6 broad Docker regression passed: `102 passed`.
+- W6 full backend Docker verification passed: `422 passed, 4 skipped`.
 
 Active slice:
-- W6 next.
+- W7 next.
 
 Evidence refs:
 - Worktree created at `C:/Users/11367/.config/aegis/worktrees/Chainless/codex-v2-capability-layer`
@@ -187,36 +207,84 @@ Evidence refs:
   passed with `87 passed`.
 - W5 final full backend GREEN: `docker run ... pytest -q` passed with
   `416 passed, 4 skipped, 1 warning`.
+- W6 initial RED: `docker run ... pytest -q tests/test_capability_policy_hooks.py -vv`
+  failed with `ModuleNotFoundError: No module named 'app.core.capabilities.hooks'`.
+- W6 confirmation-context targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py::test_worker_confirmation_context_records_risk_without_secrets -vv`
+  passed with `1 passed`.
+- W6 policy/hooks targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py -vv` passed
+  with `5 passed`.
+- W6 plan-required GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py`
+  passed with `15 passed`.
+- W6 W1-W6 broad regression GREEN:
+  `docker run ... pytest -q tests/test_capability_candidates.py tests/test_capability_acceptance.py tests/test_worker_runtime.py tests/test_capability_planning.py tests/test_capability_policy_hooks.py tests/test_memory_source_contract.py tests/test_skill_trigger_matching.py tests/test_sse_contract.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py`
+  passed with `102 passed`.
+- W6 fallback-audit RED:
+  `docker run ... pytest -q tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done -vv`
+  failed with stale `WorkerRun.error_code` values `WORKER_RUNTIME_ERROR` and
+  `TOOL_NOT_AUTHORIZED`.
+- W6 fallback-audit GREEN:
+  `docker run ... pytest -q tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done -vv`
+  passed with `2 passed`.
+- W6 final targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+  passed with `17 passed`.
+- W6 final full backend GREEN: `docker run ... pytest -q` passed with
+  `421 passed, 4 skipped, 1 warning`.
+- W6 stream-service policy-boundary check:
+  `Select-String -Path backend\app\services\conversation_stream_service.py -Pattern 'capabilities\.policy|evaluate_worker_policy|require_worker_tool_policy|unpack_confirmation_args'`
+  returned no matches after adding `app.core.capabilities.orchestration`.
+- W6 post-facade targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+  passed with `17 passed`.
+- W6 post-facade full backend GREEN: `docker run ... pytest -q` passed with
+  `421 passed, 4 skipped, 1 warning`.
+- W6 review-fix RED:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py::test_worker_policy_requires_external_delivery_and_destructive_confirmation tests/test_capability_policy_hooks.py::test_empty_worker_allowed_tools_blocks_normal_and_confirmation_resume -vv`
+  failed because `definition.external_delivery` returned `allow` and normal
+  Worker runtime disallowed tools returned generic `TOOL_NOT_AUTHORIZED`.
+- W6 review-fix lifecycle RED:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py::test_worker_failure_hook_records_event_and_improvement_candidate -vv`
+  failed because Worker runtime direct improvement candidates did not emit
+  `on_capability_candidate_created`.
+- W6 review-fix targeted GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py tests/test_worker_runtime.py::test_worker_match_decisions_use_semantics_schema_risk_and_active_state -vv`
+  passed with `7 passed`.
+- W6 review-fix extended GREEN:
+  `docker run ... pytest -q tests/test_capability_policy_hooks.py tests/test_worker_runtime.py tests/test_audit.py tests/test_tool_cancellation.py tests/test_proactive_authorization.py tests/test_sse_contract.py::test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error tests/test_sse_contract.py::test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+  passed with `36 passed`.
+- W6 review-fix final full backend GREEN: `docker run ... pytest -q` passed
+  with `422 passed, 4 skipped, 1 warning`.
 
 Blocked-on:
 - none.
 
 Next step:
-- Proceed to W6. No commit.
+- Proceed to W7. No W6 commit yet.
 
 ## ResumeStateHint
 
 Resume by reading this file, `10-intent.md`, and the V2 execution plan.
-Current active workstream is W6 next; W1, W2, W3, W4, and W5 are closed with
-fresh Docker evidence. No commit has been made for W5.
+Current active workstream is W7 next; W1, W2, W3, W4, W5, and W6 are closed
+with fresh Docker evidence. W5 has been committed and pushed; W6 has not been
+committed.
 
 ## DriftCheckDraft
 
-- Scope: aligned with W5 packet; implemented accepted capability retrieval and
-  Claude Code-style soft merge for Agent planning without frontend edits,
-  commits, or host Python/Node app runtime use.
-- Compatibility: existing legacy chat Memory/layered instruction context still
-  works; W5 capability planning is stricter and only admits current-user
-  private Memory, current-user private Skill, explicit `shared_legacy` Skill,
-  and active user-owned Worker matches.
-- New owners: W5 added `app.core.capabilities.retrieval`; stream service calls
-  the retrieval facade rather than direct Worker matching for normal chat
-  selection.
-- Constraint track: unaccepted Capability Candidates are not queried by the
-  planning facade; current user request text is labeled as untrusted user-role
-  data before being included in system prompt context.
-- Retirement track: direct chat-stream Worker matching was retired in favor of
-  the retrieval facade. Existing W3 session Memory context remains as a
-  compatibility path until a future Memory-context consolidation decision.
-- Decision: W5 targeted scope is implemented, reviewed, and Docker-verified;
-  proceed to W6.
+- Scope: aligned with W6 packet; implemented minimal hard guards and internal
+  hooks without frontend edits, commits, or host Python/Node app runtime use.
+- Compatibility: normal tool execution and confirmation resume now pass the
+  same Worker tool policy gate; absent Worker context remains normal Agent
+  behavior.
+- New owners: W6 added `app.core.capabilities.hooks` as the bounded internal
+  hook event recorder, expanded `app.core.capabilities.policy` as the
+  canonical Worker/tool policy facade, and added
+  `app.core.capabilities.orchestration` as the stream-service boundary seam.
+- Constraint track: hook emission is observational and cannot override policy;
+  denied decisions remain non-overridable by prompts or hooks.
+- Retirement track: the ambiguous W4 empty allowed-tool semantics were retired;
+  when an allow-list key is present, an empty list means no tools.
+- Decision: W6 targeted scope is implemented and Docker-verified; proceed to
+  W7.

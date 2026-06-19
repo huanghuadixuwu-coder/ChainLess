@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent.engine import run_agent
 from app.core.capabilities.bounds import validate_bounded_json
+from app.core.capabilities.hooks import emit_capability_hook
 from app.core.capabilities.policy import (
     allowed_tools_for,
     evaluate_worker_policy,
     pack_confirmation_args,
+    risk_for,
     worker_context_for_confirmation,
 )
 from app.models.capability import CapabilityCandidate
@@ -46,9 +48,19 @@ async def execute_worker_run(
     if version is None and worker.active_version_id is not None:
         version = await db.get(WorkerVersion, worker.active_version_id)
 
+    await emit_capability_hook(
+        "before_worker_run",
+        {
+            "worker_id": str(worker.id),
+            "worker_version_id": str(version.id) if version is not None else None,
+            "source_run_id": source_run_id,
+            "match_score": float(match_score),
+        },
+    )
+
     blocked_reason = _recursion_block_reason(worker, worker_context)
     if blocked_reason is not None:
-        return await _record_blocked_run(
+        result = await _record_blocked_run(
             db,
             worker=worker,
             version=version,
@@ -58,10 +70,12 @@ async def execute_worker_run(
             source_run_id=source_run_id,
             reason=blocked_reason,
         )
+        await _emit_after_worker_run(worker=worker, result=result, policy_action="block")
+        return result
 
     policy = evaluate_worker_policy(worker, version, input_payload=input_payload)
     if policy.action == "block":
-        return await _record_blocked_run(
+        result = await _record_blocked_run(
             db,
             worker=worker,
             version=version,
@@ -71,8 +85,10 @@ async def execute_worker_run(
             source_run_id=source_run_id,
             reason=policy.reason,
         )
+        await _emit_after_worker_run(worker=worker, result=result, policy_action="block")
+        return result
     if policy.action == "confirm":
-        return await _record_blocked_run(
+        result = await _record_blocked_run(
             db,
             worker=worker,
             version=version,
@@ -83,6 +99,8 @@ async def execute_worker_run(
             reason=policy.reason,
             status="needs_user_confirmation",
         )
+        await _emit_after_worker_run(worker=worker, result=result, policy_action="confirm")
+        return result
 
     allowed_tool_names = sorted(allowed_tools_for(worker, version))
     run = WorkerRun(
@@ -106,8 +124,15 @@ async def execute_worker_run(
         confirmation_metadata=validate_bounded_json(
             {
                 "allowed_tool_names": allowed_tool_names,
+                "risk_decision": risk_for(worker, version),
                 "policy_action": policy.action,
-                "recursion": _next_worker_context(worker, version, None, worker_context, allowed_tool_names),
+                "recursion": _next_worker_context(
+                    worker,
+                    version,
+                    None,
+                    worker_context,
+                    allowed_tool_names,
+                ),
             },
             field="confirmation_metadata",
         ),
@@ -159,6 +184,8 @@ async def execute_worker_run(
             events = [worker_failure_notice, *worker_events, *fallback_events]
         else:
             status = "failed_fallback_failed"
+            error_code = "WORKER_FALLBACK_FAILED"
+            error_message = fallback_message or "Worker failed and the normal Agent fallback also failed."
             events = [worker_failure_notice, *worker_events, *fallback_events]
 
     run.status = status
@@ -183,7 +210,7 @@ async def execute_worker_run(
     run.confirmation_metadata = validate_bounded_json(
         {
             **(run.confirmation_metadata or {}),
-            "worker_context": worker_context_for_confirmation(runtime_context),
+            "worker_context": _confirmation_worker_context(live_events, runtime_context),
         },
         field="confirmation_metadata",
     )
@@ -191,12 +218,14 @@ async def execute_worker_run(
     await _record_runtime_feedback(db, worker=worker, run=run, status=status, source_run_id=source_run_id)
     await db.commit()
     await db.refresh(run)
-    return {
+    result = {
         "worker_run_id": str(run.id),
         "status": run.status,
         "events": live_events,
         "reason": run.error_code,
     }
+    await _emit_after_worker_run(worker=worker, result=result, policy_action=policy.action)
+    return result
 
 
 def _worker_fallback_notice(
@@ -288,6 +317,7 @@ def _next_worker_context(
         "max_depth": int(parent_context.get("max_depth") or DEFAULT_MAX_WORKER_DEPTH),
         "worker_stack": [*stack, str(worker.id)],
         "allowed_tool_names": allowed_tool_names,
+        "risk_decision": risk_for(worker, version),
     }
 
 
@@ -335,11 +365,21 @@ async def _capture_agent_events(
             user_id=user_id,
             run_id=run_id,
             worker_context=worker_context,
-            authorized_tool_names=(worker_context or {}).get("allowed_tool_names"),
         ):
             if event.get("type") == "confirmation_required":
-                event["args"] = pack_confirmation_args(event.get("args") or {}, worker_context)
-                event["worker_policy_context"] = worker_context_for_confirmation(worker_context)
+                event["args"] = pack_confirmation_args(
+                    event.get("args") or {},
+                    worker_context_for_confirmation(
+                        worker_context,
+                        tool_name=event.get("tool_name"),
+                        risk=event.get("risk"),
+                    ),
+                )
+                event["worker_policy_context"] = worker_context_for_confirmation(
+                    worker_context,
+                    tool_name=event.get("tool_name"),
+                    risk=event.get("risk"),
+                )
             events.append(event)
     except Exception as exc:
         return events, str(exc)
@@ -471,6 +511,17 @@ def _tool_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return trace[:MAX_CAPTURED_EVENTS]
 
 
+def _confirmation_worker_context(
+    events: list[dict[str, Any]],
+    runtime_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    for event in events:
+        context = event.get("worker_policy_context")
+        if isinstance(context, dict):
+            return context
+    return worker_context_for_confirmation(runtime_context)
+
+
 def _safe_event(event: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in event.items():
@@ -498,29 +549,68 @@ async def _record_runtime_feedback(
         confidence = min(1.0, confidence + 0.05)
     elif str(status).startswith("failed"):
         confidence = max(0.0, confidence - 0.15)
+        await emit_capability_hook(
+            "on_worker_failure",
+            {
+                "worker_id": str(worker.id),
+                "worker_run_id": str(run.id),
+                "status": status,
+                "source_run_id": source_run_id,
+            },
+        )
         if not await _existing_improvement_candidate(db, worker.id, source_run_id):
-            db.add(
-                CapabilityCandidate(
-                    tenant_id=worker.tenant_id,
-                    user_id=worker.user_id,
-                    candidate_type="worker",
-                    title=f"Improve Worker: {worker.name}",
-                    body=f"Worker run {run.id} ended with status {status}.",
-                    source_run_id=source_run_id,
-                    source_kind="worker_run",
-                    dedupe_key=f"worker-improvement:{worker.id}:{source_run_id or run.id}",
-                    worker_id=worker.id,
-                    evidence={"worker_run_id": str(run.id), "status": status},
-                    payload={
-                        "worker_id": str(worker.id),
-                        "definition": {"requires_review": True},
-                        "verification_plan": {"reason": "worker_runtime_failure"},
-                    },
-                )
+            candidate = CapabilityCandidate(
+                tenant_id=worker.tenant_id,
+                user_id=worker.user_id,
+                candidate_type="worker",
+                title=f"Improve Worker: {worker.name}",
+                body=f"Worker run {run.id} ended with status {status}.",
+                source_run_id=source_run_id,
+                source_kind="worker_run",
+                dedupe_key=f"worker-improvement:{worker.id}:{source_run_id or run.id}",
+                worker_id=worker.id,
+                evidence={"worker_run_id": str(run.id), "status": status},
+                payload={
+                    "worker_id": str(worker.id),
+                    "definition": {"requires_review": True},
+                    "verification_plan": {"reason": "worker_runtime_failure"},
+                },
+            )
+            db.add(candidate)
+            await db.flush()
+            await emit_capability_hook(
+                "on_capability_candidate_created",
+                {
+                    "candidate_id": str(candidate.id),
+                    "candidate_type": candidate.candidate_type,
+                    "tenant_id": str(candidate.tenant_id),
+                    "user_id": str(candidate.user_id),
+                    "source_run_id": candidate.source_run_id,
+                    "worker_id": str(candidate.worker_id) if candidate.worker_id else None,
+                },
             )
     feedback["confidence"] = confidence
     metadata["runtime_feedback"] = feedback
     worker.metadata_ = validate_bounded_json(metadata, field="metadata")
+
+
+async def _emit_after_worker_run(
+    *,
+    worker: Worker,
+    result: dict[str, Any],
+    policy_action: str,
+) -> None:
+    await emit_capability_hook(
+        "after_worker_run",
+        {
+            "worker_id": str(worker.id),
+            "worker_run_id": result.get("worker_run_id"),
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "policy_action": policy_action,
+        },
+        policy_action=policy_action,
+    )
 
 
 async def _existing_improvement_candidate(

@@ -572,6 +572,8 @@ async def test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_erro
         )
     assert len(runs) == 1
     assert runs[0].status == "failed_fallback_failed"
+    assert runs[0].error_code == "WORKER_FALLBACK_FAILED"
+    assert "fallback" in (runs[0].error_message or "")
     assert runs[0].output_payload["events"][-1]["type"] == "error"
     assert runs[0].output_payload["events"][-1]["code"] == "WORKER_FALLBACK_FAILED"
 
@@ -655,6 +657,8 @@ async def test_chat_runtime_fallback_failure_overrides_prior_worker_error_done(
         )
     assert len(runs) == 1
     assert runs[0].status == "failed_fallback_failed"
+    assert runs[0].error_code == "WORKER_FALLBACK_FAILED"
+    assert "fallback terminal boom" in (runs[0].error_message or "")
     assert runs[0].output_payload["events"][-1]["type"] == "error"
     assert runs[0].output_payload["events"][-1]["code"] == "WORKER_FALLBACK_FAILED"
     assert all(event.get("type") != "done" for event in runs[0].output_payload["events"][:-1])

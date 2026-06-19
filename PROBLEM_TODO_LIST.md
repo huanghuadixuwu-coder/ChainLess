@@ -1763,6 +1763,22 @@ two-stage review.
   corrected full backend command returned `410 passed`, later `412 passed`,
   and final `413 passed`.
 
+- [x] Full backend Docker tests can fail before collection when isolated test
+  containers are stopped.
+  Evidence:
+  `pytest -q` in the backend test image failed during Alembic startup with
+  `socket.gaierror: [Errno -2] Name or service not known` for `db-test`.
+  Root cause:
+  stopped containers `chainless-db-test` and `chainless-redis-test` still held
+  the expected `db-test` / `redis-test` aliases on `chainless_default`, but
+  they were not running.
+  Resolution:
+  run `docker start chainless-db-test chainless-redis-test`, wait until both
+  are healthy, then rerun the Docker pytest command on `chainless_default`.
+  Verification:
+  after restart, full backend Docker verification returned
+  `422 passed, 4 skipped`.
+
 - [x] PowerShell raw double-quoted `rg` patterns can break when the pattern
   itself contains JSON/code quotes.
   Evidence:
@@ -1785,35 +1801,56 @@ two-stage review.
   later workstream should persist Worker match embeddings or otherwise bound
   matching cost before large-scale production use.
 
-- [ ] Minimal Worker policy vocabulary needs tightening in later policy/hook
+- [x] Minimal Worker policy vocabulary needed tightening in later policy/hook
   work.
   Evidence:
   W4 policy is intentionally minimal. Non-empty allowed-tool lists are enforced
   in normal execution and confirmation resume, but empty allow-list semantics
   are still ambiguous between "no tools" and "unrestricted" across helpers.
-  Required follow-up:
-  W6 policy/hook expansion should make empty/absent allowed-tools semantics
-  explicit and test them in both normal and confirmation resume paths.
+  Resolution:
+  W6 made allow-list semantics explicit in the Worker tool policy facade: when
+  `allowed_tool_names` or `allowed_tools` is present, an empty list means no
+  tools; absent Worker context preserves normal Agent behavior. W6 review fixes
+  removed Worker runtime's use of generic `authorized_tool_names` for Worker
+  allow-list enforcement, so real Worker execution now reaches
+  `evaluate_worker_tool_policy` and emits the W6 policy/hook path.
+  Verification:
+  `test_empty_worker_allowed_tools_blocks_normal_and_confirmation_resume`
+  proves real Worker runtime execution and confirmation resume are blocked by
+  an empty Worker allow-list. W6 review-fix extended regression returned
+  `36 passed`, and full backend returned `422 passed, 4 skipped`.
 
-- [ ] `WorkerRun.error_code/error_message` final-status metadata can be less
+- [x] `WorkerRun.error_code/error_message` final-status metadata could be less
   precise than live/persisted terminal events.
   Evidence:
   final quality re-review passed but noted secondary run metadata may still
   reflect the initial Worker failure while terminal events correctly represent
   final fallback failure.
-  Required follow-up:
-  align `WorkerRun.error_code/error_message` with final fallback status, or add
-  explicit separate fields for initial Worker failure and final fallback
-  outcome.
+  Resolution:
+  W6 now writes `WORKER_FALLBACK_FAILED` and the fallback failure message into
+  `WorkerRun.error_code/error_message` when fallback execution also fails.
+  Verification:
+  `test_chat_runtime_failed_worker_and_failed_fallback_emit_terminal_error`
+  and `test_chat_runtime_fallback_failure_overrides_prior_worker_error_done`
+  now assert persisted `WorkerRun` metadata aligns with final fallback failure.
+  W6 review-fix extended regression returned `36 passed`, and full backend
+  returned `422 passed, 4 skipped`.
 
 - [ ] `conversation_stream_service.py` is a large facade after W4.
   Evidence:
   W4 added chat/Worker orchestration to an already central stream service. The
   implementation still calls matcher/runtime/policy seams rather than owning
   internals, but file size is now a maintainability pressure.
+  W6 update:
+  direct `app.core.capabilities.policy` imports were removed from
+  `conversation_stream_service.py` and replaced with the thin
+  `app.core.capabilities.orchestration` seam. The file remains large, so this
+  item stays open as a future maintainability/refactor issue rather than a W6
+  correctness blocker.
   Required follow-up:
-  avoid growing the stream service further; extract a small Worker stream
-  orchestration seam if W5/W6 need more chat-runtime logic.
+  avoid growing the stream service further; extract Worker stream orchestration
+  into a dedicated runtime coordinator if later workstreams add more chat
+  runtime logic.
 
 ## V2 W5 capability planning closure findings
 
@@ -1861,3 +1898,65 @@ two-stage review.
   `tests/test_capability_planning.py` includes an adversarial request asking to
   ignore hard guards and asserts the untrusted-data warning and non-overridable
   hard guard summary are present.
+
+## V2 W6 hard-guard and hook closure findings
+
+- [x] Worker runtime disallowed tools could bypass the W6 Worker policy/hook
+  path through generic runtime authorization.
+  Evidence:
+  W6 code review found `execute_worker_run()` passed Worker
+  `allowed_tool_names` into `run_agent(... authorized_tool_names=...)`, so
+  disallowed tools could emit generic `TOOL_NOT_AUTHORIZED` before
+  `evaluate_worker_tool_policy()`.
+  Resolution:
+  Worker runtime no longer passes Worker allow-lists into generic
+  `authorized_tool_names`; real Worker execution now reaches the Worker policy
+  facade and emits `before_tool_call` / `after_tool_call` hooks.
+  Verification:
+  `test_empty_worker_allowed_tools_blocks_normal_and_confirmation_resume`
+  fails before the fix with `TOOL_NOT_AUTHORIZED` and passes after the fix with
+  `WORKER_TOOL_NOT_ALLOWED`. W6 review-fix extended regression returned
+  `36 passed`, and full backend returned `422 passed, 4 skipped`.
+
+- [x] `definition.external_delivery` did not require confirmation in policy
+  and matcher.
+  Evidence:
+  W6 code review found `external_delivery` and
+  `requires_external_confirmation` were checked only on `Worker.policy`, while
+  WorkerVersion `definition` can also carry free-form runtime policy.
+  Resolution:
+  added shared `requires_worker_confirmation()` covering risk,
+  `requires_confirmation`, `external_delivery`, and
+  `requires_external_confirmation` from both Worker policy and WorkerVersion
+  definition; matcher and policy now call this shared helper.
+  Verification:
+  `test_worker_policy_requires_external_delivery_and_destructive_confirmation`
+  covers definition-level external delivery, and
+  `test_worker_match_decisions_use_semantics_schema_risk_and_active_state`
+  verifies matcher returns `needs_confirmation`.
+
+- [x] Worker runtime direct improvement candidates did not emit candidate
+  creation hooks.
+  Evidence:
+  W6 code review found `on_capability_candidate_created` fired through
+  `create_candidate()` but not for Worker runtime failure candidates inserted
+  directly in `runtime.py`.
+  Resolution:
+  runtime failure candidate creation now flushes the new candidate and emits
+  `on_capability_candidate_created` with the same candidate/tenant/user/source
+  shape.
+  Verification:
+  `test_worker_failure_hook_records_event_and_improvement_candidate` fails
+  before the fix with no candidate-created hook and passes after the fix.
+
+- [x] W6 secret-free evidence wording was too broad.
+  Evidence:
+  W6 code review noted tests proved only `WorkerRun.confirmation_metadata`
+  excluded secret-like tool args; pending `ToolConfirmation.args` still stores
+  replay arguments by design.
+  Resolution:
+  evidence now explicitly limits the no-secret claim to
+  `WorkerRun.confirmation_metadata`.
+  Verification:
+  documentation evidence was updated; no runtime behavior was changed for
+  confirmation replay persistence.

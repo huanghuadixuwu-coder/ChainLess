@@ -20,7 +20,8 @@ from typing import AsyncIterator, Any
 from app.core.artifacts import ToolExecutionResult
 from app.core.agent.code_executor import stream_code_as_action
 from app.core.agent.tool_router import execute_tool
-from app.core.capabilities.policy import enforce_worker_tool_policy
+from app.core.capabilities.hooks import emit_capability_hook
+from app.core.capabilities.policy import evaluate_worker_tool_policy
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.classifier import RiskLevel, classify_tool
@@ -249,22 +250,6 @@ async def run_agent(
                 }
                 continue
 
-            worker_tool_policy = enforce_worker_tool_policy(tc["name"], worker_context)
-            if worker_tool_policy.action == "block":
-                consecutive_errors += 1
-                yield {
-                    "type": "tool_error",
-                    "tool_call_id": tc["id"],
-                    "name": tc["name"],
-                    "code": "WORKER_TOOL_NOT_ALLOWED",
-                    "blocked": True,
-                    "rejection_reason": worker_tool_policy.reason,
-                    "error": f"worker policy disallows tool: {tc['name']}",
-                    "consecutive": consecutive_errors,
-                    "worker_run_id": (worker_context or {}).get("worker_run_id"),
-                }
-                continue
-
             try:
                 args = json.loads(tc["arguments"]) if tc["arguments"] else {}
                 if not isinstance(args, dict):
@@ -308,6 +293,47 @@ async def run_agent(
             except ValueError:
                 risk = classify_tool(tc["name"])
 
+            await emit_capability_hook(
+                "before_tool_call",
+                {
+                    "tool_call_id": tc["id"],
+                    "tool_name": tc["name"],
+                    "risk": risk.value,
+                    "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                    "worker_id": (worker_context or {}).get("worker_id"),
+                },
+            )
+            worker_tool_policy = evaluate_worker_tool_policy(
+                tc["name"],
+                worker_context,
+                risk=risk.value,
+            )
+            if worker_tool_policy.action == "block":
+                consecutive_errors += 1
+                await emit_capability_hook(
+                    "after_tool_call",
+                    {
+                        "tool_call_id": tc["id"],
+                        "tool_name": tc["name"],
+                        "status": "blocked",
+                        "reason": worker_tool_policy.reason,
+                        "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                    },
+                    policy_action="block",
+                )
+                yield {
+                    "type": "tool_error",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "code": "WORKER_TOOL_NOT_ALLOWED",
+                    "blocked": True,
+                    "rejection_reason": worker_tool_policy.reason,
+                    "error": f"worker policy disallows tool: {tc['name']}",
+                    "consecutive": consecutive_errors,
+                    "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                }
+                continue
+
             yield {
                 "type": "tool_call_start",
                 "tool_call_id": tc["id"],
@@ -317,16 +343,30 @@ async def run_agent(
             }
 
             # ---- Safety check: classify tool risk ----
-            if risk == RiskLevel.DESTRUCTIVE:
+            if risk == RiskLevel.DESTRUCTIVE or worker_tool_policy.action == "confirm":
                 destructive_hit = True
+                confirmation_risk = (
+                    risk.value if worker_tool_policy.action == "confirm" else "destructive"
+                )
                 yield {
                     "type": "confirmation_required",
                     "tool_call_id": tc["id"],
                     "tool_name": tc["name"],
                     "args": args,
-                    "risk": "destructive",
+                    "risk": confirmation_risk,
                     "timeout_s": 30,
                 }
+                await emit_capability_hook(
+                    "after_tool_call",
+                    {
+                        "tool_call_id": tc["id"],
+                        "tool_name": tc["name"],
+                        "status": "needs_confirmation",
+                        "risk": confirmation_risk,
+                        "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                    },
+                    policy_action="confirm",
+                )
                 # Engine pauses — caller handles user response via
                 # a separate confirmation endpoint (Phase 6).
                 # For now, break out of the ReAct loop entirely.
@@ -381,10 +421,31 @@ async def run_agent(
                     "result": str(result)[:2000],
                     "artifacts": artifacts,
                 }
+                await emit_capability_hook(
+                    "after_tool_call",
+                    {
+                        "tool_call_id": tc["id"],
+                        "tool_name": tc["name"],
+                        "status": "succeeded",
+                        "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                    },
+                    policy_action="allow",
+                )
                 consecutive_errors = 0
 
             except Exception as e:
                 consecutive_errors += 1
+                await emit_capability_hook(
+                    "after_tool_call",
+                    {
+                        "tool_call_id": tc["id"],
+                        "tool_name": tc["name"],
+                        "status": "failed",
+                        "error": str(e),
+                        "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                    },
+                    policy_action="allow",
+                )
                 yield {
                     "type": "tool_error",
                     "tool_call_id": tc["id"],

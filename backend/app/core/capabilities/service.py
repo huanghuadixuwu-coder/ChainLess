@@ -17,6 +17,7 @@ from app.api.contracts import api_error, not_found, validation_error
 from app.api.deps import _async_session_factory
 from app.core.capabilities.analyzer import AnalyzerCandidate, analyze_run_for_candidates
 from app.core.capabilities.bounds import validate_bounded_json
+from app.core.capabilities.hooks import emit_capability_hook
 from app.core.capabilities.outbox import (
     claim_pending_analysis,
     complete_analysis_job,
@@ -105,6 +106,17 @@ async def create_candidate(
     )
     db.add(candidate)
     await _flush_or_validation_error(db)
+    await emit_capability_hook(
+        "on_capability_candidate_created",
+        {
+            "candidate_id": str(candidate.id),
+            "candidate_type": candidate.candidate_type,
+            "tenant_id": str(candidate.tenant_id),
+            "user_id": str(candidate.user_id),
+            "source_run_id": candidate.source_run_id,
+            "worker_id": str(candidate.worker_id) if candidate.worker_id else None,
+        },
+    )
     return candidate
 
 

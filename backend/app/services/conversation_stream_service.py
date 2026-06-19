@@ -24,12 +24,12 @@ from app.core.agent.code_executor import CODE_AS_ACTION_TOOL, execute_code_as_ac
 from app.core.agent.engine import run_agent
 from app.core.agent.prompt_builder import build_context, merge_capability_context_into_messages
 from app.core.agent.tool_router import execute_tool
-from app.core.capabilities.retrieval import CapabilityContext, CapabilityWorkerMatch, get_capability_context
-from app.core.capabilities.policy import (
-    evaluate_worker_policy,
-    require_worker_tool_policy,
-    unpack_confirmation_args,
+from app.core.capabilities.orchestration import (
+    evaluate_stream_worker_policy,
+    require_confirmed_worker_tool_policy,
+    unpack_confirmed_tool_args,
 )
+from app.core.capabilities.retrieval import CapabilityContext, CapabilityWorkerMatch, get_capability_context
 from app.core.capabilities.service import analyze_run_tail_for_candidates
 from app.core.tools.configuration import (
     apply_tool_configuration,
@@ -654,7 +654,7 @@ async def _maybe_execute_worker_for_stream(
             )
             return False
 
-        policy = evaluate_worker_policy(worker, version, input_payload=input_payload)
+        policy = evaluate_stream_worker_policy(worker, version, input_payload=input_payload)
         if policy.action == "confirm":
             await queue.put(
                 (
@@ -766,10 +766,11 @@ async def execute_confirmed_tool(
     tool_call_id: str | None = None,
     run_id: str | None = None,
     worker_context: dict | None = None,
+    risk: str | None = None,
 ) -> str | ToolExecutionResult:
-    args, persisted_worker_context = unpack_confirmation_args(args)
+    args, persisted_worker_context = unpack_confirmed_tool_args(args)
     effective_worker_context = worker_context or persisted_worker_context
-    require_worker_tool_policy(tool_name, effective_worker_context)
+    require_confirmed_worker_tool_policy(tool_name, effective_worker_context, risk=risk)
     if tool_name == "code_as_action":
         return await execute_code_as_action(
             args.get("script", ""),
@@ -831,7 +832,7 @@ async def build_confirmation_stream_response(
             claimed.status,
         )
         resolved_tool_name = claimed.tool_name
-        resolved_args, resolved_worker_context = unpack_confirmation_args(claimed.args)
+        resolved_args, resolved_worker_context = unpack_confirmed_tool_args(claimed.args)
         timeout_s = claimed.timeout_s
         risk = claimed.risk
 
@@ -876,6 +877,7 @@ async def build_confirmation_stream_response(
                     tool_call_id=tool_call_id,
                     run_id=str(uuid.uuid4()),
                     worker_context=resolved_worker_context,
+                    risk=risk,
                 )
                 confirmed_artifacts: list[dict] = []
                 if isinstance(confirmed_execution, ToolExecutionResult):
