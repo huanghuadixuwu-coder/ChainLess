@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "persistence",
+    "candidate analysis",
+    "Memory",
+    "Skill",
+    "Worker runtime",
+    "policy hooks",
+    "chat stream",
+    "frontend capability surfaces",
+    "eval and QA"
+  ],
+  "owners": [
+    "app.core.capabilities",
+    "app.core.memory",
+    "app.core.workers",
+    "app.services.conversation_stream_service",
+    "frontend capability store and panels",
+    "docs/aegis"
+  ],
+  "invariants": [
+    "Capability candidates are inactive until accepted.",
+    "Private Memory and Skill rows do not leak across users.",
+    "Workers require verified versions and confirmation evidence before activation.",
+    "Worker policy gates apply to normal execution and confirmation resume.",
+    "Frontend visual style remains unchanged unless explicitly requested.",
+    "QA hard cleanup is local-only and prefix guarded."
+  ],
+  "compatBoundary": "Preserve V1/W12 behavior, existing chat/file/artifact flows, and the current frontend visual language while adding V2 capability runtime paths.",
+  "nonGoals": [
+    "No team capability publishing.",
+    "No marketplace or arbitrary external hook runtime.",
+    "No product API hard-delete path for user-owned capability records."
+  ]
+}

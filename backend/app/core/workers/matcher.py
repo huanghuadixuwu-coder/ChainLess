@@ -25,6 +25,8 @@ EmbeddingFn = Callable[[str], list[float]] | Callable[[str], Awaitable[list[floa
 AUTO_NOTICE_THRESHOLD = 0.78
 SUGGEST_THRESHOLD = 0.58
 MIN_SEMANTIC_THRESHOLD = 0.50
+MATCH_CANDIDATE_SCAN_LIMIT = 50
+MATCH_UNINDEXED_BACKFILL_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ async def match_workers(
     gateway: Any | None = None,
     embedding_fn: EmbeddingFn | None = None,
     limit: int = 5,
+    persist_match_embeddings: bool = True,
 ) -> list[WorkerMatchDecision]:
     """Return ordered Worker match decisions.
 
@@ -66,71 +69,169 @@ async def match_workers(
     )
 
     input_payload = input_payload or {}
-    rows = (
-        await db.execute(
-            select(Worker, WorkerVersion)
-            .join(WorkerVersion, WorkerVersion.id == Worker.active_version_id)
-            .where(
-                Worker.tenant_id == tenant_id,
-                Worker.user_id == user_id,
-                Worker.enabled.is_(True),
-                Worker.status == "active",
-                Worker.soft_deleted_at.is_(None),
-                WorkerVersion.status == "active",
-            )
-        )
-    ).all()
+    scan_limit = max(1, min(MATCH_CANDIDATE_SCAN_LIMIT, max(limit, limit * 10)))
+    query_embedding = _persistable_embedding(
+        await _embed_text(request, tenant_id=tenant_id, gateway=gateway, embedding_fn=embedding_fn)
+    )
+    rows = await _candidate_rows(db, tenant_id=tenant_id, user_id=user_id, query_embedding=query_embedding, limit=scan_limit)
     if not rows:
         return []
 
-    query_embedding = await _embed_text(request, tenant_id=tenant_id, gateway=gateway, embedding_fn=embedding_fn)
     decisions: list[WorkerMatchDecision] = []
+    match_embedding_changed = False
     for worker, version in rows:
-        match_text = _worker_match_text(worker, version)
-        worker_embedding = await _embed_text(match_text, tenant_id=tenant_id, gateway=gateway, embedding_fn=embedding_fn)
-        semantic_score = _cosine_similarity(query_embedding, worker_embedding)
-        keyword_score = _keyword_score(request, worker, version)
-        score = semantic_score
-        if semantic_score >= MIN_SEMANTIC_THRESHOLD:
-            score += min(0.08, keyword_score * 0.08)
-        score += await _feedback_modifier(db, worker.id)
-        score -= _risk_penalty(worker, version)
-        score = _clamp(score)
-
-        reasons = [
-            f"semantic_score={semantic_score:.3f}",
-            f"keyword_score={keyword_score:.3f}",
-        ]
-        schema_decision = validate_input_schema(input_payload, input_schema_for(worker, version))
-        if schema_decision.action == "block" and semantic_score >= AUTO_NOTICE_THRESHOLD:
-            decision = "blocked_missing_input"
-            reasons.append(schema_decision.reason)
-        elif semantic_score < MIN_SEMANTIC_THRESHOLD:
-            decision = "no_match"
-            reasons.append("semantic_score_below_minimum")
-        elif requires_worker_confirmation(worker, version):
-            decision = "needs_confirmation"
-            reasons.append("risk_requires_confirmation")
-        elif score >= AUTO_NOTICE_THRESHOLD:
-            decision = "auto_notice"
-        elif score >= SUGGEST_THRESHOLD:
-            decision = "skip_and_suggest_after"
-        else:
-            decision = "no_match"
-
+        if version.match_embedding is None:
+            changed = await ensure_worker_version_match_embedding(
+                db,
+                worker=worker,
+                version=version,
+                gateway=gateway,
+                embedding_fn=embedding_fn,
+                commit=False,
+            )
+            match_embedding_changed = match_embedding_changed or changed
         decisions.append(
-            WorkerMatchDecision(
-                worker_id=worker.id,
-                version_id=version.id,
-                decision=decision,
-                score=score,
-                semantic_score=semantic_score,
-                keyword_score=keyword_score,
-                reasons=reasons,
+            await _score_worker_match(
+                db,
+                worker=worker,
+                version=version,
+                query_embedding=query_embedding,
+                request=request,
+                input_payload=input_payload,
             )
         )
 
+    if match_embedding_changed:
+        if persist_match_embeddings:
+            await db.commit()
+        else:
+            await db.flush()
+
     return sorted(decisions, key=lambda decision: decision.score, reverse=True)[:limit]
+
+
+async def _candidate_rows(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    query_embedding: list[float],
+    limit: int,
+) -> list[tuple[Worker, WorkerVersion]]:
+    base_conditions = (
+        Worker.tenant_id == tenant_id,
+        Worker.user_id == user_id,
+        Worker.enabled.is_(True),
+        Worker.status == "active",
+        Worker.soft_deleted_at.is_(None),
+        WorkerVersion.status == "active",
+    )
+    indexed_rows = list(
+        (
+            await db.execute(
+                select(Worker, WorkerVersion)
+                .join(WorkerVersion, WorkerVersion.id == Worker.active_version_id)
+                .where(*base_conditions, WorkerVersion.match_embedding.isnot(None))
+                .order_by(WorkerVersion.match_embedding.cosine_distance(query_embedding))
+                .limit(limit)
+            )
+        ).all()
+    )
+    if len(indexed_rows) >= limit:
+        return indexed_rows
+
+    remaining = min(MATCH_UNINDEXED_BACKFILL_LIMIT, limit - len(indexed_rows))
+    if remaining <= 0:
+        return indexed_rows
+    unindexed_rows = list(
+        (
+            await db.execute(
+                select(Worker, WorkerVersion)
+                .join(WorkerVersion, WorkerVersion.id == Worker.active_version_id)
+                .where(*base_conditions, WorkerVersion.match_embedding.is_(None))
+                .order_by(Worker.updated_at.desc())
+                .limit(remaining)
+            )
+        ).all()
+    )
+    return [*indexed_rows, *unindexed_rows]
+
+
+async def ensure_worker_version_match_embedding(
+    db: AsyncSession,
+    *,
+    worker: Worker,
+    version: WorkerVersion,
+    gateway: Any | None = None,
+    embedding_fn: EmbeddingFn | None = None,
+    commit: bool = True,
+) -> bool:
+    if version.match_embedding is not None:
+        return False
+    version.match_embedding = _persistable_embedding(
+        await _embed_text(
+            _worker_match_text(worker, version),
+            tenant_id=worker.tenant_id,
+            gateway=gateway,
+            embedding_fn=embedding_fn,
+        )
+    )
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return True
+
+
+async def _score_worker_match(
+    db: AsyncSession,
+    *,
+    worker: Worker,
+    version: WorkerVersion,
+    query_embedding: list[float],
+    request: str,
+    input_payload: dict[str, Any],
+) -> WorkerMatchDecision:
+    worker_embedding = _embedding_to_list(version.match_embedding)
+    semantic_score = _cosine_similarity(query_embedding, worker_embedding)
+    keyword_score = _keyword_score(request, worker, version)
+    score = semantic_score
+    if semantic_score >= MIN_SEMANTIC_THRESHOLD:
+        score += min(0.08, keyword_score * 0.08)
+    score += await _feedback_modifier(db, worker.id)
+    score -= _risk_penalty(worker, version)
+    score = _clamp(score)
+
+    reasons = [
+        f"semantic_score={semantic_score:.3f}",
+        f"keyword_score={keyword_score:.3f}",
+    ]
+    schema_decision = validate_input_schema(input_payload, input_schema_for(worker, version))
+    if schema_decision.action == "block" and semantic_score >= AUTO_NOTICE_THRESHOLD:
+        decision = "blocked_missing_input"
+        reasons.append(schema_decision.reason)
+    elif semantic_score < MIN_SEMANTIC_THRESHOLD:
+        decision = "no_match"
+        reasons.append("semantic_score_below_minimum")
+    elif requires_worker_confirmation(worker, version):
+        decision = "needs_confirmation"
+        reasons.append("risk_requires_confirmation")
+    elif score >= AUTO_NOTICE_THRESHOLD:
+        decision = "auto_notice"
+    elif score >= SUGGEST_THRESHOLD:
+        decision = "skip_and_suggest_after"
+    else:
+        decision = "no_match"
+
+    return WorkerMatchDecision(
+        worker_id=worker.id,
+        version_id=version.id,
+        decision=decision,
+        score=score,
+        semantic_score=semantic_score,
+        keyword_score=keyword_score,
+        reasons=reasons,
+    )
 
 
 async def _embed_text(
@@ -199,6 +300,20 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left_norm or not right_norm:
         return 0.0
     return _clamp(dot / (left_norm * right_norm))
+
+
+def _persistable_embedding(embedding: list[float], dimensions: int = 1536) -> list[float]:
+    if len(embedding) >= dimensions:
+        return embedding[:dimensions]
+    return [*embedding, *([0.0] * (dimensions - len(embedding)))]
+
+
+def _embedding_to_list(embedding: Any) -> list[float]:
+    if embedding is None:
+        return []
+    if hasattr(embedding, "tolist"):
+        return list(embedding.tolist())
+    return list(embedding)
 
 
 async def _feedback_modifier(db: AsyncSession, worker_id: uuid.UUID) -> float:

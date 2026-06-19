@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "w9-final",
+  "type": "verification",
+  "source": "local Docker, Windows Chrome browser QA, frontend Docker lint/build, Aegis read-only review",
+  "summary": "Full backend returned 427 passed, 4 skipped, 1 warning; frontend lint/build passed; health and Alembic current/head passed; eval basic/spec_complete/capability_layer passed at 100%; Chrome capability-layer QA returned ok true; QA prefix cleanup left zero tracked records; final read-only review found no Critical or Important issues.",
+  "verifier": "Codex"
+}

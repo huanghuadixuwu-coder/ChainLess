@@ -18,13 +18,13 @@ from app.core.agent.engine import run_agent
 from app.core.capabilities.policy import WorkerPolicyError
 from app.core.workers.matcher import match_workers
 from app.core.workers.runtime import execute_worker_run
-from app.core.workers.service import create_worker
+from app.core.workers.service import create_worker, update_worker
+from app.core.workers.control_intent import queue_worker_delete_confirmation
 from app.models.capability import CapabilityCandidate
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
 from app.services.conversation_stream_service import (
     WORKER_DELETE_TOOL_NAME,
-    _maybe_queue_worker_delete_confirmation,
     execute_confirmed_tool,
 )
 
@@ -112,6 +112,18 @@ def _fake_embedding(text: str) -> list[float]:
     if any(term in lowered for term in ("weather forecast", "rain outlook", "will it rain", "umbrella")):
         return [1.0, 0.0, 0.0]
     return [0.2, 0.8, 0.0]
+
+
+def _pad_embedding(vector: list[float]) -> list[float]:
+    return [*vector, *([0.0] * (1536 - len(vector)))]
+
+
+async def _set_match_embedding(version_id: uuid.UUID, vector: list[float]) -> None:
+    async with _async_session_factory() as db:
+        version = await db.get(WorkerVersion, version_id)
+        assert version is not None
+        version.match_embedding = _pad_embedding(vector)
+        await db.commit()
 
 
 async def _active_worker(
@@ -306,6 +318,102 @@ async def test_worker_semantic_match_works_without_keyword_overlap_and_keyword_o
     assert keyword_only.decision == "no_match"
 
 
+async def test_worker_match_embedding_is_persisted_reused_and_invalidated(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, version = await _active_worker(tenant_id=tenant_id, user_id=user_id)
+    embedding_calls: list[str] = []
+
+    def counting_embedding(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _fake_embedding(text)
+
+    async with _async_session_factory() as db:
+        decisions = await match_workers(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request="Will it rain tomorrow?",
+            input_payload={"city": "Wuxi"},
+            embedding_fn=counting_embedding,
+        )
+
+    assert next(decision for decision in decisions if decision.worker_id == worker.id).decision == "auto_notice"
+    assert len(embedding_calls) == 2
+
+    async with _async_session_factory() as db:
+        stored_version = await db.get(WorkerVersion, version.id)
+        assert stored_version is not None
+        assert stored_version.match_embedding is not None
+
+    embedding_calls.clear()
+    async with _async_session_factory() as db:
+        decisions = await match_workers(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request="Will it rain tomorrow?",
+            input_payload={"city": "Wuxi"},
+            embedding_fn=counting_embedding,
+        )
+
+    assert next(decision for decision in decisions if decision.worker_id == worker.id).decision == "auto_notice"
+    assert len(embedding_calls) == 1
+
+    async with _async_session_factory() as db:
+        db_worker = await db.get(Worker, worker.id)
+        assert db_worker is not None
+        await update_worker(db, db_worker, description="fresh rain-planning match text")
+
+    async with _async_session_factory() as db:
+        stored_version = await db.get(WorkerVersion, version.id)
+    assert stored_version is not None
+    assert stored_version.match_embedding is None
+
+
+async def test_worker_match_uses_persisted_vector_index_not_recent_worker_scan(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    target, target_version = await _active_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Old indexed forecast",
+        description="weather forecast for old indexed worker",
+        trigger={"examples": ["weather forecast"], "keywords": []},
+    )
+    await _set_match_embedding(target_version.id, _fake_embedding("weather forecast"))
+
+    for index in range(55):
+        _worker, version = await _active_worker(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name=f"New indexed distractor {index}",
+            description="keyword-only",
+            trigger={"examples": ["keyword-only"], "keywords": ["umbrella"]},
+        )
+        await _set_match_embedding(version.id, _fake_embedding("keyword-only"))
+
+    async with _async_session_factory() as db:
+        decisions = await match_workers(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request="umbrella rain outlook",
+            input_payload={"city": "Wuxi"},
+            embedding_fn=_fake_embedding,
+            limit=1,
+        )
+
+    assert [decision.worker_id for decision in decisions] == [target.id]
+    assert decisions[0].semantic_score >= 0.8
+
+
 async def test_draft_or_unverified_worker_version_cannot_run(
     tenant_a_headers: dict[str, str],
 ) -> None:
@@ -398,12 +506,13 @@ async def test_natural_language_worker_delete_uses_confirmation_before_soft_dele
     queue: asyncio.Queue = asyncio.Queue()
 
     async with _async_session_factory() as db:
-        result = await _maybe_queue_worker_delete_confirmation(
+        result = await queue_worker_delete_confirmation(
             db,
             queue=queue,
             tenant_id=str(tenant_id),
             user_id=str(user_id),
             request=f"delete {worker.name} Worker",
+            timeout_s=30,
         )
 
     assert result == "queued"
@@ -461,12 +570,13 @@ async def test_worker_delete_guard_bypasses_reference_edit_requests_without_conf
     queue: asyncio.Queue = asyncio.Queue()
 
     async with _async_session_factory() as db:
-        result = await _maybe_queue_worker_delete_confirmation(
+        result = await queue_worker_delete_confirmation(
             db,
             queue=queue,
             tenant_id=str(tenant_id),
             user_id=str(user_id),
             request=f"delete references to {worker.name} Worker from docs/code",
+            timeout_s=30,
         )
 
     assert result == "bypass_worker"

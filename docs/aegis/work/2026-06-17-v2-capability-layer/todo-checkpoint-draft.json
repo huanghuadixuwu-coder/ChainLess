@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-17-v2-capability-layer",
+  "currentTodo": "W9 final verification and local commit closure.",
+  "completedTodos": [
+    "W1 candidate and Worker skeleton",
+    "W2 rule-first candidate generation",
+    "W3 candidate acceptance",
+    "W4 Worker runtime",
+    "W5 capability planning retrieval",
+    "W6 policy and hooks",
+    "W7 frontend capability management",
+    "W8 eval and browser QA",
+    "W9 owner split, persisted Worker match embeddings, QA cleanup, final evidence"
+  ],
+  "activeSlice": "final-verification",
+  "evidenceRefs": [
+    "docs/aegis/work/2026-06-17-v2-capability-layer/90-evidence.md",
+    "PROBLEM_TODO_LIST.md"
+  ],
+  "blockedOn": null,
+  "nextStep": "Commit W9 locally without pushing.",
+  "updatedAt": "2026-06-19"
+}

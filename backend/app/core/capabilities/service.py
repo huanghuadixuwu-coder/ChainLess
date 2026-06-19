@@ -30,7 +30,7 @@ from app.core.capabilities.schemas import (
     CANDIDATE_TYPES,
     serialize_candidate,
 )
-from app.core.memory.persistent import create_memory, write_memory_source
+from app.core.memory.persistent import create_memory, write_memory_source_safe
 from app.core.observability import increment_runtime_metric
 from app.core.workers.service import create_candidate_draft
 from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
@@ -327,7 +327,7 @@ async def accept_candidate(
             from app.core.memory.persistent import _enqueue_embedding_safe
 
             asyncio.ensure_future(_enqueue_embedding_safe(str(memory.id), memory.content))
-        write_memory_source(memory)
+        asyncio.ensure_future(write_memory_source_safe(memory))
     return candidate
 
 
@@ -361,6 +361,7 @@ async def _accept_memory_candidate(
         metadata=metadata,
         commit=False,
         write_source=False,
+        compute_inline_embedding=False,
     )
 
 

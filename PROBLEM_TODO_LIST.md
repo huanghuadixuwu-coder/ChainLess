@@ -263,24 +263,31 @@ Purpose: track confirmed issues, suspected issues, and spec/plan verification ga
   Evidence:
   W3 quality re-review returned `QUALITY_PASS`.
 
-- [ ] Accepted Memory source-file write is post-commit and synchronous.
+- [x] Accepted Memory source-file write was post-commit and synchronous.
   Risk:
   if the filesystem write fails after DB acceptance is durable, the request can
   surface an error even though acceptance succeeded in the database.
-  Recommended future fix:
-  move source-file write into a retryable/logged outbox path or catch/log with
-  a repair task.
-  Status:
-  non-blocking W3 residual risk; DB acceptance correctness is preserved.
+  Resolution:
+  W9 moved accepted-Memory source-file writing behind
+  `write_memory_source_safe()` and schedules it after acceptance commit, so a
+  derived filesystem failure is logged instead of turning a durable DB accept
+  into a user-visible failure.
+  Verification:
+  `test_accepting_memory_candidate_defers_embedding_and_safe_source_write`
+  monkeypatches source writing to fail and still receives a successful
+  candidate accept response.
 
-- [ ] Memory acceptance can hold the candidate row lock while inline embedding
+- [x] Memory acceptance could hold the candidate row lock while inline embedding
   runs.
   Risk:
   slow embedding can extend lock wait time during concurrent accepts.
-  Recommended future fix:
-  prefer async embedding after commit for acceptance-created Memory.
-  Status:
-  non-blocking W3 residual risk; exactly-once correctness is preserved.
+  Resolution:
+  W9 added `compute_inline_embedding=False` for acceptance-created Memory and
+  leaves embedding generation to the existing post-commit enqueue path.
+  Verification:
+  `test_accepting_memory_candidate_defers_embedding_and_safe_source_write`
+  makes inline embedding raise if called; candidate acceptance passes and the
+  accepted Memory starts with `embedding is None` for async backfill.
 
 ## Workstream 12 file task closure findings (2026-06-15)
 
@@ -1791,15 +1798,27 @@ two-stage review.
   later inspections used quoted paths and `Get-Content` without repeating the
   parser failure.
 
-- [ ] Worker matching is not yet backed by persisted Worker embedding/index
+- [x] Worker matching was not backed by persisted Worker embedding/index
   rows.
   Evidence:
   W4 spec reviewer marked this as non-blocking: semantic matching is
   embedding-backed, but worker-side embeddings are computed at match time
   rather than stored/indexed as pgvector rows.
-  Required follow-up:
-  later workstream should persist Worker match embeddings or otherwise bound
-  matching cost before large-scale production use.
+  Resolution:
+  W9 added `worker_versions.match_embedding vector(1536)` plus
+  `ix_worker_versions_match_embedding`. Final review found the first version
+  only flushed embeddings and still preselected by newest Workers; W9 then made
+  matcher use pgvector cosine ordering for already-indexed Workers, commit
+  first-match embedding backfills in production paths, and generate
+  match embeddings during activation/enable/rollback when a gateway is
+  available. The active version embedding is invalidated when Worker
+  name/description/trigger changes.
+  Verification:
+  `test_worker_match_embedding_is_persisted_reused_and_invalidated` proves
+  first match stores an embedding, the next match reuses it, and Worker update
+  clears stale embedding state. `test_worker_match_uses_persisted_vector_index_not_recent_worker_scan`
+  proves an older indexed Worker is selected over 55 newer distractors through
+  vector order rather than recent-row scan.
 
 - [x] Minimal Worker policy vocabulary needed tightening in later policy/hook
   work.
@@ -1836,7 +1855,7 @@ two-stage review.
   W6 review-fix extended regression returned `36 passed`, and full backend
   returned `422 passed, 4 skipped`.
 
-- [ ] `conversation_stream_service.py` is a large facade after W4.
+- [x] `conversation_stream_service.py` was a large facade after W4.
   Evidence:
   W4 added chat/Worker orchestration to an already central stream service. The
   implementation still calls matcher/runtime/policy seams rather than owning
@@ -1844,13 +1863,18 @@ two-stage review.
   W6 update:
   direct `app.core.capabilities.policy` imports were removed from
   `conversation_stream_service.py` and replaced with the thin
-  `app.core.capabilities.orchestration` seam. The file remains large, so this
-  item stays open as a future maintainability/refactor issue rather than a W6
-  correctness blocker.
-  Required follow-up:
-  avoid growing the stream service further; extract Worker stream orchestration
-  into a dedicated runtime coordinator if later workstreams add more chat
-  runtime logic.
+  `app.core.capabilities.orchestration` seam.
+  Resolution:
+  W9 split Worker stream execution into
+  `app.core.workers.stream_coordinator` and natural-language Worker control
+  intent/delete execution into `app.core.workers.control_intent`. The stream
+  service no longer directly imports `CapabilityWorkerMatch`,
+  `execute_worker_run`, `evaluate_stream_worker_policy`, or Worker selection
+  helpers, and is below the 800-line governance threshold.
+  Verification:
+  static owner scan returned no old Worker runtime/policy helper references in
+  `conversation_stream_service.py`; `Get-Content ... | Measure-Object -Line`
+  returned `789`; related regression returned `56 passed`.
 
 ## V2 W5 capability planning closure findings
 
@@ -1979,19 +2003,20 @@ two-stage review.
   Docker-only frontend verification passed with
   `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`.
 
-- [ ] Worktree `docker compose run frontend ...` is unsafe for frontend-only
+- [x] Worktree `docker compose run frontend ...` was unsafe for frontend-only
   verification while the main local Chainless compose stack is running.
   Evidence:
   The worktree compose file uses fixed `container_name` values such as
   `chainless-db`; running `docker compose run --rm frontend ...` from the
   worktree tried to create those containers and failed with
   `Conflict. The container name "/chainless-db" is already in use`.
-  Required follow-up:
-  For frontend-only verification in a worktree, prefer the existing frontend
-  test image with a mounted source directory:
-  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`.
-  Do not stop or remove the main local `chainless-*` containers just to verify
-  a worktree.
+  Resolution:
+  W9 final verification treats worktree frontend checks as a no-dependency
+  frontend source mount, not a compose dependency startup. This keeps the main
+  local `chainless-*` runtime intact and avoids container-name collisions.
+  Verification:
+  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`
+  passed lint, TypeScript, and Next production build.
 
 ## V2 W8 eval and browser QA closure findings
 
@@ -2121,3 +2146,50 @@ two-stage review.
   final `capability-layer` browser QA passed
   `worker-confirmation-resume-policy-gate` and cleanup soft-deleted the
   confirm-worker.
+
+## V2 W9 final verification and cleanup findings
+
+- [x] V2 approved spec/plan documents were missing from the implementation
+  branch.
+  Evidence:
+  the current worktree contained `docs/aegis/work/2026-06-17-v2-capability-layer`
+  but not the approved V2 design spec or execution plan referenced by
+  `10-intent.md`.
+  Resolution:
+  W9 added the approved V2 brief/spec/plan files under `docs/aegis/` and
+  indexed them in `docs/aegis/INDEX.md`.
+  Verification:
+  `rg --files docs | rg "2026-06-16|2026-06-17|capability"` now finds the V2
+  spec, plan, and work records in the implementation branch.
+
+- [x] Browser QA product cleanup left durable prefixed QA rows behind by design.
+  Evidence:
+  product APIs correctly soft-delete Workers and archive Candidates, so the
+  W8/W9 browser report could be `ok: true` while hidden durable rows remained
+  for the `qa-v2-capability-*` prefix.
+  Resolution:
+  W9 added `backend/scripts/cleanup_qa_prefix.py`, a guarded local-only cleanup
+  script that hard-deletes only prefixes starting with `qa-v2-capability-`.
+  Verification:
+  after browser QA run `qa-v2-capability-1781845326782`, cleanup reported
+  before counts `{analysis_jobs: 3, candidates: 5, conversations: 1, workers: 4}`
+  and after counts `0` for analysis jobs, candidates, conversations, memories,
+  skills, and workers.
+
+- [x] W9 final verification needed to use local Docker and avoid known
+  PowerShell/compose traps.
+  Evidence:
+  `alembic current && alembic heads` failed in PowerShell because this shell
+  does not accept `&&` as a statement separator, and frontend worktree compose
+  verification can collide with the main local stack.
+  Resolution:
+  W9 evidence uses separate PowerShell commands for chained checks, `docker
+  compose -p chainless` for the local runtime, and the mounted
+  `chainless-frontend-test` image for frontend lint/build.
+  Verification:
+  health returned `{"status":"ok"}`, migration current/head both returned
+  `0011 (head)`, frontend lint/build passed, full backend returned
+  `427 passed, 4 skipped, 1 warning`, eval returned `basic 10/10`,
+  `spec_complete 4/4`, and `capability_layer 13/13`, and real Chrome browser
+  QA returned `"ok": true` at
+  `.gstack/qa-reports/local/capability-layer-2026-06-19T05-02-06-546Z`.

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-17-v2-capability-layer",
+  "taskIntentRef": "docs/aegis/work/2026-06-17-v2-capability-layer/task-intent-draft.json",
+  "baselineRefs": [
+    "docs/aegis/specs/2026-06-16-v2-capability-operating-layer-design.md",
+    "docs/aegis/plans/2026-06-17-v2-capability-operating-layer-execution-plan.md",
+    "AGENTS.md"
+  ],
+  "scopeStatus": "verified",
+  "compatStatus": "verified",
+  "retirementStatus": "verified",
+  "newRiskSignals": [
+    "Worker match embeddings now have persisted/indexed ownership.",
+    "conversation_stream_service.py owner pressure was reduced by extraction.",
+    "QA hard cleanup remains local-only and prefix guarded."
+  ],
+  "decision": "continue"
+}

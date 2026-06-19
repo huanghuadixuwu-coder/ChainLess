@@ -34,7 +34,7 @@ from app.core.workers.service import (
     update_worker,
     verify_version,
 )
-from app.core.workers.matcher import match_workers
+from app.core.workers.matcher import ensure_worker_version_match_embedding, match_workers
 
 router = APIRouter(prefix="/workers", tags=["workers"])
 
@@ -289,6 +289,8 @@ async def activate_worker_endpoint(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    from app.main import app_state
+
     tenant_id, user_id = _tenant_user(current_user)
     worker = await get_worker(db, tenant_id=tenant_id, user_id=user_id, worker_id=worker_id)
     version = await get_version(
@@ -298,16 +300,17 @@ async def activate_worker_endpoint(
         worker_id=worker_id,
         version_id=body.version_id,
     )
-    return serialize_worker(
-        await activate_after_confirmation(
-            db,
-            worker=worker,
-            version=version,
-            user_id=user_id,
-            activation_token=body.activation_token,
-            confirmation_evidence=body.confirmation_evidence,
-        )
+    activated = await activate_after_confirmation(
+        db,
+        worker=worker,
+        version=version,
+        user_id=user_id,
+        activation_token=body.activation_token,
+        confirmation_evidence=body.confirmation_evidence,
     )
+    if app_state.llm_gateway is not None:
+        await ensure_worker_version_match_embedding(db, worker=activated, version=version, gateway=app_state.llm_gateway)
+    return serialize_worker(activated)
 
 
 @router.post("/{worker_id}/disable")
@@ -371,9 +374,22 @@ async def enable_worker_endpoint(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    from app.main import app_state
+
     tenant_id, user_id = _tenant_user(current_user)
     worker = await get_worker(db, tenant_id=tenant_id, user_id=user_id, worker_id=worker_id)
-    return serialize_worker(await enable_worker(db, worker))
+    enabled = await enable_worker(db, worker)
+    if enabled.active_version_id is not None:
+        version = await get_version(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            worker_id=enabled.id,
+            version_id=enabled.active_version_id,
+        )
+        if app_state.llm_gateway is not None:
+            await ensure_worker_version_match_embedding(db, worker=enabled, version=version, gateway=app_state.llm_gateway)
+    return serialize_worker(enabled)
 
 
 @router.post("/{worker_id}/rollback")
@@ -383,6 +399,8 @@ async def rollback_worker_endpoint(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    from app.main import app_state
+
     tenant_id, user_id = _tenant_user(current_user)
     worker = await get_worker(db, tenant_id=tenant_id, user_id=user_id, worker_id=worker_id)
     version = await get_version(
@@ -392,17 +410,18 @@ async def rollback_worker_endpoint(
         worker_id=worker_id,
         version_id=body.version_id,
     )
-    return serialize_worker(
-        await rollback_worker(
-            db,
-            worker=worker,
-            version=version,
-            user_id=user_id,
-            activation_token=body.activation_token,
-            reason=body.reason,
-            confirmation_evidence=body.confirmation_evidence,
-        )
+    rolled_back = await rollback_worker(
+        db,
+        worker=worker,
+        version=version,
+        user_id=user_id,
+        activation_token=body.activation_token,
+        reason=body.reason,
+        confirmation_evidence=body.confirmation_evidence,
     )
+    if app_state.llm_gateway is not None:
+        await ensure_worker_version_match_embedding(db, worker=rolled_back, version=version, gateway=app_state.llm_gateway)
+    return serialize_worker(rolled_back)
 
 
 @router.delete("/{worker_id}")

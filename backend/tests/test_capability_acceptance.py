@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 
 from app.api.deps import _async_session_factory
+from app.core.memory import persistent as memory_persistent
 from app.core.capabilities import service as capability_service
 from app.core.capabilities.service import create_candidate
 from app.models.capability import CapabilityCandidate
@@ -116,6 +117,48 @@ async def test_accepting_memory_candidate_creates_private_memory_with_source_met
     assert memory.meta_data["source"]["source_run_id"] == candidate.source_run_id
     assert refreshed.accepted_by == uuid.UUID(identity["user_id"])
     assert refreshed.metadata_["target"]["memory_id"] == str(memory.id)
+
+
+async def test_accepting_memory_candidate_defers_embedding_and_safe_source_write(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_if_inline_embedding_runs(*args, **kwargs):
+        raise AssertionError("accepted memory should not compute embeddings while holding the candidate lock")
+
+    def fail_source_write(*args, **kwargs):
+        raise RuntimeError("source file write is a derived side effect")
+
+    monkeypatch.setattr(memory_persistent, "_compute_embedding_best_effort", fail_if_inline_embedding_runs)
+    monkeypatch.setattr(memory_persistent, "write_memory_source", fail_source_write)
+
+    candidate = await _seed_candidate(
+        tenant_a_headers,
+        candidate_type="memory",
+        title="Remember deferred embedding",
+        body="Persist first, derive files and embeddings after acceptance.",
+        payload={
+            "memory_type": "project",
+            "memory_text": "Persist first, derive files and embeddings after acceptance.",
+        },
+    )
+
+    response = await client.post(
+        f"/api/v1/capability-candidates/{candidate.id}/accept",
+        headers=tenant_a_headers,
+    )
+    await asyncio.sleep(0)
+
+    assert response.status_code == 200, response.text
+    memory_id = response.json()["metadata"]["target"]["memory_id"]
+    async with _async_session_factory() as db:
+        memory = (
+            await db.execute(select(Memory).where(Memory.id == uuid.UUID(memory_id)))
+        ).scalar_one()
+
+    assert memory.embedding is None
+    assert memory.content == "Persist first, derive files and embeddings after acceptance."
 
 
 async def test_concurrent_memory_candidate_acceptance_is_exactly_once(

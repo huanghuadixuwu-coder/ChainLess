@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -137,6 +138,7 @@ class WorkerVersion(Base, TimestampMixin):
     definition: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     verification_plan: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     verification_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    match_embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     verified_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

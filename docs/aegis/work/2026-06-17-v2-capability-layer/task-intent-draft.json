@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "Implement the V2 Capability Operating Layer using the approved execution plan.",
+  "goal": "Close V2 W1-W9 with private capability candidates, Memory/Skill acceptance, Agent-callable Workers, policy guards, UI surfaces, eval, browser QA, and cleanup evidence.",
+  "successEvidence": [
+    "Full backend regression passes.",
+    "Frontend lint/build passes without style regression edits.",
+    "Local Docker runtime health and Alembic current/head pass.",
+    "basic, spec_complete, and capability_layer eval suites pass at 100%.",
+    "Windows Chrome capability-layer browser QA passes and generated QA records are cleaned."
+  ],
+  "stopCondition": "Stop when W9 final verification passes, V2 problem-list items are closed, and no Critical/Important review findings remain.",
+  "nonGoals": [
+    "No frontend redesign or global style changes.",
+    "No team capability publishing or marketplace.",
+    "No arbitrary user hooks or full admin Managed Settings in this phase.",
+    "No host Python or host Node as application runtime."
+  ],
+  "scope": "V2 Capability Operating Layer W1-W9 implementation and final verification.",
+  "changeKinds": [
+    "backend",
+    "database",
+    "runtime",
+    "frontend",
+    "eval",
+    "browser-qa",
+    "documentation"
+  ],
+  "riskHints": [
+    "personal capability isolation",
+    "Worker activation and policy gates",
+    "semantic Worker matching cost",
+    "frontend style regression",
+    "QA data cleanup"
+  ]
+}

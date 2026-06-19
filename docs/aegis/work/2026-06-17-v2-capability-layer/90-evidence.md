@@ -989,3 +989,134 @@ W7 style boundary evidence:
 W7 commit status:
 - W7 is not committed. W6 was committed locally as
   `2ef7ef5 feat: add capability policy hooks`.
+
+## W8 Eval and Browser QA Evidence
+
+W8 implementation summary:
+- Added deterministic `capability_layer` eval tasks and runner support.
+- Added real Windows Chrome `capability-layer` QA suite and launcher wiring.
+- Fixed natural-language Worker delete so exact delete requests queue
+  destructive confirmation before Worker auto-match, while reference-editing
+  requests bypass Worker execution without queuing delete confirmation.
+- Added visible Worker fallback names, provider default restoration, real
+  confirmation-resume browser path, and style/scroll/sidebar/Settings evidence.
+
+W8 verification:
+- `docker run ... pytest tests/test_worker_runtime.py -q` returned
+  `20 passed`.
+- `python -m py_compile app/services/conversation_stream_service.py
+  app/core/workers/runtime.py scripts/run-eval.py` passed in Docker.
+- Bundled Node syntax checks for `scripts/qa/capability-layer-suite.cjs` and
+  `scripts/windows-browser-qa.cjs` passed.
+- Local Docker health returned `{"status":"ok"}`.
+- `python scripts/run-eval.py --suite capability_layer --json
+  --min-pass-rate 1.0` returned `13 / 13`, `100%`.
+- Windows Chrome browser QA returned `"ok": true` at
+  `.gstack/qa-reports/local/capability-layer-2026-06-19T04-09-10-147Z`.
+- Full backend regression returned `424 passed, 4 skipped, 1 warning`.
+- W8 committed locally as `634be14 test: add capability layer eval and browser QA`.
+
+## W9 Final Verification, Cleanup, and Owner Split Evidence
+
+W9 implementation summary:
+- Added approved V2 spec/plan docs to this branch and indexed them in
+  `docs/aegis/INDEX.md`.
+- Closed all V2 open problem-list items discovered in W1-W8 rather than leaving
+  tail items.
+- Added `WorkerVersion.match_embedding vector(1536)`, `0011`, and an ivfflat
+  index for persisted Worker match embeddings.
+- Final review found the initial match embedding implementation flushed without
+  committing in normal runtime callers and did not use the pgvector index for
+  candidate ordering. W9 fixed this by committing first-match embedding
+  backfills, selecting indexed Workers by
+  `WorkerVersion.match_embedding.cosine_distance(query_embedding)`, generating
+  match embeddings during activation/enable/rollback when a gateway is
+  available, keeping a bounded unindexed backfill path, and invalidating active
+  version embeddings when Worker match text changes.
+- Added `compute_inline_embedding=False` for acceptance-created Memory and
+  `write_memory_source_safe()` for derived post-commit source-file writes.
+- Split Worker stream execution into `app.core.workers.stream_coordinator` and
+  natural-language Worker delete control into `app.core.workers.control_intent`.
+  `conversation_stream_service.py` fell to `789` lines and no longer imports
+  Worker match/runtime/policy internals.
+- Added guarded local-only `backend/scripts/cleanup_qa_prefix.py` for hard
+  cleanup of `qa-v2-capability-*` automation records that product APIs
+  correctly soft-delete/archive.
+
+W9 targeted GREEN:
+- Command:
+  `docker run --rm --network chainless_default --add-host "db-test:<ip>" --add-host "redis-test:<ip>" ... pytest -q tests/test_worker_runtime.py tests/test_capability_acceptance.py tests/test_sse_contract.py tests/test_capability_policy_hooks.py`
+- Result before review fix: `55 passed in 41.25s`.
+- Review-fix targeted command:
+  `docker run ... python -m py_compile app/core/workers/matcher.py app/api/v1/workers.py && pytest -q tests/test_worker_runtime.py::test_worker_match_embedding_is_persisted_reused_and_invalidated tests/test_worker_runtime.py::test_worker_match_uses_persisted_vector_index_not_recent_worker_scan tests/test_worker_runtime.py::test_verified_version_requires_confirmation_before_activation_and_records_audit_evidence -vv`
+- Review-fix targeted result: `3 passed in 8.14s`.
+- Review-fix related regression:
+  `docker run ... pytest -q tests/test_worker_runtime.py tests/test_capability_acceptance.py tests/test_sse_contract.py tests/test_capability_policy_hooks.py`
+- Review-fix related regression result: `56 passed in 37.49s`.
+
+W9 full backend GREEN:
+- Command:
+  `docker run --rm --network chainless_default --add-host "db-test:<ip>" --add-host "redis-test:<ip>" ... pytest -q`
+- Result: `427 passed, 4 skipped, 1 warning in 145.25s`.
+
+W9 frontend GREEN:
+- Command:
+  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\frontend\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`
+- Result: `eslint` passed; Next build returned `Compiled successfully`.
+
+W9 local Docker runtime GREEN:
+- Command:
+  `docker compose -p chainless up -d --build`
+- Result: local `chainless` stack rebuilt from this worktree and converged.
+- Health: `curl.exe -fsS http://127.0.0.1/api/v1/health` returned
+  `{"status":"ok"}`.
+- Compose state: backend, db, redis, sandbox-proxy, sandbox, frontend, nginx,
+  and worker were running; backend/sandbox-proxy/nginx/db/redis were healthy.
+- Migration state: `alembic current` returned `0011 (head)` and
+  `alembic heads` returned `0011 (head)`.
+
+W9 eval GREEN:
+- `docker compose -p chainless exec -T backend python scripts/run-eval.py
+  --suite basic --json --min-pass-rate 1.0` returned `10 / 10`, `100%`.
+- `docker compose -p chainless exec -T backend python scripts/run-eval.py
+  --suite spec_complete --json --min-pass-rate 1.0` returned `4 / 4`, `100%`.
+- `docker compose -p chainless exec -T backend python scripts/run-eval.py
+  --suite capability_layer --json --min-pass-rate 1.0` returned `13 / 13`,
+  `100%`.
+
+W9 browser QA GREEN:
+- Command:
+  `powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url http://localhost -Browser chrome -Headless -Suite capability-layer -TimeoutMs 180000 -Password <local bootstrap password>`
+- Result: `"ok": true`.
+- Report:
+  `.gstack/qa-reports/local/capability-layer-2026-06-19T05-02-06-546Z`.
+- Covered Inbox candidate actions, Memory/Skill/Worker acceptance, verified
+  Worker activation, semantic Worker match, visible Worker auto notice,
+  Worker failure fallback/improvement candidate, policy denial evidence,
+  confirmation-resume path, natural-language Worker delete confirmation,
+  Settings capability sections, Settings-to-chat navigation, chat scroll,
+  sidebar rename/select/delete, provider default restoration, and screenshots.
+
+W9 QA hard cleanup GREEN:
+- Command:
+  `python scripts/cleanup_qa_prefix.py --prefix qa-v2-capability-1781845326782`
+  in Docker with local production DB URL.
+- Result:
+  before `{capability_analysis_jobs: 3, capability_candidates: 5,
+  conversations: 1, memories: 0, skills: 0, workers: 4}`;
+  after all tracked categories `0`.
+
+W9 final open V2 problem-list scan:
+- `PROBLEM_TODO_LIST.md` no longer has V2 `[ ]` items for W1-W9.
+
+W9 Aegis workspace GREEN:
+- `aegis-workspace.py bundle --root <worktree> --work
+  2026-06-17-v2-capability-layer` assembled `proof-bundle.md`.
+- `aegis-workspace.py check --root <worktree>` returned
+  `Aegis workspace check passed`.
+
+W9 residual risks:
+- Product APIs still intentionally soft-delete/archive user-owned Workers and
+  Candidates. Hard deletion remains local QA-script-only and prefix-guarded.
+- ADR backfill is still advisory and requires explicit user approval before ADR
+  creation, matching the W9 plan.

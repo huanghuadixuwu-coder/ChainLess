@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -26,11 +25,10 @@ from app.core.agent.engine import run_agent
 from app.core.agent.prompt_builder import build_context, merge_capability_context_into_messages
 from app.core.agent.tool_router import execute_tool
 from app.core.capabilities.orchestration import (
-    evaluate_stream_worker_policy,
     require_confirmed_worker_tool_policy,
     unpack_confirmed_tool_args,
 )
-from app.core.capabilities.retrieval import CapabilityContext, CapabilityWorkerMatch, get_capability_context
+from app.core.capabilities.retrieval import CapabilityContext, get_capability_context
 from app.core.capabilities.service import analyze_run_tail_for_candidates
 from app.core.tools.configuration import (
     apply_tool_configuration,
@@ -45,27 +43,18 @@ from app.core.sandbox.manager import SandboxManager
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
-from app.core.workers.runtime import execute_worker_run
-from app.core.workers.service import soft_delete_worker
+from app.core.workers.control_intent import (
+    WORKER_DELETE_TOOL_NAME,
+    execute_confirmed_worker_delete,
+    queue_worker_delete_confirmation,
+)
+from app.core.workers.stream_coordinator import maybe_execute_worker_for_stream
 from app.models.conversation import Conversation, Message
 from app.models.artifact import Artifact
 from app.models.tool_confirmation import ToolConfirmation
-from app.models.worker import Worker, WorkerVersion
 
 
 DEFAULT_CONFIRMATION_TIMEOUT_S = 30
-WORKER_DELETE_TOOL_NAME = "worker_delete"
-
-_WORKER_DELETE_RE = re.compile(
-    "\\b(delete|remove|archive|soft[-\\s]?delete)\\b"
-    "|\\u5220\\u9664|\\u79fb\\u9664|\\u5f52\\u6863",
-    re.IGNORECASE,
-)
-_WORKER_NOUN_RE = re.compile("\\bworker\\b|\\u667a\\u80fd\\u4f53|\\u5de5\\u4f5c", re.IGNORECASE)
-_WORKER_REFERENCE_EDIT_RE = re.compile(
-    "\\b(references?|mentions?|links?|docs?|documentation|code|source|readme|text|file|files)\\b",
-    re.IGNORECASE,
-)
 
 
 async def get_agent_tools(tenant_id: str) -> list[dict]:
@@ -545,19 +534,37 @@ async def run_agent_stream(
             messages=messages,
         )
         messages = merge_capability_context_into_messages(messages, capability_context)
-        worker_executed = await _maybe_execute_worker_for_stream(
-            gateway=gateway,
-            sandbox_manager=sandbox_manager,
-            provider=provider,
-            messages=messages,
-            queue=queue,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            source_run_id=run_id,
-            tools=tools,
-            capability_context=capability_context,
-        )
+        worker_executed = False
+        matched_request = _latest_user_request(messages)
+        if matched_request and user_id and conversation_id:
+            from app.api.deps import _async_session_factory
+
+            async with _async_session_factory() as worker_db:
+                worker_control = await queue_worker_delete_confirmation(
+                    worker_db,
+                    queue=queue,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    request=matched_request,
+                    timeout_s=DEFAULT_CONFIRMATION_TIMEOUT_S,
+                )
+            if worker_control == "queued":
+                worker_executed = True
+            elif worker_control != "bypass_worker":
+                worker_executed = await maybe_execute_worker_for_stream(
+                    gateway=gateway,
+                    sandbox_manager=sandbox_manager,
+                    provider=provider,
+                    messages=messages,
+                    queue=queue,
+                    matched_request=matched_request,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_run_id=run_id,
+                    tools=tools,
+                    capability_context=capability_context,
+                    public_event_mapper=public_agent_event,
+                )
         if worker_executed:
             return
         async for event in run_agent(
@@ -615,125 +622,6 @@ async def _capability_context_for_stream(
         return None
 
 
-async def _maybe_execute_worker_for_stream(
-    *,
-    gateway: LLMGateway,
-    sandbox_manager: SandboxManager,
-    provider: str,
-    messages: list[dict],
-    queue: asyncio.Queue,
-    tenant_id: str,
-    user_id: str | None,
-    conversation_id: str | None,
-    source_run_id: str | None,
-    tools: list[dict],
-    capability_context: CapabilityContext | None,
-) -> bool:
-    if not user_id or not conversation_id:
-        return False
-
-    matched_request = _latest_user_request(messages)
-    if not matched_request:
-        return False
-
-    input_payload = _worker_input_payload(matched_request)
-
-    from app.api.deps import _async_session_factory
-
-    async with _async_session_factory() as worker_db:
-        worker_control = await _maybe_queue_worker_delete_confirmation(
-            worker_db,
-            queue=queue,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            request=matched_request,
-        )
-        if worker_control == "queued":
-            return True
-        if worker_control == "bypass_worker":
-            return False
-
-        decisions = list(capability_context.workers if capability_context else [])
-        selected = _selected_worker_decision(decisions)
-        if selected is None:
-            return False
-
-        worker = await worker_db.get(Worker, selected.worker_id)
-        version = await worker_db.get(WorkerVersion, selected.version_id)
-        if worker is None or version is None:
-            return False
-
-        if selected.decision == "needs_confirmation":
-            await queue.put(
-                (
-                    "worker_notice",
-                    _worker_selection_notice(
-                        worker=worker,
-                        decision=selected,
-                        status="needs_confirmation",
-                        message=(
-                            f"Worker '{worker.name}' matched this request but requires confirmation; "
-                            "continuing with the normal Agent path."
-                        ),
-                    ),
-                )
-            )
-            return False
-
-        policy = evaluate_stream_worker_policy(worker, version, input_payload=input_payload)
-        if policy.action == "confirm":
-            await queue.put(
-                (
-                    "worker_notice",
-                    _worker_selection_notice(
-                        worker=worker,
-                        decision=selected,
-                        status="needs_confirmation",
-                        message=(
-                            f"Worker '{worker.name}' requires confirmation before execution; "
-                            "continuing with the normal Agent path."
-                        ),
-                        reason=policy.reason,
-                    ),
-                )
-            )
-            return False
-        if policy.action != "allow":
-            return False
-
-        await queue.put(
-            (
-                "worker_notice",
-                _worker_selection_notice(
-                    worker=worker,
-                    decision=selected,
-                    status="started",
-                    message=f"Worker '{worker.name}' matched this request and is running.",
-                ),
-            )
-        )
-        result = await execute_worker_run(
-            worker_db,
-            gateway=gateway,
-            sandbox_manager=sandbox_manager,
-            provider=provider,
-            worker=worker,
-            version=version,
-            messages=messages,
-            input_payload=input_payload,
-            matched_request=matched_request,
-            match_score=selected.score,
-            source_run_id=source_run_id,
-            tools=tools,
-        )
-
-    for event in result.get("events", []):
-        mapped = public_agent_event(event)
-        if mapped is not None:
-            await queue.put(mapped)
-    return True
-
-
 def _latest_user_request(messages: list[dict]) -> str:
     for message in reversed(messages):
         if message.get("role") != "user":
@@ -742,103 +630,6 @@ def _latest_user_request(messages: list[dict]) -> str:
         if isinstance(content, str) and content.strip():
             return content.strip()
     return ""
-
-
-def _worker_input_payload(request: str) -> dict[str, str]:
-    return {"request": request}
-
-
-async def _maybe_queue_worker_delete_confirmation(
-    db: AsyncSession,
-    *,
-    queue: asyncio.Queue,
-    tenant_id: str,
-    user_id: str,
-    request: str,
-) -> Literal["none", "bypass_worker", "queued"]:
-    if not _is_worker_delete_control_request(request):
-        return "none"
-    if _is_worker_reference_edit_request(request):
-        return "bypass_worker"
-
-    tenant_uuid = uuid.UUID(str(tenant_id))
-    user_uuid = uuid.UUID(str(user_id))
-    workers = list(
-        (
-            await db.execute(
-                select(Worker).where(
-                    Worker.tenant_id == tenant_uuid,
-                    Worker.user_id == user_uuid,
-                    Worker.soft_deleted_at.is_(None),
-                )
-            )
-        ).scalars()
-    )
-    request_key = request.casefold()
-    matches = [worker for worker in workers if worker.name.casefold() in request_key]
-    if len(matches) != 1:
-        return "bypass_worker"
-
-    worker = matches[0]
-    await queue.put(
-        (
-            "confirmation_required",
-            {
-                "tool_call_id": f"worker-delete-{uuid.uuid4()}",
-                "tool_name": WORKER_DELETE_TOOL_NAME,
-                "args": {
-                    "worker_id": str(worker.id),
-                    "worker_name": worker.name,
-                },
-                "risk": "destructive",
-                "timeout_s": DEFAULT_CONFIRMATION_TIMEOUT_S,
-            },
-        )
-    )
-    await queue.put(("done", {"tokens_used": 0}))
-    return "queued"
-
-
-def _is_worker_delete_control_request(request: str) -> bool:
-    if not request.strip():
-        return False
-    return bool(_WORKER_DELETE_RE.search(request) and _WORKER_NOUN_RE.search(request))
-
-
-def _is_worker_reference_edit_request(request: str) -> bool:
-    return bool(_WORKER_REFERENCE_EDIT_RE.search(request))
-
-
-def _selected_worker_decision(
-    decisions: list[CapabilityWorkerMatch],
-) -> CapabilityWorkerMatch | None:
-    for decision in decisions:
-        if decision.decision in {"auto_notice", "needs_confirmation"}:
-            return decision
-    return None
-
-
-def _worker_selection_notice(
-    *,
-    worker: Worker,
-    decision: CapabilityWorkerMatch,
-    status: str,
-    message: str,
-    reason: str | None = None,
-) -> dict[str, Any]:
-    data: dict[str, Any] = {
-        "worker_id": str(decision.worker_id),
-        "version_id": str(decision.version_id),
-        "worker_name": worker.name,
-        "decision": decision.decision,
-        "status": status,
-        "score": decision.score,
-        "message": message,
-        "reasons": decision.reasons,
-    }
-    if reason:
-        data["reason"] = reason
-    return data
 
 
 async def execute_confirmed_tool(
@@ -859,7 +650,7 @@ async def execute_confirmed_tool(
     effective_worker_context = worker_context or persisted_worker_context
     require_confirmed_worker_tool_policy(tool_name, effective_worker_context, risk=risk)
     if tool_name == WORKER_DELETE_TOOL_NAME:
-        return await _execute_confirmed_worker_delete(
+        return await execute_confirmed_worker_delete(
             args,
             tenant_id=tenant_id,
             user_id=user_id,
@@ -887,42 +678,6 @@ async def execute_confirmed_tool(
         },
     )
     return result
-
-
-async def _execute_confirmed_worker_delete(
-    args: dict,
-    *,
-    tenant_id: str,
-    user_id: str | None,
-) -> str:
-    if not user_id:
-        raise validation_error("Worker delete confirmation requires a user")
-    worker_id = args.get("worker_id")
-    if not worker_id:
-        raise validation_error("worker_id is required")
-    tenant_uuid = uuid.UUID(str(tenant_id))
-    user_uuid = uuid.UUID(str(user_id))
-    worker_uuid = uuid.UUID(str(worker_id))
-
-    from app.api.contracts import not_found
-    from app.api.deps import _async_session_factory
-
-    async with _async_session_factory() as db:
-        worker = (
-            await db.execute(
-                select(Worker).where(
-                    Worker.id == worker_uuid,
-                    Worker.tenant_id == tenant_uuid,
-                    Worker.user_id == user_uuid,
-                    Worker.soft_deleted_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
-        if worker is None:
-            raise not_found("WORKER_NOT_FOUND", "Worker not found")
-        worker_name = worker.name
-        await soft_delete_worker(db, worker)
-    return f"Worker '{worker_name}' was soft deleted after confirmation."
 
 
 async def build_confirmation_stream_response(

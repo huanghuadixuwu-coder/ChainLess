@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "docs/aegis/specs/2026-06-16-v2-capability-operating-layer-design.md",
+    "docs/aegis/plans/2026-06-17-v2-capability-operating-layer-execution-plan.md",
+    "AGENTS.md"
+  ],
+  "impactStatement": "docs/aegis/work/2026-06-17-v2-capability-layer/impact-statement-draft.json",
+  "compatPlan": "Preserve V1/W12 behavior, existing chat/file/artifact flows, and the current frontend visual language while adding V2 capability runtime paths.",
+  "retirementPlan": "verified",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-06-17-v2-capability-layer/evidence-bundle-draft-w9-final.json"
+  ]
+}

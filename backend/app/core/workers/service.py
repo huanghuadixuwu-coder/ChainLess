@@ -206,14 +206,23 @@ async def update_worker(
     trigger: dict[str, Any] | None = None,
     policy: dict[str, Any] | None = None,
 ) -> Worker:
+    match_text_changed = False
     if name is not None:
+        match_text_changed = match_text_changed or worker.name != name
         worker.name = name
     if description is not None:
+        match_text_changed = match_text_changed or worker.description != description
         worker.description = description
     if trigger is not None:
-        worker.trigger = validate_bounded_json(trigger, field="trigger")
+        bounded_trigger = validate_bounded_json(trigger, field="trigger")
+        match_text_changed = match_text_changed or worker.trigger != bounded_trigger
+        worker.trigger = bounded_trigger
     if policy is not None:
         worker.policy = validate_bounded_json(policy, field="policy")
+    if match_text_changed and worker.active_version_id is not None:
+        version = await db.get(WorkerVersion, worker.active_version_id)
+        if version is not None:
+            version.match_embedding = None
     await _commit_or_validation_error(db)
     await db.refresh(worker)
     return worker

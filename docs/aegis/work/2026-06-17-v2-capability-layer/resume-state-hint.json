@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-17-v2-capability-layer",
+  "lastCheckpointRef": "docs/aegis/work/2026-06-17-v2-capability-layer/todo-checkpoint-draft.json",
+  "resumeInstruction": "Read 10-intent.md, 20-checkpoint.md, 90-evidence.md, PROBLEM_TODO_LIST.md, and the latest git status before continuing.",
+  "knownPartialWork": [
+    "W1-W9 implementation and verification are complete locally.",
+    "W9 local commit remains the final action unless already committed.",
+    "Do not push unless the user explicitly requests it."
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-06-17-v2-capability-layer/10-intent.md",
+    "docs/aegis/work/2026-06-17-v2-capability-layer/20-checkpoint.md",
+    "docs/aegis/work/2026-06-17-v2-capability-layer/todo-checkpoint-draft.json",
+    "PROBLEM_TODO_LIST.md"
+  ],
+  "unsafeToAssume": [
+    "Do not assume push is authorized.",
+    "Do not use remote Docker.",
+    "Do not change frontend style without explicit user approval."
+  ]
+}

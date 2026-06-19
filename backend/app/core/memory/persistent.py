@@ -32,13 +32,16 @@ async def create_memory(
     metadata: dict | None = None,
     commit: bool = True,
     write_source: bool = True,
+    compute_inline_embedding: bool = True,
 ) -> Memory:
     """Create a memory row and enqueue async embedding computation.
 
     The ``embedding`` column is set immediately when embedding is available,
     otherwise it is backfilled asynchronously.
     """
-    embedding = await _compute_embedding_best_effort(tenant_id, content)
+    embedding = None
+    if compute_inline_embedding:
+        embedding = await _compute_embedding_best_effort(tenant_id, content)
 
     mem = Memory(
         tenant_id=tenant_id,
@@ -87,6 +90,14 @@ async def _enqueue_embedding_safe(memory_id: str, content: str) -> None:
         await enqueue_embedding(memory_id, content)
     except Exception:
         logger.warning("Failed to enqueue embedding for %s", memory_id)
+
+
+async def write_memory_source_safe(memory: Memory) -> None:
+    """Write the derived memory source file without failing the durable DB write."""
+    try:
+        write_memory_source(memory)
+    except Exception:
+        logger.warning("Failed to write memory source for %s", memory.id)
 
 
 async def search_memories(

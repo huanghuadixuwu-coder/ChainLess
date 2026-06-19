@@ -275,32 +275,61 @@ Blocked-on:
 - none.
 
 Next step:
-- Complete W7 review/stop-condition check. Do not commit W7 unless the user
-  explicitly asks.
+- W9 independent review, final diff hygiene, final local commit if explicitly
+  requested.
 
 ## ResumeStateHint
 
-Resume by reading this file, `10-intent.md`, and the V2 execution plan.
-Current active workstream is W7 review/closure; W1, W2, W3, W4, W5, and W6 are
-closed with fresh Docker evidence. W5 has been committed and pushed; W6 has
-been committed locally but not pushed.
+Resume by reading this file, `10-intent.md`, the V2 design spec, and the V2
+execution plan. W1-W8 are implemented and committed locally through
+`634be14`; W9 is active for final verification/cleanup documentation and local
+commit closure. The approved V2 spec/plan files were added to this branch
+during W9 because the worktree previously only carried the execution record.
 
 ## DriftCheckDraft
 
-- Scope: W7 aligned with the frontend capability-management packet; it exposes
-  already-built backend contracts through thin client/store/UI seams without
-  changing the Chainless visual system.
-- Compatibility: chat streaming still flows through `chat-store`; capability
-  management lives in `capability-store`, and chat only records/forwards SSE
-  candidate and Worker notice events.
-- New owners: W7 added `frontend/src/stores/capability-store.ts` as the
-  frontend owner for candidates, Workers, Worker runs, versions, and feedback.
-- Constraint track: no global CSS, sidebar, chat scroll, or existing layout
-  feel was changed. Browser screenshot/DOM evidence is still required in the
-  later QA workstream before claiming visual no-regression.
-- Runtime track: worktree compose frontend verification conflicts with the
-  already-running main local compose stack because services use fixed container
-  names; use `docker run` with the frontend test image for worktree-only
-  lint/build.
-- Decision: W7 implementation is Docker lint/build verified and ready for
-  review/closure, but W7 is not committed.
+- Scope: W9 stayed inside final verification/cleanup plus owner-split repairs
+  required to clear V2 open problem-list items.
+- Compatibility: no frontend style files or visual classes were edited.
+  Browser QA retained screenshots/DOM/scroll evidence for right panel,
+  Settings, sidebar, and chat scrolling.
+- New owners: W9 added `app.core.workers.stream_coordinator` for Worker stream
+  execution, `app.core.workers.control_intent` for natural-language Worker
+  delete control, `WorkerVersion.match_embedding` as the durable Worker match
+  vector owner, and `backend/scripts/cleanup_qa_prefix.py` for local QA data
+  hard cleanup.
+- Constraint track: `conversation_stream_service.py` no longer imports Worker
+  match/runtime/policy internals and is below the 800-line governance threshold.
+- Runtime track: W9 uses local Docker only. PowerShell chained checks are run as
+  separate commands, and frontend worktree verification uses the mounted
+  `chainless-frontend-test` image to avoid dependency-container collisions.
+- Decision: W9 verification evidence is green; final independent review and
+  commit remain before branch closure.
+
+## W8-W9 Final Checkpoint Addendum
+
+- W8 committed locally as `634be14 test: add capability layer eval and browser QA`.
+- W9 repaired all V2 `[ ]` problem-list items discovered during W1-W8:
+  accepted-Memory source write safety, accepted-Memory inline embedding under
+  lock, persisted Worker match embeddings/index/bounded scan, stream-service
+  owner split, and worktree frontend verification collision.
+- W9 added the approved V2 spec/plan docs to the implementation branch and
+  updated `docs/aegis/INDEX.md`.
+- W9 final review found two Important Worker match issues: match embeddings
+  were flushed but not committed by normal production callers, and the new
+  pgvector index was not used for selection. W9 fixed both by committing
+  first-match embedding backfills, using vector cosine ordering for indexed
+  WorkerVersions, generating match embeddings during activation/enable/rollback
+  when a gateway is available, and adding an older-indexed-worker-over-55-newer
+  distractors regression.
+- W9 final verification evidence so far:
+  - targeted Worker/acceptance/SSE/policy regression: `56 passed`
+  - full backend regression: `427 passed, 4 skipped, 1 warning`
+  - frontend lint/build through mounted test image: passed
+  - local Docker health: `{"status":"ok"}`
+  - Alembic current/head: `0011 (head)` / `0011 (head)`
+  - eval: `basic 10/10`, `spec_complete 4/4`, `capability_layer 13/13`
+  - Windows Chrome `capability-layer` browser QA: `"ok": true`
+  - QA prefix hard cleanup for `qa-v2-capability-1781845326782`: before
+    `analysis_jobs=3`, `candidates=5`, `conversations=1`, `workers=4`; after
+    all tracked categories `0`.
