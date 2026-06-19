@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -45,6 +46,7 @@ from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
 from app.core.workers.runtime import execute_worker_run
+from app.core.workers.service import soft_delete_worker
 from app.models.conversation import Conversation, Message
 from app.models.artifact import Artifact
 from app.models.tool_confirmation import ToolConfirmation
@@ -52,6 +54,18 @@ from app.models.worker import Worker, WorkerVersion
 
 
 DEFAULT_CONFIRMATION_TIMEOUT_S = 30
+WORKER_DELETE_TOOL_NAME = "worker_delete"
+
+_WORKER_DELETE_RE = re.compile(
+    "\\b(delete|remove|archive|soft[-\\s]?delete)\\b"
+    "|\\u5220\\u9664|\\u79fb\\u9664|\\u5f52\\u6863",
+    re.IGNORECASE,
+)
+_WORKER_NOUN_RE = re.compile("\\bworker\\b|\\u667a\\u80fd\\u4f53|\\u5de5\\u4f5c", re.IGNORECASE)
+_WORKER_REFERENCE_EDIT_RE = re.compile(
+    "\\b(references?|mentions?|links?|docs?|documentation|code|source|readme|text|file|files)\\b",
+    re.IGNORECASE,
+)
 
 
 async def get_agent_tools(tenant_id: str) -> list[dict]:
@@ -627,6 +641,18 @@ async def _maybe_execute_worker_for_stream(
     from app.api.deps import _async_session_factory
 
     async with _async_session_factory() as worker_db:
+        worker_control = await _maybe_queue_worker_delete_confirmation(
+            worker_db,
+            queue=queue,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request=matched_request,
+        )
+        if worker_control == "queued":
+            return True
+        if worker_control == "bypass_worker":
+            return False
+
         decisions = list(capability_context.workers if capability_context else [])
         selected = _selected_worker_decision(decisions)
         if selected is None:
@@ -722,6 +748,67 @@ def _worker_input_payload(request: str) -> dict[str, str]:
     return {"request": request}
 
 
+async def _maybe_queue_worker_delete_confirmation(
+    db: AsyncSession,
+    *,
+    queue: asyncio.Queue,
+    tenant_id: str,
+    user_id: str,
+    request: str,
+) -> Literal["none", "bypass_worker", "queued"]:
+    if not _is_worker_delete_control_request(request):
+        return "none"
+    if _is_worker_reference_edit_request(request):
+        return "bypass_worker"
+
+    tenant_uuid = uuid.UUID(str(tenant_id))
+    user_uuid = uuid.UUID(str(user_id))
+    workers = list(
+        (
+            await db.execute(
+                select(Worker).where(
+                    Worker.tenant_id == tenant_uuid,
+                    Worker.user_id == user_uuid,
+                    Worker.soft_deleted_at.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    request_key = request.casefold()
+    matches = [worker for worker in workers if worker.name.casefold() in request_key]
+    if len(matches) != 1:
+        return "bypass_worker"
+
+    worker = matches[0]
+    await queue.put(
+        (
+            "confirmation_required",
+            {
+                "tool_call_id": f"worker-delete-{uuid.uuid4()}",
+                "tool_name": WORKER_DELETE_TOOL_NAME,
+                "args": {
+                    "worker_id": str(worker.id),
+                    "worker_name": worker.name,
+                },
+                "risk": "destructive",
+                "timeout_s": DEFAULT_CONFIRMATION_TIMEOUT_S,
+            },
+        )
+    )
+    await queue.put(("done", {"tokens_used": 0}))
+    return "queued"
+
+
+def _is_worker_delete_control_request(request: str) -> bool:
+    if not request.strip():
+        return False
+    return bool(_WORKER_DELETE_RE.search(request) and _WORKER_NOUN_RE.search(request))
+
+
+def _is_worker_reference_edit_request(request: str) -> bool:
+    return bool(_WORKER_REFERENCE_EDIT_RE.search(request))
+
+
 def _selected_worker_decision(
     decisions: list[CapabilityWorkerMatch],
 ) -> CapabilityWorkerMatch | None:
@@ -771,6 +858,12 @@ async def execute_confirmed_tool(
     args, persisted_worker_context = unpack_confirmed_tool_args(args)
     effective_worker_context = worker_context or persisted_worker_context
     require_confirmed_worker_tool_policy(tool_name, effective_worker_context, risk=risk)
+    if tool_name == WORKER_DELETE_TOOL_NAME:
+        return await _execute_confirmed_worker_delete(
+            args,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
     if tool_name == "code_as_action":
         return await execute_code_as_action(
             args.get("script", ""),
@@ -794,6 +887,42 @@ async def execute_confirmed_tool(
         },
     )
     return result
+
+
+async def _execute_confirmed_worker_delete(
+    args: dict,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+) -> str:
+    if not user_id:
+        raise validation_error("Worker delete confirmation requires a user")
+    worker_id = args.get("worker_id")
+    if not worker_id:
+        raise validation_error("worker_id is required")
+    tenant_uuid = uuid.UUID(str(tenant_id))
+    user_uuid = uuid.UUID(str(user_id))
+    worker_uuid = uuid.UUID(str(worker_id))
+
+    from app.api.contracts import not_found
+    from app.api.deps import _async_session_factory
+
+    async with _async_session_factory() as db:
+        worker = (
+            await db.execute(
+                select(Worker).where(
+                    Worker.id == worker_uuid,
+                    Worker.tenant_id == tenant_uuid,
+                    Worker.user_id == user_uuid,
+                    Worker.soft_deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if worker is None:
+            raise not_found("WORKER_NOT_FOUND", "Worker not found")
+        worker_name = worker.name
+        await soft_delete_worker(db, worker)
+    return f"Worker '{worker_name}' was soft deleted after confirmation."
 
 
 async def build_confirmation_stream_response(

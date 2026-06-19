@@ -1,6 +1,6 @@
 # Problem Todo List
 
-Last updated: 2026-06-17
+Last updated: 2026-06-19
 
 Purpose: track confirmed issues, suspected issues, and spec/plan verification gaps before and during QA.
 
@@ -1992,3 +1992,132 @@ two-stage review.
   `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`.
   Do not stop or remove the main local `chainless-*` containers just to verify
   a worktree.
+
+## V2 W8 eval and browser QA closure findings
+
+- [x] Natural-language Worker delete requests could be auto-matched to the
+  Worker being deleted.
+  Evidence:
+  W8 browser QA sent `delete <WorkerName> Worker`; the active Worker matched
+  and ran instead of producing a destructive confirmation card.
+  Resolution:
+  chat stream orchestration now detects Worker delete control intent before
+  Worker auto-selection. An exact owned Worker name match creates a
+  `worker_delete` destructive confirmation and stops before any Worker run; an
+  ambiguous/no-match delete control request bypasses Worker auto-execution.
+  Verification:
+  `test_natural_language_worker_delete_uses_confirmation_before_soft_delete`
+  proves no WorkerRun is created before confirmation and the Worker is only
+  soft-deleted after confirmed `worker_delete`.
+
+- [x] Worker fallback activity notices lacked the Worker display name.
+  Evidence:
+  W8 browser QA verifies the right-panel Worker activity/fallback path; runtime
+  fallback notices carried `worker_id` and `worker_run_id` but not
+  `worker_name`, making the card less explicit than normal selection notices.
+  Resolution:
+  runtime fallback notices now include `worker_name` while preserving the
+  existing `fallback_started` status and message.
+  Verification:
+  `test_worker_failure_fallback_and_feedback_candidate_lifecycle` asserts the
+  fallback notice contains the Worker name and fallback message.
+
+- [x] Browser QA initially failed to force a real Worker failure because
+  LiteLLM retried a one-shot mock `500`.
+  Evidence:
+  QA showed the normal output text but no `fallback_started` notice or
+  improvement candidate; the mock failed only once, so LiteLLM retry could turn
+  the Worker run into a success.
+  Resolution:
+  the W8 browser QA mock now fails every activated Worker call for the
+  fail-worker system prompt, while the ordinary Agent fallback path still
+  succeeds.
+  Verification:
+  final `capability-layer` browser QA passed and recorded
+  `worker-failure-fallback-improvement-candidate` with a persisted improvement
+  candidate.
+
+- [x] Settings style regression QA misread navigation/buttons as card evidence.
+  Evidence:
+  the Settings page visually retained the existing zinc/card style, but the QA
+  helper sliced the first `.rounded-lg` nodes and mostly captured buttons.
+  Resolution:
+  the QA helper now scans Settings card/candidate elements by `data-testid` and
+  `border-zinc-800`/`bg-zinc-900|950` class evidence instead of changing UI
+  styles.
+  Verification:
+  final `capability-layer` browser QA passed
+  `settings-capability-page-style-evidence` with `buttonLike=true` and
+  `cardLike=true`.
+
+- [x] W8 deterministic eval and browser QA needed a durable one-command suite.
+  Resolution:
+  added `backend/tests/eval/tasks/capability_layer.json`, a
+  `capability_layer_probe` runner path in `backend/scripts/run-eval.py`, and a
+  Windows browser suite exposed through `scripts/windows-browser-qa.ps1
+  -Suite capability-layer`.
+  Verification:
+  deterministic eval returned `13 / 13` pass at `--min-pass-rate 1.0`; browser
+  QA returned `"ok": true` for Inbox, Memory/Skill/Worker acceptance, Worker
+  activation, semantic match, failure fallback, Settings, scroll, deletion, and
+  cleanup.
+
+- [x] Worktree Docker startup can collide unless the local compose project name
+  and secret source are explicit.
+  Evidence:
+  using the worktree path as the compose project name collided with fixed
+  `container_name` values and production guards rejected default secrets.
+  Resolution:
+  for local Docker verification from a worktree, use
+  `docker compose -p chainless ...` and inject the already configured local
+  secrets from `E:\Chainless\.env` without printing values.
+  Verification:
+  backend/worker/nginx were rebuilt and `curl.exe -fsS
+  http://localhost/api/v1/health` returned `{"status":"ok"}` before browser QA.
+
+- [x] W8 browser QA could leave the wrong LLM provider as default.
+  Evidence:
+  independent W8 review found the suite created a mock provider, made it
+  default, and then deleted it; the backend replacement default can be the
+  first remaining provider by name rather than the user's original default.
+  Resolution:
+  browser QA now records the prior default provider before creating the mock
+  provider, restores that provider during cleanup, and only then deletes the
+  mock provider.
+  Verification:
+  final `capability-layer` browser QA cleanup recorded
+  `provider-restore-default` and `provider-delete`, both `ok=true`.
+
+- [x] Natural-language Worker delete guard needed false-positive coverage for
+  ordinary reference-editing tasks.
+  Evidence:
+  independent W8 review noted a prompt such as `delete references to <Worker>
+  Worker from docs/code` could otherwise queue destructive confirmation and end
+  the turn.
+  Resolution:
+  delete control detection now treats reference/docs/code/text/file editing
+  terms as a Worker auto-execution bypass, not a Worker deletion confirmation.
+  This lets the normal Agent path continue without running or deleting the
+  Worker.
+  Verification:
+  `test_worker_delete_guard_bypasses_reference_edit_requests_without_confirmation`
+  proves no confirmation is queued, no WorkerRun is created, and the Worker
+  remains active.
+
+- [x] Browser QA needed a real Worker confirmation-resume path, not only
+  backend/eval denial evidence.
+  Evidence:
+  independent W8 review noted the browser suite verified active match surface
+  while the exact confirmation-resume denial branch was covered by backend/eval
+  tests.
+  Resolution:
+  browser QA now creates a dedicated confirm-worker, has the mock LLM emit a
+  real `shell_exec` tool call, waits for the UI confirmation card, approves it,
+  and verifies the resumed Worker-policy path returns `worker-confirm-ok` and
+  `worker-confirm-resume-ok`. The negative confirmation-resume denial remains
+  covered by backend/eval where the persisted Worker policy context can be
+  asserted directly.
+  Verification:
+  final `capability-layer` browser QA passed
+  `worker-confirmation-resume-policy-gate` and cleanup soft-deleted the
+  confirm-worker.

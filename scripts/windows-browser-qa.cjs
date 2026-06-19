@@ -11,6 +11,7 @@ const { createArtifactsSuite } = require("./qa/artifacts-suite.cjs");
 const { createFileTaskClosureSuite } = require("./qa/file-task-closure-suite.cjs");
 const { createRichInputSuite } = require("./qa/rich-input-suite.cjs");
 const { createSpecCompleteSuite } = require("./qa/spec-complete.cjs");
+const { createCapabilityLayerSuite } = require("./qa/capability-layer-suite.cjs");
 
 function parseArgs(argv) {
   const args = {
@@ -1090,6 +1091,19 @@ registerSuite(
     runWorkstream10,
     runSettings,
     getSuite,
+  })
+);
+registerSuite(
+  "capability-layer",
+  createCapabilityLayerSuite({
+    apiBaseFor,
+    apiRequest,
+    cleanupConversations,
+    safeApiCall,
+    loginViaUi,
+    screenshot,
+    applyBootstrapAdminCredentials,
+    readRequestBody,
   })
 );
 

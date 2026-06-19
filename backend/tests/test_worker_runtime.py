@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,7 +22,11 @@ from app.core.workers.service import create_worker
 from app.models.capability import CapabilityCandidate
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
-from app.services.conversation_stream_service import execute_confirmed_tool
+from app.services.conversation_stream_service import (
+    WORKER_DELETE_TOOL_NAME,
+    _maybe_queue_worker_delete_confirmation,
+    execute_confirmed_tool,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -378,6 +383,108 @@ async def test_worker_recursion_and_max_depth_are_blocked_with_traceable_reasons
     assert too_deep["reason"] == "worker_max_depth_exceeded"
 
 
+async def test_natural_language_worker_delete_uses_confirmation_before_soft_delete(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Deletable browser worker",
+        description="Worker that must not auto-run for delete requests.",
+    )
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async with _async_session_factory() as db:
+        result = await _maybe_queue_worker_delete_confirmation(
+            db,
+            queue=queue,
+            tenant_id=str(tenant_id),
+            user_id=str(user_id),
+            request=f"delete {worker.name} Worker",
+        )
+
+    assert result == "queued"
+    event_name, confirmation = await queue.get()
+    assert event_name == "confirmation_required"
+    assert confirmation["tool_name"] == WORKER_DELETE_TOOL_NAME
+    assert confirmation["args"]["worker_id"] == str(worker.id)
+    assert confirmation["risk"] == "destructive"
+    assert await queue.get() == ("done", {"tokens_used": 0})
+
+    async with _async_session_factory() as db:
+        still_active = await db.get(Worker, worker.id)
+        worker_runs = list(
+            (
+                await db.execute(
+                    select(WorkerRun).where(WorkerRun.worker_id == worker.id)
+                )
+            ).scalars()
+        )
+    assert still_active.status == "active"
+    assert still_active.soft_deleted_at is None
+    assert worker_runs == []
+
+    confirmed = await execute_confirmed_tool(
+        WORKER_DELETE_TOOL_NAME,
+        {"worker_id": str(worker.id)},
+        object(),
+        gateway=TextGateway(),
+        tenant_id=str(tenant_id),
+        user_id=str(user_id),
+        conversation_id=str(uuid.uuid4()),
+        tool_call_id=confirmation["tool_call_id"],
+        risk="destructive",
+    )
+
+    assert "soft deleted" in confirmed
+    async with _async_session_factory() as db:
+        deleted = await db.get(Worker, worker.id)
+    assert deleted.status == "soft_deleted"
+    assert deleted.soft_deleted_at is not None
+
+
+async def test_worker_delete_guard_bypasses_reference_edit_requests_without_confirmation(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, _ = await _active_worker(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Docs cleanup worker",
+        description="Worker name may appear in ordinary editing tasks.",
+    )
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async with _async_session_factory() as db:
+        result = await _maybe_queue_worker_delete_confirmation(
+            db,
+            queue=queue,
+            tenant_id=str(tenant_id),
+            user_id=str(user_id),
+            request=f"delete references to {worker.name} Worker from docs/code",
+        )
+
+    assert result == "bypass_worker"
+    assert queue.empty()
+    async with _async_session_factory() as db:
+        still_active = await db.get(Worker, worker.id)
+        worker_runs = list(
+            (
+                await db.execute(
+                    select(WorkerRun).where(WorkerRun.worker_id == worker.id)
+                )
+            ).scalars()
+        )
+    assert still_active.status == "active"
+    assert still_active.soft_deleted_at is None
+    assert worker_runs == []
+
+
 async def test_worker_policy_blocks_disallowed_tool_in_normal_and_confirmation_resume(
     tenant_a_headers: dict[str, str],
 ) -> None:
@@ -510,6 +617,7 @@ async def test_worker_failure_fallback_and_feedback_candidate_lifecycle(
     assert fallback["status"] == "failed_fallback_succeeded"
     assert fallback["events"][0]["type"] == "worker_notice"
     assert fallback["events"][0]["status"] == "fallback_started"
+    assert fallback["events"][0]["worker_name"] == worker.name
     assert "failed" in fallback["events"][0]["message"]
     assert "fallback" in fallback["events"][0]["message"]
     assert fallback["events"][-1]["type"] == "done"

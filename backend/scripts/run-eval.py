@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Ensure backend package is importable
@@ -285,6 +286,901 @@ def _check_pass_criteria(
     return False, f"Unknown criteria: {criteria}"
 
 
+def _capability_probe_result(
+    task: dict,
+    *,
+    start: float,
+    passed: bool,
+    reason: str,
+    evidence: dict | None = None,
+    error: str | None = None,
+) -> dict:
+    """Return a run-eval compatible result for deterministic capability probes."""
+
+    evidence = evidence or {}
+    return {
+        "id": task["id"],
+        "prompt": task["prompt"],
+        "criteria": task.get("pass_criteria"),
+        "judge": None,
+        "passed": passed,
+        "reason": reason,
+        "response": "",
+        "tool_calls": [],
+        "confirmations_required": [],
+        "tool_log": [{"type": "runtime_evidence", "evidence": evidence}],
+        "tokens_used": 0,
+        "elapsed_s": round(time.monotonic() - start, 2),
+        "error": error,
+        "judge_result": None,
+    }
+
+
+def _http_error_code(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        error = detail.get("error")
+        if isinstance(error, dict) and error.get("code"):
+            return str(error["code"])
+    return exc.__class__.__name__
+
+
+async def _capability_eval_user(db, tenant_uuid: uuid.UUID, prefix: str) -> tuple[object, bool]:
+    from sqlalchemy import select
+
+    from app.models.user import User
+
+    user = (
+        await db.execute(
+            select(User).where(User.tenant_id == tenant_uuid).order_by(User.created_at).limit(1)
+        )
+    ).scalar_one_or_none()
+    if user is not None:
+        return user, False
+
+    user = User(
+        tenant_id=tenant_uuid,
+        username=f"{prefix}-user",
+        password_hash="capability-eval",
+        role="admin",
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user, True
+
+
+async def _cleanup_capability_probe_records(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    prefix: str,
+    created: dict[str, set[uuid.UUID]],
+) -> None:
+    from sqlalchemy import delete, or_
+
+    from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
+    from app.models.memory import Memory
+    from app.models.skill import Skill
+    from app.models.user import User
+    from app.models.worker import Worker, WorkerMatchFeedback, WorkerRun, WorkerVersion
+
+    await db.rollback()
+
+    if created["worker_feedback_ids"]:
+        await db.execute(delete(WorkerMatchFeedback).where(WorkerMatchFeedback.id.in_(created["worker_feedback_ids"])))
+    if created["worker_run_ids"]:
+        await db.execute(delete(WorkerRun).where(WorkerRun.id.in_(created["worker_run_ids"])))
+
+    await db.execute(
+        delete(CapabilityCandidate).where(
+            CapabilityCandidate.tenant_id == tenant_id,
+            CapabilityCandidate.user_id == user_id,
+            or_(
+                CapabilityCandidate.id.in_(created["candidate_ids"]),
+                CapabilityCandidate.title.like(f"{prefix}%"),
+                CapabilityCandidate.title.like(f"Improve Worker: {prefix}%"),
+                CapabilityCandidate.source_run_id.like(f"{prefix}%"),
+                CapabilityCandidate.dedupe_key.like(f"%{prefix}%"),
+            ),
+        )
+    )
+    await db.execute(
+        delete(CapabilityAnalysisJob).where(
+            CapabilityAnalysisJob.tenant_id == tenant_id,
+            CapabilityAnalysisJob.user_id == user_id,
+            or_(
+                CapabilityAnalysisJob.id.in_(created["analysis_job_ids"]),
+                CapabilityAnalysisJob.source_run_id.like(f"{prefix}%"),
+            ),
+        )
+    )
+
+    if created["worker_version_ids"]:
+        await db.execute(delete(WorkerVersion).where(WorkerVersion.id.in_(created["worker_version_ids"])))
+    await db.execute(
+        delete(Worker).where(
+            Worker.tenant_id == tenant_id,
+            Worker.user_id == user_id,
+            or_(Worker.id.in_(created["worker_ids"]), Worker.name.like(f"{prefix}%")),
+        )
+    )
+    await db.execute(
+        delete(Memory).where(
+            Memory.tenant_id == tenant_id,
+            or_(Memory.id.in_(created["memory_ids"]), Memory.name.like(f"{prefix}%")),
+        )
+    )
+    await db.execute(
+        delete(Skill).where(
+            Skill.tenant_id == tenant_id,
+            or_(Skill.id.in_(created["skill_ids"]), Skill.name.like(f"{prefix}%")),
+        )
+    )
+    if created["user_ids"]:
+        await db.execute(delete(User).where(User.id.in_(created["user_ids"])))
+    await db.commit()
+
+
+def _track(created: dict[str, set[uuid.UUID]], key: str, value: object | None) -> None:
+    if value is None:
+        return
+    raw = getattr(value, "id", value)
+    if raw is None:
+        return
+    created[key].add(uuid.UUID(str(raw)))
+
+
+async def _create_active_eval_worker(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    prefix: str,
+    name_suffix: str,
+    description: str,
+    trigger: dict,
+    policy: dict | None = None,
+    definition: dict | None = None,
+    created: dict[str, set[uuid.UUID]],
+) -> tuple[object, object]:
+    from app.core.workers.service import (
+        activate_after_confirmation,
+        create_version,
+        create_worker,
+        request_activation,
+        verify_version,
+    )
+
+    worker = await create_worker(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name=f"{prefix}-{name_suffix}",
+        description=description,
+        trigger=trigger,
+        policy=policy or {"risk": "low", "allowed_tools": []},
+    )
+    _track(created, "worker_ids", worker)
+    version = await create_version(
+        db,
+        worker=worker,
+        version=1,
+        definition=definition
+        or {
+            "instructions": description,
+            "allowed_tools": [],
+            "risk": "low",
+        },
+        verification_plan={"eval": "deterministic"},
+    )
+    _track(created, "worker_version_ids", version)
+    version = await verify_version(
+        db,
+        version=version,
+        verified_by=user_id,
+        verification_evidence={"eval": True, "prefix": prefix},
+    )
+    activation = await request_activation(db, worker=worker, version=version)
+    worker = await activate_after_confirmation(
+        db,
+        worker=worker,
+        version=version,
+        user_id=user_id,
+        activation_token=activation["activation_token"],
+        confirmation_evidence={"eval_confirmation": True, "prefix": prefix},
+    )
+    await db.refresh(version)
+    return worker, version
+
+
+def _capability_eval_embedding(text: str) -> list[float]:
+    lower = text.casefold()
+    if any(term in lower for term in ("invoice", "billing", "reconcile", "receivable")):
+        return [1.0, 0.0, 0.0, 0.0]
+    if any(term in lower for term in ("receipt normalization", "expense proof", "proof cleanup")):
+        return [0.0, 1.0, 0.0, 0.0]
+    return [0.0, 0.0, 1.0, 0.0]
+
+
+class _CapabilityFallbackGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat_stream(self, provider, messages, tools, tenant_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("forced worker failure for eval")
+        yield {"type": "text", "content": "fallback completed after worker failure"}
+
+    async def embed(self, provider_name: str, texts: list[str], *, tenant_id: str | None = None):
+        return [_capability_eval_embedding(text) for text in texts]
+
+
+async def run_capability_layer_probe(
+    task: dict,
+    tenant_id: str,
+    llm_gateway: LLMGateway,
+) -> dict:
+    """Run deterministic V2 Capability Operating Layer assertions."""
+
+    start = time.monotonic()
+    prefix = f"qa-v2-capability-{task['id']}-{uuid.uuid4().hex[:8]}"
+    created: dict[str, set[uuid.UUID]] = {
+        "analysis_job_ids": set(),
+        "candidate_ids": set(),
+        "memory_ids": set(),
+        "skill_ids": set(),
+        "user_ids": set(),
+        "worker_feedback_ids": set(),
+        "worker_ids": set(),
+        "worker_run_ids": set(),
+        "worker_version_ids": set(),
+    }
+    tenant_uuid = uuid.UUID(str(tenant_id))
+    user_uuid: uuid.UUID | None = None
+
+    from sqlalchemy import func, select
+
+    from app.api.deps import _async_session_factory
+    from app.core.capabilities.outbox import (
+        claim_pending_analysis,
+        complete_analysis_job,
+        enqueue_run_analysis,
+    )
+    from app.core.capabilities.policy import evaluate_worker_policy, evaluate_worker_tool_policy
+    from app.core.capabilities.rules import should_analyze_run
+    from app.core.capabilities.service import accept_candidate, create_candidate
+    from app.core.workers.matcher import match_workers
+    from app.core.workers.runtime import execute_worker_run
+    from app.core.workers.service import (
+        activate_after_confirmation,
+        create_version,
+        create_worker,
+        request_activation,
+        verify_version,
+    )
+    from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
+    from app.models.memory import Memory
+    from app.models.skill import Skill
+    from app.models.user import User
+    from app.models.worker import Worker
+
+    async with _async_session_factory() as db:
+        try:
+            user, created_user = await _capability_eval_user(db, tenant_uuid, prefix)
+            user_uuid = user.id
+            if created_user:
+                _track(created, "user_ids", user)
+
+            case = task.get("case")
+            evidence: dict = {"case": case, "prefix": prefix}
+
+            if case == "candidate_rule_trigger":
+                signal = should_analyze_run(
+                    user_messages=[f"Remember {prefix} invoice cleanup steps next time."],
+                    assistant_messages=["Completed the multi-step workflow and wrote the output file."],
+                    tool_events=[
+                        {"name": "file_read", "status": "completed"},
+                        {"name": "file_write", "status": "completed"},
+                    ],
+                )
+                evidence.update(
+                    {
+                        "should_analyze": signal.should_analyze,
+                        "reasons": signal.reasons,
+                        "tool_names": signal.tool_names,
+                    }
+                )
+                passed = (
+                    signal.should_analyze
+                    and "remember_text" in signal.reasons
+                    and "next_time_text" in signal.reasons
+                    and "tool_chain" in signal.reasons
+                )
+                reason = "candidate rule detected durable Memory/Skill/Worker-worthy work"
+
+            elif case == "memory_acceptance_retrieval":
+                candidate = await create_candidate(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    candidate_type="memory",
+                    title=f"{prefix}-memory",
+                    body=f"{prefix} recall value",
+                    source_run_id=f"{prefix}-run",
+                    dedupe_key=f"{prefix}:memory",
+                    evidence={"source_evidence": ["eval memory acceptance"]},
+                    payload={
+                        "name": f"{prefix}-memory",
+                        "content": f"{prefix} recall value",
+                        "tags": [prefix],
+                    },
+                )
+                _track(created, "candidate_ids", candidate)
+                accepted = await accept_candidate(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    candidate_id=candidate.id,
+                )
+                memory = (
+                    await db.execute(
+                        select(Memory).where(
+                            Memory.tenant_id == tenant_uuid,
+                            Memory.user_id == user_uuid,
+                            Memory.name == f"{prefix}-memory",
+                        )
+                    )
+                ).scalar_one_or_none()
+                _track(created, "memory_ids", memory)
+                evidence.update(
+                    {
+                        "candidate_status": accepted.status,
+                        "memory_id": str(memory.id) if memory else None,
+                        "memory_user_id": str(memory.user_id) if memory else None,
+                        "memory_content": memory.content if memory else None,
+                    }
+                )
+                passed = bool(memory and memory.content == f"{prefix} recall value")
+                reason = "accepted Memory candidate created a private Memory row"
+
+            elif case == "skill_acceptance_method":
+                trigger = f"{prefix}-trigger"
+                candidate = await create_candidate(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    candidate_type="skill",
+                    title=f"{prefix}-skill",
+                    body="Use the eval method.",
+                    source_run_id=f"{prefix}-run",
+                    dedupe_key=f"{prefix}:skill",
+                    evidence={"source_evidence": ["eval skill acceptance"]},
+                    payload={
+                        "name": f"{prefix}-skill",
+                        "description": "Use the eval method.",
+                        "trigger_terms": [trigger],
+                    },
+                )
+                _track(created, "candidate_ids", candidate)
+                accepted = await accept_candidate(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    candidate_id=candidate.id,
+                )
+                skill = (
+                    await db.execute(
+                        select(Skill).where(
+                            Skill.tenant_id == tenant_uuid,
+                            Skill.user_id == user_uuid,
+                            Skill.name == f"{prefix}-skill",
+                        )
+                    )
+                ).scalar_one_or_none()
+                _track(created, "skill_ids", skill)
+                later_request = f"Please apply {trigger} now."
+                matched = bool(skill and any(term in later_request for term in skill.trigger_terms))
+                evidence.update(
+                    {
+                        "candidate_status": accepted.status,
+                        "skill_id": str(skill.id) if skill else None,
+                        "skill_scope": skill.scope if skill else None,
+                        "trigger_matched": matched,
+                    }
+                )
+                passed = bool(skill and skill.scope == "private" and matched)
+                reason = "accepted Skill candidate created private trigger metadata"
+
+            elif case == "worker_match_invocation":
+                worker, version = await _create_active_eval_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    name_suffix="invoice-worker",
+                    description="Reconcile invoices and billing records.",
+                    trigger={"keywords": ["invoice reconciliation"], "examples": ["match billing records"]},
+                    definition={"instructions": "Reconcile receivables.", "allowed_tools": [], "risk": "low"},
+                    created=created,
+                )
+                decisions = await match_workers(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    request="please reconcile the billing records",
+                    input_payload={"request": "please reconcile the billing records"},
+                    embedding_fn=_capability_eval_embedding,
+                    limit=3,
+                )
+                top = decisions[0] if decisions else None
+                evidence.update(
+                    {
+                        "worker_id": str(worker.id),
+                        "version_id": str(version.id),
+                        "decision": top.decision if top else None,
+                        "score": top.score if top else None,
+                        "semantic_score": top.semantic_score if top else None,
+                    }
+                )
+                passed = bool(top and top.worker_id == worker.id and top.decision == "auto_notice")
+                reason = "activated Worker matched a semantically equivalent request"
+
+            elif case == "worker_failure_fallback":
+                worker, version = await _create_active_eval_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    name_suffix="fallback-worker",
+                    description="This Worker intentionally fails in eval before normal fallback.",
+                    trigger={"keywords": ["fallback eval"]},
+                    definition={"instructions": "Return fallback evidence.", "allowed_tools": [], "risk": "low"},
+                    created=created,
+                )
+                result = await execute_worker_run(
+                    db,
+                    gateway=_CapabilityFallbackGateway(),
+                    sandbox_manager=None,
+                    provider="default",
+                    worker=worker,
+                    version=version,
+                    messages=[{"role": "user", "content": "run fallback eval"}],
+                    input_payload={"request": "run fallback eval"},
+                    matched_request="run fallback eval",
+                    match_score=0.92,
+                    source_run_id=f"{prefix}-worker-failure",
+                    tools=[],
+                    fallback_on_failure=True,
+                )
+                _track(created, "worker_run_ids", result.get("worker_run_id"))
+                improvement = (
+                    await db.execute(
+                        select(CapabilityCandidate).where(
+                            CapabilityCandidate.tenant_id == tenant_uuid,
+                            CapabilityCandidate.user_id == user_uuid,
+                            CapabilityCandidate.worker_id == worker.id,
+                            CapabilityCandidate.source_run_id == f"{prefix}-worker-failure",
+                        )
+                    )
+                ).scalar_one_or_none()
+                _track(created, "candidate_ids", improvement)
+                evidence.update(
+                    {
+                        "status": result.get("status"),
+                        "notice_statuses": [
+                            event.get("status")
+                            for event in result.get("events", [])
+                            if event.get("type") == "worker_notice"
+                        ],
+                        "improvement_candidate_id": str(improvement.id) if improvement else None,
+                    }
+                )
+                passed = (
+                    result.get("status") == "failed_fallback_succeeded"
+                    and "fallback_started" in evidence["notice_statuses"]
+                    and improvement is not None
+                )
+                reason = "Worker failure fell back to normal Agent path and created improvement candidate"
+
+            elif case == "worker_semantic_match":
+                worker, _ = await _create_active_eval_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    name_suffix="semantic-worker",
+                    description="Normalize receipt evidence into expense records.",
+                    trigger={"keywords": ["receipt normalization"], "examples": ["standardize receipts"]},
+                    definition={"instructions": "Perform receipt normalization.", "allowed_tools": [], "risk": "low"},
+                    created=created,
+                )
+                decisions = await match_workers(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    request="please clean up my expense proof bundle",
+                    input_payload={"request": "please clean up my expense proof bundle"},
+                    embedding_fn=_capability_eval_embedding,
+                    limit=3,
+                )
+                top = decisions[0] if decisions else None
+                evidence.update(
+                    {
+                        "worker_id": str(worker.id),
+                        "decision": top.decision if top else None,
+                        "semantic_score": top.semantic_score if top else None,
+                        "keyword_score": top.keyword_score if top else None,
+                    }
+                )
+                passed = bool(
+                    top
+                    and top.worker_id == worker.id
+                    and top.semantic_score >= 0.99
+                    and top.keyword_score < 0.2
+                    and top.decision == "auto_notice"
+                )
+                reason = "Worker matched through embedding similarity without keyword overlap"
+
+            elif case == "worker_verify_before_activate":
+                worker = await create_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    name=f"{prefix}-verify-worker",
+                    description="Verify-before-activate eval Worker.",
+                    trigger={"keywords": ["verify eval"]},
+                    policy={"risk": "low", "allowed_tools": []},
+                )
+                _track(created, "worker_ids", worker)
+                version = await create_version(
+                    db,
+                    worker=worker,
+                    version=1,
+                    definition={"instructions": "Verify me.", "allowed_tools": [], "risk": "low"},
+                    verification_plan={"eval": "must verify first"},
+                )
+                _track(created, "worker_version_ids", version)
+                pre_verify_error = None
+                try:
+                    await request_activation(db, worker=worker, version=version)
+                except Exception as exc:
+                    pre_verify_error = _http_error_code(exc)
+                version = await verify_version(
+                    db,
+                    version=version,
+                    verified_by=user_uuid,
+                    verification_evidence={"verified": True, "prefix": prefix},
+                )
+                activation = await request_activation(db, worker=worker, version=version)
+                worker = await activate_after_confirmation(
+                    db,
+                    worker=worker,
+                    version=version,
+                    user_id=user_uuid,
+                    activation_token=activation["activation_token"],
+                    confirmation_evidence={"confirmed": True, "prefix": prefix},
+                )
+                await db.refresh(version)
+                evidence.update(
+                    {
+                        "pre_verify_error": pre_verify_error,
+                        "worker_status": worker.status,
+                        "worker_enabled": worker.enabled,
+                        "version_status": version.status,
+                        "activation_confirmed": worker.activation_confirmed_at is not None,
+                    }
+                )
+                passed = (
+                    pre_verify_error == "WORKER_VERSION_NOT_VERIFIED"
+                    and worker.status == "active"
+                    and worker.enabled is True
+                    and version.status == "active"
+                    and worker.activation_confirmed_at is not None
+                )
+                reason = "Worker activation requires verified version and confirmation evidence"
+
+            elif case == "worker_recursion_guard":
+                worker, version = await _create_active_eval_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    name_suffix="recursion-worker",
+                    description="Recursion guard eval Worker.",
+                    trigger={"keywords": ["recursion eval"]},
+                    created=created,
+                )
+                result = await execute_worker_run(
+                    db,
+                    gateway=llm_gateway,
+                    sandbox_manager=None,
+                    provider="default",
+                    worker=worker,
+                    version=version,
+                    messages=[{"role": "user", "content": "call same Worker"}],
+                    input_payload={"request": "call same Worker"},
+                    matched_request="call same Worker",
+                    match_score=0.9,
+                    source_run_id=f"{prefix}-recursion",
+                    worker_context={
+                        "worker_stack": [str(worker.id)],
+                        "depth": 1,
+                        "max_depth": 2,
+                    },
+                    tools=[],
+                )
+                _track(created, "worker_run_ids", result.get("worker_run_id"))
+                evidence.update({"status": result.get("status"), "reason": result.get("reason")})
+                passed = result.get("status") == "blocked_by_policy" and result.get("reason") == "worker_recursion_blocked"
+                reason = "Worker runtime recorded same-worker recursion as blocked_by_policy"
+
+            elif case == "confirmation_resume_policy_denial":
+                decision = evaluate_worker_tool_policy(
+                    "shell_exec",
+                    {
+                        "worker_id": f"{prefix}-worker",
+                        "worker_run_id": f"{prefix}-run",
+                        "allowed_tool_names": [],
+                    },
+                    risk="destructive",
+                    confirmed=True,
+                    confirmation_context={"tool_name": "shell_exec", "risk": "destructive"},
+                )
+                evidence.update(
+                    {
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "detail": decision.detail,
+                    }
+                )
+                passed = decision.action == "block" and decision.reason == "worker_tool_not_allowed"
+                reason = "confirmation resume still enforces allowed Worker tool policy"
+
+            elif case == "candidate_outbox_eventual":
+                source_run_id = f"{prefix}-analysis"
+                payload = {
+                    "conversation_id": f"{prefix}-conversation",
+                    "signal": {
+                        "should_analyze": True,
+                        "reasons": ["remember_text"],
+                        "user_text": f"Remember {prefix}",
+                    },
+                }
+                first = await enqueue_run_analysis(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    source_run_id=source_run_id,
+                    source_kind="conversation",
+                    payload=payload,
+                )
+                _track(created, "analysis_job_ids", first)
+                second = await enqueue_run_analysis(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    source_run_id=source_run_id,
+                    source_kind="conversation",
+                    payload=payload,
+                )
+                _track(created, "analysis_job_ids", second)
+                await db.commit()
+                claimed = await claim_pending_analysis(db, tenant_id=tenant_uuid, user_id=user_uuid)
+                if claimed is not None:
+                    _track(created, "analysis_job_ids", claimed)
+                    await complete_analysis_job(
+                        db,
+                        claimed,
+                        result_metadata={"candidate_count": 0, "eval": prefix},
+                    )
+                    await db.commit()
+                    await db.refresh(claimed)
+                total = (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(CapabilityAnalysisJob)
+                        .where(
+                            CapabilityAnalysisJob.tenant_id == tenant_uuid,
+                            CapabilityAnalysisJob.user_id == user_uuid,
+                            CapabilityAnalysisJob.source_run_id == source_run_id,
+                        )
+                    )
+                ).scalar_one()
+                evidence.update(
+                    {
+                        "first_id": str(first.id),
+                        "second_id": str(second.id),
+                        "same_job": first.id == second.id,
+                        "claimed_status": claimed.status if claimed else None,
+                        "attempts": claimed.attempts if claimed else None,
+                        "job_count": int(total),
+                    }
+                )
+                passed = bool(first.id == second.id and claimed and claimed.status == "succeeded" and int(total) == 1)
+                reason = "analysis outbox is idempotent and eventually persists completion"
+
+            elif case == "memory_skill_personal_isolation":
+                other = User(
+                    tenant_id=tenant_uuid,
+                    username=f"{prefix}-other-user",
+                    password_hash="capability-eval",
+                    role="member",
+                )
+                db.add(other)
+                await db.flush()
+                _track(created, "user_ids", other)
+                memory = Memory(
+                    tenant_id=tenant_uuid,
+                    user_id=other.id,
+                    type="user",
+                    name=f"{prefix}-other-memory",
+                    content="other user's private memory",
+                    tags=[prefix],
+                )
+                skill = Skill(
+                    tenant_id=tenant_uuid,
+                    user_id=other.id,
+                    scope="private",
+                    name=f"{prefix}-other-skill",
+                    trigger_terms=[f"{prefix}-private-trigger"],
+                    enabled=True,
+                )
+                db.add_all([memory, skill])
+                await db.commit()
+                _track(created, "memory_ids", memory)
+                _track(created, "skill_ids", skill)
+                own_memories = list(
+                    (
+                        await db.execute(
+                            select(Memory).where(
+                                Memory.tenant_id == tenant_uuid,
+                                Memory.user_id == user_uuid,
+                                Memory.name.like(f"{prefix}%"),
+                            )
+                        )
+                    ).scalars()
+                )
+                own_skills = list(
+                    (
+                        await db.execute(
+                            select(Skill).where(
+                                Skill.tenant_id == tenant_uuid,
+                                Skill.user_id == user_uuid,
+                                Skill.name.like(f"{prefix}%"),
+                            )
+                        )
+                    ).scalars()
+                )
+                evidence.update(
+                    {
+                        "other_user_id": str(other.id),
+                        "current_user_memory_count": len(own_memories),
+                        "current_user_skill_count": len(own_skills),
+                    }
+                )
+                passed = len(own_memories) == 0 and len(own_skills) == 0
+                reason = "private Memory/Skill rows stay scoped to their owner user"
+
+            elif case == "inactive_candidate_inertness":
+                for candidate_type in ("memory", "skill", "worker"):
+                    candidate = await create_candidate(
+                        db,
+                        tenant_id=tenant_uuid,
+                        user_id=user_uuid,
+                        candidate_type=candidate_type,
+                        title=f"{prefix}-{candidate_type}-candidate",
+                        body=f"inactive {candidate_type}",
+                        source_run_id=f"{prefix}-{candidate_type}-run",
+                        dedupe_key=f"{prefix}:{candidate_type}:inactive",
+                        payload={"name": f"{prefix}-{candidate_type}-resource"},
+                    )
+                    _track(created, "candidate_ids", candidate)
+                await db.commit()
+                memory_count = (
+                    await db.execute(
+                        select(func.count()).select_from(Memory).where(
+                            Memory.tenant_id == tenant_uuid,
+                            Memory.name.like(f"{prefix}%"),
+                        )
+                    )
+                ).scalar_one()
+                skill_count = (
+                    await db.execute(
+                        select(func.count()).select_from(Skill).where(
+                            Skill.tenant_id == tenant_uuid,
+                            Skill.name.like(f"{prefix}%"),
+                        )
+                    )
+                ).scalar_one()
+                worker_count = (
+                    await db.execute(
+                        select(func.count()).select_from(Worker).where(
+                            Worker.tenant_id == tenant_uuid,
+                            Worker.name.like(f"{prefix}%"),
+                        )
+                    )
+                ).scalar_one()
+                evidence.update(
+                    {
+                        "memory_count": int(memory_count),
+                        "skill_count": int(skill_count),
+                        "worker_count": int(worker_count),
+                    }
+                )
+                passed = int(memory_count) == 0 and int(skill_count) == 0 and int(worker_count) == 0
+                reason = "inactive candidates do not create active capability resources"
+
+            elif case == "policy_guard_denial":
+                worker = await create_worker(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    name=f"{prefix}-policy-worker",
+                    description="Inactive policy guard eval Worker.",
+                    trigger={"keywords": ["policy eval"]},
+                    policy={"risk": "low", "allowed_tools": []},
+                )
+                _track(created, "worker_ids", worker)
+                version = await create_version(
+                    db,
+                    worker=worker,
+                    version=1,
+                    definition={"instructions": "Inactive.", "allowed_tools": [], "risk": "low"},
+                    verification_plan={"eval": "inactive"},
+                )
+                _track(created, "worker_version_ids", version)
+                decision = evaluate_worker_policy(worker, version, input_payload={"request": "run inactive Worker"})
+                evidence.update({"action": decision.action, "reason": decision.reason})
+                passed = decision.action == "block" and decision.reason in {
+                    "worker_not_active",
+                    "worker_version_not_active",
+                    "worker_activation_not_confirmed",
+                }
+                reason = "Worker policy blocks inactive Worker before runtime side effects"
+
+            else:
+                passed = False
+                reason = f"Unknown capability probe case: {case}"
+                evidence["known_cases"] = True
+
+            return _capability_probe_result(
+                task,
+                start=start,
+                passed=bool(passed),
+                reason=reason,
+                evidence=evidence,
+            )
+        except Exception as exc:
+            error = safe_error_message(exc, "Capability layer probe")
+            return _capability_probe_result(
+                task,
+                start=start,
+                passed=False,
+                reason="capability layer probe raised an exception",
+                evidence={"case": task.get("case"), "prefix": prefix},
+                error=error,
+            )
+        finally:
+            if user_uuid is not None:
+                try:
+                    await _cleanup_capability_probe_records(
+                        db,
+                        tenant_id=tenant_uuid,
+                        user_id=user_uuid,
+                        prefix=prefix,
+                        created=created,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Capability probe cleanup failed for %s: %s",
+                        prefix,
+                        safe_error_message(exc, "Capability probe cleanup"),
+                    )
+
+
 # ---------------------------------------------------------------------------
 # Task runner
 # ---------------------------------------------------------------------------
@@ -297,6 +1193,8 @@ async def run_single_task(
     use_judge: bool = True,
 ) -> dict:
     """Run one eval task and return results."""
+    if task.get("runner") == "capability_layer_probe":
+        return await run_capability_layer_probe(task, tenant_id, llm_gateway)
     if task.get("runner") == "parallel_subagent_runtime_probe":
         start = time.monotonic()
         try:

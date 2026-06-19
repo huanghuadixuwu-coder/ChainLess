@@ -1,0 +1,93 @@
+[
+  {
+    "id": "candidate-rule-trigger",
+    "runner": "capability_layer_probe",
+    "case": "candidate_rule_trigger",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify deterministic run-analysis rules identify candidate-worthy completed work."
+  },
+  {
+    "id": "memory-acceptance-retrieval",
+    "runner": "capability_layer_probe",
+    "case": "memory_acceptance_retrieval",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Accept a Memory candidate and verify a private Memory source is created for later recall."
+  },
+  {
+    "id": "skill-acceptance-method",
+    "runner": "capability_layer_probe",
+    "case": "skill_acceptance_method",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Accept a Skill candidate and verify private trigger metadata can match later method use."
+  },
+  {
+    "id": "worker-match-invocation",
+    "runner": "capability_layer_probe",
+    "case": "worker_match_invocation",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Activate a Worker and verify semantic matching selects it for an equivalent request."
+  },
+  {
+    "id": "worker-failure-fallback",
+    "runner": "capability_layer_probe",
+    "case": "worker_failure_fallback",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify Worker failure emits fallback evidence and creates an improvement candidate."
+  },
+  {
+    "id": "worker-semantic-match",
+    "runner": "capability_layer_probe",
+    "case": "worker_semantic_match",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify same-meaning different-wording Worker matching is semantic, not keyword-only."
+  },
+  {
+    "id": "worker-verify-before-activate",
+    "runner": "capability_layer_probe",
+    "case": "worker_verify_before_activate",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify Worker activation cannot proceed before version verification and confirmation."
+  },
+  {
+    "id": "worker-recursion-guard",
+    "runner": "capability_layer_probe",
+    "case": "worker_recursion_guard",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify Worker recursion is blocked with traceable run evidence."
+  },
+  {
+    "id": "confirmation-resume-policy-denial",
+    "runner": "capability_layer_probe",
+    "case": "confirmation_resume_policy_denial",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify confirmation resume still passes Worker tool policy and denies disallowed tools."
+  },
+  {
+    "id": "candidate-outbox-eventual",
+    "runner": "capability_layer_probe",
+    "case": "candidate_outbox_eventual",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify analysis outbox enqueue is idempotent and claim/complete persists eventual work."
+  },
+  {
+    "id": "memory-skill-personal-isolation",
+    "runner": "capability_layer_probe",
+    "case": "memory_skill_personal_isolation",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify private Memory and Skill rows do not leak across users."
+  },
+  {
+    "id": "inactive-candidate-inertness",
+    "runner": "capability_layer_probe",
+    "case": "inactive_candidate_inertness",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify inactive candidates are inert until accepted."
+  },
+  {
+    "id": "policy-guard-denial",
+    "runner": "capability_layer_probe",
+    "case": "policy_guard_denial",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify inactive Worker policy guard blocks execution before runtime side effects."
+  }
+]

@@ -239,6 +239,7 @@ def _worker_fallback_notice(
         "type": "worker_notice",
         "status": "fallback_started",
         "worker_id": str(worker.id),
+        "worker_name": worker.name,
         "worker_run_id": str(run_id),
         "code": error_code or "WORKER_FAILED",
         "message": (
