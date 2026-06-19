@@ -4,6 +4,7 @@ interface StreamConfirmation {
   args: Record<string, unknown>;
   risk: string;
   timeout_s: number;
+  worker_policy_context?: Record<string, unknown> | null;
 }
 
 interface ConfirmToolRequest {
@@ -35,6 +36,8 @@ interface StreamHandlers {
     error: string
   ) => void;
   onConfirmationRequired?: (confirmation: StreamConfirmation) => void;
+  onCapabilityCandidate?: (candidate: CapabilityCandidateHint) => void;
+  onWorkerNotice?: (notice: WorkerNotice) => void;
   onError: (message: string) => void;
   onDone: () => void;
 }
@@ -103,6 +106,131 @@ interface StreamContext {
     name?: string;
     provider?: string;
   };
+}
+
+interface Page<T> {
+  items: T[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+}
+
+type CandidateType = "memory" | "skill" | "worker";
+
+type CandidateStatus =
+  | "new"
+  | "seen"
+  | "accepted"
+  | "edited_accepted"
+  | "dismissed"
+  | "snoozed"
+  | "muted_pattern"
+  | "merged"
+  | "archived";
+
+interface CapabilityCandidateHint {
+  id: string;
+  candidate_type: CandidateType | string;
+  status: CandidateStatus | string;
+  active?: boolean;
+  title: string;
+  message?: string;
+}
+
+interface CapabilityCandidate extends CapabilityCandidateHint {
+  tenant_id: string;
+  user_id: string;
+  body?: string | null;
+  source_run_id?: string | null;
+  source_event_id?: string | null;
+  source_message_id?: string | null;
+  source_uri?: string | null;
+  source_kind?: string | null;
+  dedupe_key?: string | null;
+  merge_target_candidate_id?: string | null;
+  merge_reason?: string | null;
+  merged_at?: string | null;
+  snoozed_until?: string | null;
+  mute_pattern?: string | null;
+  muted_at?: string | null;
+  worker_id?: string | null;
+  accepted_at?: string | null;
+  accepted_by?: string | null;
+  dismissed_at?: string | null;
+  archived_at?: string | null;
+  evidence: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface Worker {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  name: string;
+  description?: string | null;
+  status: string;
+  enabled: boolean;
+  trigger: Record<string, unknown>;
+  policy: Record<string, unknown>;
+  active_version_id?: string | null;
+  activation_confirmed_by?: string | null;
+  activation_evidence: Record<string, unknown>;
+  rollback_reason?: string | null;
+  soft_deleted_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkerVersion {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  worker_id: string;
+  version: number;
+  status: string;
+  definition: Record<string, unknown>;
+  verification_plan: Record<string, unknown>;
+  verification_evidence: Record<string, unknown>;
+  verified_at?: string | null;
+  verified_by?: string | null;
+  activated_at?: string | null;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkerRun {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  worker_id: string;
+  version_id?: string | null;
+  source_run_id?: string | null;
+  status: string;
+  input_payload: Record<string, unknown>;
+  output_payload: Record<string, unknown>;
+  error_code?: string | null;
+  error_message?: string | null;
+  confirmation_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkerNotice {
+  status: string;
+  worker_id?: string;
+  version_id?: string;
+  worker_run_id?: string;
+  worker_name?: string;
+  decision?: string;
+  score?: number;
+  message?: string;
+  reason?: string | null;
+  code?: string | null;
+  reasons?: string[];
 }
 
 export const TOKEN_CHANGE_EVENT = "chainless-token-change";
@@ -220,6 +348,162 @@ class ApiClient {
       }),
     });
     await this.consumeStream(res, handlers);
+  }
+
+  async listCapabilityCandidates(params: { limit?: number; offset?: number } = {}) {
+    const query = new URLSearchParams({
+      limit: String(params.limit ?? 100),
+      offset: String(params.offset ?? 0),
+    });
+    const res = await this.get(`/api/v1/capability-candidates?${query}`);
+    return (await res.json()) as Page<CapabilityCandidate>;
+  }
+
+  async getCapabilityCandidate(candidateId: string) {
+    const res = await this.get(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}`
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async acceptCapabilityCandidate(
+    candidateId: string,
+    editedProposal?: Record<string, unknown>
+  ) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/accept`,
+      editedProposal ? { edited_proposal: editedProposal } : {}
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async dismissCapabilityCandidate(candidateId: string) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/dismiss`,
+      {}
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async archiveCapabilityCandidate(candidateId: string) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/archive`,
+      {}
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async snoozeCapabilityCandidate(candidateId: string, snoozedUntil: string) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/snooze`,
+      { snoozed_until: snoozedUntil }
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async muteCapabilityCandidatePattern(candidateId: string, mutePattern: string) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/mute-pattern`,
+      { mute_pattern: mutePattern }
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async mergeCapabilityCandidate(
+    candidateId: string,
+    targetCandidateId: string,
+    mergeReason?: string
+  ) {
+    const res = await this.post(
+      `/api/v1/capability-candidates/${encodeURIComponent(candidateId)}/merge`,
+      {
+        target_candidate_id: targetCandidateId,
+        ...(mergeReason ? { merge_reason: mergeReason } : {}),
+      }
+    );
+    return (await res.json()) as CapabilityCandidate;
+  }
+
+  async listWorkers(params: { limit?: number; offset?: number } = {}) {
+    const query = new URLSearchParams({
+      limit: String(params.limit ?? 100),
+      offset: String(params.offset ?? 0),
+    });
+    const res = await this.get(`/api/v1/workers?${query}`);
+    return (await res.json()) as Page<Worker>;
+  }
+
+  async getWorker(workerId: string) {
+    const res = await this.get(`/api/v1/workers/${encodeURIComponent(workerId)}`);
+    return (await res.json()) as Worker;
+  }
+
+  async enableWorker(workerId: string) {
+    const res = await this.post(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/enable`,
+      {}
+    );
+    return (await res.json()) as Worker;
+  }
+
+  async disableWorker(workerId: string) {
+    const res = await this.post(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/disable`,
+      {}
+    );
+    return (await res.json()) as Worker;
+  }
+
+  async deleteWorker(workerId: string) {
+    const res = await this.delete(`/api/v1/workers/${encodeURIComponent(workerId)}`);
+    return (await res.json()) as Worker;
+  }
+
+  async listWorkerRuns(workerId: string, params: { limit?: number } = {}) {
+    const query = new URLSearchParams({ limit: String(params.limit ?? 20) });
+    const res = await this.get(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/runs?${query}`
+    );
+    return (await res.json()) as { items: WorkerRun[] };
+  }
+
+  async listWorkerVersions(workerId: string) {
+    const res = await this.get(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/versions`
+    );
+    return (await res.json()) as { items: WorkerVersion[] };
+  }
+
+  async rollbackWorker(
+    workerId: string,
+    body: {
+      version_id: string;
+      activation_token?: string | null;
+      reason?: string | null;
+      confirmation_evidence?: Record<string, unknown> | null;
+    }
+  ) {
+    const res = await this.post(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/rollback`,
+      body
+    );
+    return (await res.json()) as Worker;
+  }
+
+  async sendWorkerFeedback(
+    workerId: string,
+    body: {
+      feedback: string;
+      source_run_id?: string | null;
+      reason?: string | null;
+      metadata?: Record<string, unknown>;
+    }
+  ) {
+    const res = await this.post(
+      `/api/v1/workers/${encodeURIComponent(workerId)}/feedback`,
+      body
+    );
+    return (await res.json()) as Record<string, unknown>;
   }
 
   async getAvailableTools() {
@@ -393,7 +677,12 @@ class ApiClient {
               args: data.args || {},
               risk: data.risk || "destructive",
               timeout_s: data.timeout_s || 30,
+              worker_policy_context: data.worker_policy_context || null,
             });
+          } else if (eventType === "capability_candidate") {
+            handlers.onCapabilityCandidate?.(data as CapabilityCandidateHint);
+          } else if (eventType === "worker_notice") {
+            handlers.onWorkerNotice?.(data as WorkerNotice);
           } else if (eventType === "error") {
             handlers.onError(data.error?.message || "Stream error");
           } else if (eventType === "done") {
@@ -420,4 +709,13 @@ export type {
   ToolOption,
   UploadedArtifact,
   MessageAttachment,
+  Page,
+  CapabilityCandidate,
+  CapabilityCandidateHint,
+  CandidateStatus,
+  CandidateType,
+  Worker,
+  WorkerVersion,
+  WorkerRun,
+  WorkerNotice,
 };

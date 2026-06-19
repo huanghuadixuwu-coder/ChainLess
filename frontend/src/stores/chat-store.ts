@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import { api } from "@/lib/api";
 import type {
+  CapabilityCandidateHint,
   MessageAttachment,
   StreamArtifact,
   StreamContext,
+  WorkerNotice,
 } from "@/lib/api";
 import { useArtifactStore } from "@/stores/artifact-store";
+import { useCapabilityStore } from "@/stores/capability-store";
 
 const ACTIVE_CONVERSATION_STORAGE_KEY = "activeConversationId";
 
@@ -53,6 +56,8 @@ interface ChatState {
   toolEvents: Record<string, ToolEvent[]>;
   pendingConfirmations: Record<string, PendingConfirmation | null>;
   contextSummaries: Record<string, StreamContext | null>;
+  capabilityCandidates: Record<string, CapabilityCandidateHint[]>;
+  workerNotices: Record<string, WorkerNotice[]>;
   isStreaming: boolean;
   streamingContent: string;
   isLoadingConversations: boolean;
@@ -153,6 +158,14 @@ const selectedAttachmentMetadata = (
   });
 };
 
+const upsertCapabilityHint = (
+  hints: CapabilityCandidateHint[],
+  candidate: CapabilityCandidateHint
+) => [candidate, ...hints.filter((item) => item.id !== candidate.id)].slice(0, 20);
+
+const appendWorkerNotice = (notices: WorkerNotice[], notice: WorkerNotice) =>
+  [notice, ...notices].slice(0, 20);
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
@@ -160,6 +173,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   toolEvents: {},
   pendingConfirmations: {},
   contextSummaries: {},
+  capabilityCandidates: {},
+  workerNotices: {},
   isStreaming: false,
   streamingContent: "",
   isLoadingConversations: false,
@@ -223,6 +238,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
             [restoredConversationId]:
               state.contextSummaries[restoredConversationId] || null,
           },
+          capabilityCandidates: {
+            ...state.capabilityCandidates,
+            [restoredConversationId]:
+              state.capabilityCandidates[restoredConversationId] || [],
+          },
+          workerNotices: {
+            ...state.workerNotices,
+            [restoredConversationId]:
+              state.workerNotices[restoredConversationId] || [],
+          },
         }));
       } catch {
         set((state) => ({
@@ -244,6 +269,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...state.contextSummaries,
             [restoredConversationId]:
               state.contextSummaries[restoredConversationId] || null,
+          },
+          capabilityCandidates: {
+            ...state.capabilityCandidates,
+            [restoredConversationId]:
+              state.capabilityCandidates[restoredConversationId] || [],
+          },
+          workerNotices: {
+            ...state.workerNotices,
+            [restoredConversationId]:
+              state.workerNotices[restoredConversationId] || [],
           },
         }));
       }
@@ -269,6 +304,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         toolEvents: { ...state.toolEvents, [conv.id]: [] },
         pendingConfirmations: { ...state.pendingConfirmations, [conv.id]: null },
         contextSummaries: { ...state.contextSummaries, [conv.id]: null },
+        capabilityCandidates: { ...state.capabilityCandidates, [conv.id]: [] },
+        workerNotices: { ...state.workerNotices, [conv.id]: [] },
       }));
       storeConversationId(conv.id);
       return conv.id;
@@ -305,6 +342,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...state.contextSummaries,
             [id]: state.contextSummaries[id] || null,
           },
+          capabilityCandidates: {
+            ...state.capabilityCandidates,
+            [id]: state.capabilityCandidates[id] || [],
+          },
+          workerNotices: {
+            ...state.workerNotices,
+            [id]: state.workerNotices[id] || [],
+          },
         }));
       } catch (err: unknown) {
         const errorMessage =
@@ -319,6 +364,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           contextSummaries: {
             ...state.contextSummaries,
             [id]: state.contextSummaries[id] || null,
+          },
+          capabilityCandidates: {
+            ...state.capabilityCandidates,
+            [id]: state.capabilityCandidates[id] || [],
+          },
+          workerNotices: {
+            ...state.workerNotices,
+            [id]: state.workerNotices[id] || [],
           },
           error: errorMessage,
         }));
@@ -352,10 +405,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextToolEvents = { ...state.toolEvents };
       const nextPending = { ...state.pendingConfirmations };
       const nextContext = { ...state.contextSummaries };
+      const nextCandidates = { ...state.capabilityCandidates };
+      const nextWorkerNotices = { ...state.workerNotices };
       delete nextMessages[id];
       delete nextToolEvents[id];
       delete nextPending[id];
       delete nextContext[id];
+      delete nextCandidates[id];
+      delete nextWorkerNotices[id];
 
       return {
         conversations: state.conversations.filter((conv) => conv.id !== id),
@@ -365,6 +422,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         toolEvents: nextToolEvents,
         pendingConfirmations: nextPending,
         contextSummaries: nextContext,
+        capabilityCandidates: nextCandidates,
+        workerNotices: nextWorkerNotices,
         streamingContent:
           state.currentConversationId === id ? "" : state.streamingContent,
         isStreaming:
@@ -415,6 +474,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       contextSummaries: {
         ...state.contextSummaries,
         [targetConversationId]: null,
+      },
+      capabilityCandidates: {
+        ...state.capabilityCandidates,
+        [targetConversationId]: state.capabilityCandidates[targetConversationId] || [],
+      },
+      workerNotices: {
+        ...state.workerNotices,
+        [targetConversationId]: state.workerNotices[targetConversationId] || [],
       },
       isStreaming: true,
       streamingContent: "",
@@ -531,6 +598,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 },
               },
               isStreaming: false,
+            }));
+          },
+          onCapabilityCandidate: (candidate) => {
+            useCapabilityStore
+              .getState()
+              .ingestCandidateHint(targetConversationId, candidate);
+            set((state) => ({
+              capabilityCandidates: {
+                ...state.capabilityCandidates,
+                [targetConversationId]: upsertCapabilityHint(
+                  state.capabilityCandidates[targetConversationId] || [],
+                  candidate
+                ),
+              },
+            }));
+            void useCapabilityStore.getState().loadCandidates();
+          },
+          onWorkerNotice: (notice) => {
+            useCapabilityStore
+              .getState()
+              .ingestWorkerNotice(targetConversationId, notice);
+            set((state) => ({
+              workerNotices: {
+                ...state.workerNotices,
+                [targetConversationId]: appendWorkerNotice(
+                  state.workerNotices[targetConversationId] || [],
+                  notice
+                ),
+              },
             }));
           },
           onError: (errorMsg) => {
@@ -768,6 +864,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 },
               },
               isStreaming: false,
+            }));
+          },
+          onCapabilityCandidate: (candidate) => {
+            useCapabilityStore
+              .getState()
+              .ingestCandidateHint(currentConversationId, candidate);
+            set((state) => ({
+              capabilityCandidates: {
+                ...state.capabilityCandidates,
+                [currentConversationId]: upsertCapabilityHint(
+                  state.capabilityCandidates[currentConversationId] || [],
+                  candidate
+                ),
+              },
+            }));
+            void useCapabilityStore.getState().loadCandidates();
+          },
+          onWorkerNotice: (notice) => {
+            useCapabilityStore
+              .getState()
+              .ingestWorkerNotice(currentConversationId, notice);
+            set((state) => ({
+              workerNotices: {
+                ...state.workerNotices,
+                [currentConversationId]: appendWorkerNotice(
+                  state.workerNotices[currentConversationId] || [],
+                  notice
+                ),
+              },
             }));
           },
           onError: (errorMsg) => {

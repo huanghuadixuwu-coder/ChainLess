@@ -3,12 +3,13 @@
 import { useEffect } from "react";
 import Markdown from "react-markdown";
 
+import { CapabilityInboxPanel } from "@/components/chat/capability-inbox-panel";
 import { DiffView } from "@/components/chat/diff-view";
 import { FileArtifactList } from "@/components/chat/file-artifact-list";
 import { Message, ToolEvent } from "@/stores/chat-store";
 import { useArtifactStore } from "@/stores/artifact-store";
 
-type PanelTab = "preview" | "terminal" | "files" | "diff";
+type PanelTab = "preview" | "terminal" | "files" | "diff" | "inbox";
 
 interface PreviewPanelProps {
   open: boolean;
@@ -25,6 +26,7 @@ const TABS: Array<{ id: PanelTab; label: string }> = [
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
   { id: "diff", label: "Diff" },
+  { id: "inbox", label: "Inbox" },
 ];
 
 export function PreviewPanel({
@@ -146,6 +148,10 @@ export function PreviewPanel({
         )}
 
         {activeTab === "diff" && <DiffView conversationId={conversationId} />}
+
+        {activeTab === "inbox" && (
+          <CapabilityInboxPanel conversationId={conversationId} />
+        )}
       </div>
     </aside>
   );

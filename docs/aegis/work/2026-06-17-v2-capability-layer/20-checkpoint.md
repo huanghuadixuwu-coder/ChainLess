@@ -257,34 +257,50 @@ Evidence refs:
   passed with `36 passed`.
 - W6 review-fix final full backend GREEN: `docker run ... pytest -q` passed
   with `422 passed, 4 skipped, 1 warning`.
+- W6 committed locally as `2ef7ef5 feat: add capability policy hooks`.
+- W7 implementation added frontend API methods, a dedicated capability store,
+  SSE parsing for `capability_candidate` / `worker_notice`, a right-panel
+  Inbox tab, candidate/Worker cards, and Settings sections for Capabilities and
+  Workers without changing global/sidebar/chat-scroll styling.
+- W7 compose verification RED:
+  `docker compose run --rm frontend sh -lc "npm run lint && npm run build"`
+  failed before lint/build because the worktree compose project tried to create
+  fixed-name containers such as `chainless-db` while the main local Docker
+  stack was already running.
+- W7 frontend Docker verification GREEN:
+  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer\frontend\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`
+  passed; output included `eslint` success and Next `Compiled successfully`.
 
 Blocked-on:
 - none.
 
 Next step:
-- Proceed to W7. No W6 commit yet.
+- Complete W7 review/stop-condition check. Do not commit W7 unless the user
+  explicitly asks.
 
 ## ResumeStateHint
 
 Resume by reading this file, `10-intent.md`, and the V2 execution plan.
-Current active workstream is W7 next; W1, W2, W3, W4, W5, and W6 are closed
-with fresh Docker evidence. W5 has been committed and pushed; W6 has not been
-committed.
+Current active workstream is W7 review/closure; W1, W2, W3, W4, W5, and W6 are
+closed with fresh Docker evidence. W5 has been committed and pushed; W6 has
+been committed locally but not pushed.
 
 ## DriftCheckDraft
 
-- Scope: aligned with W6 packet; implemented minimal hard guards and internal
-  hooks without frontend edits, commits, or host Python/Node app runtime use.
-- Compatibility: normal tool execution and confirmation resume now pass the
-  same Worker tool policy gate; absent Worker context remains normal Agent
-  behavior.
-- New owners: W6 added `app.core.capabilities.hooks` as the bounded internal
-  hook event recorder, expanded `app.core.capabilities.policy` as the
-  canonical Worker/tool policy facade, and added
-  `app.core.capabilities.orchestration` as the stream-service boundary seam.
-- Constraint track: hook emission is observational and cannot override policy;
-  denied decisions remain non-overridable by prompts or hooks.
-- Retirement track: the ambiguous W4 empty allowed-tool semantics were retired;
-  when an allow-list key is present, an empty list means no tools.
-- Decision: W6 targeted scope is implemented and Docker-verified; proceed to
-  W7.
+- Scope: W7 aligned with the frontend capability-management packet; it exposes
+  already-built backend contracts through thin client/store/UI seams without
+  changing the Chainless visual system.
+- Compatibility: chat streaming still flows through `chat-store`; capability
+  management lives in `capability-store`, and chat only records/forwards SSE
+  candidate and Worker notice events.
+- New owners: W7 added `frontend/src/stores/capability-store.ts` as the
+  frontend owner for candidates, Workers, Worker runs, versions, and feedback.
+- Constraint track: no global CSS, sidebar, chat scroll, or existing layout
+  feel was changed. Browser screenshot/DOM evidence is still required in the
+  later QA workstream before claiming visual no-regression.
+- Runtime track: worktree compose frontend verification conflicts with the
+  already-running main local compose stack because services use fixed container
+  names; use `docker run` with the frontend test image for worktree-only
+  lint/build.
+- Decision: W7 implementation is Docker lint/build verified and ready for
+  review/closure, but W7 is not committed.

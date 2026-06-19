@@ -1960,3 +1960,35 @@ two-stage review.
   Verification:
   documentation evidence was updated; no runtime behavior was changed for
   confirmation replay persistence.
+
+## V2 W7 frontend capability management findings
+
+- [x] Frontend had no durable user-facing surface for V2 Capability Candidates
+  or Workers.
+  Evidence:
+  Backend routes and SSE events existed for `/api/v1/capability-candidates`,
+  `/api/v1/workers`, `capability_candidate`, and `worker_notice`, but the
+  frontend API client, stores, right panel, and Settings shell did not expose
+  them.
+  Resolution:
+  Added frontend API methods, a dedicated `capability-store`, SSE parsing seams,
+  a right-panel Inbox tab, candidate hint cards, Worker run/notice cards, and
+  Settings sections for Capabilities and Workers. Existing zinc/card/button
+  classes were reused and global/sidebar/chat-scroll styles were not changed.
+  Verification:
+  Docker-only frontend verification passed with
+  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`.
+
+- [ ] Worktree `docker compose run frontend ...` is unsafe for frontend-only
+  verification while the main local Chainless compose stack is running.
+  Evidence:
+  The worktree compose file uses fixed `container_name` values such as
+  `chainless-db`; running `docker compose run --rm frontend ...` from the
+  worktree tried to create those containers and failed with
+  `Conflict. The container name "/chainless-db" is already in use`.
+  Required follow-up:
+  For frontend-only verification in a worktree, prefer the existing frontend
+  test image with a mounted source directory:
+  `docker run --rm -e NEXT_PUBLIC_API_URL='' -v '<worktree>\\frontend\\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`.
+  Do not stop or remove the main local `chainless-*` containers just to verify
+  a worktree.

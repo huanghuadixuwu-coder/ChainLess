@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePlatformStore } from "@/stores/platform-store";
 import { AgentsSection } from "@/components/settings/agents-section";
+import { CapabilitiesSection } from "@/components/settings/capabilities-section";
 import { ChannelsSection } from "@/components/settings/channels-section";
 import { EvalSection } from "@/components/settings/eval-section";
 import { MemoriesSection } from "@/components/settings/memories-section";
@@ -14,6 +15,7 @@ import { SkillsSection } from "@/components/settings/skills-section";
 import { StatusLine, EmptyState } from "@/components/settings/shared-state";
 import { SystemSection } from "@/components/settings/system-section";
 import { ToolsSection } from "@/components/settings/tools-section";
+import { WorkersSection } from "@/components/settings/workers-section";
 
 type SectionKey =
   | "provider"
@@ -23,6 +25,8 @@ type SectionKey =
   | "channel"
   | "proactive"
   | "skills"
+  | "capabilities"
+  | "workers"
   | "eval"
   | "system";
 
@@ -34,6 +38,8 @@ const readySections: Array<{ key: SectionKey; label: string }> = [
   { key: "channel", label: "Channel" },
   { key: "proactive", label: "Proactive" },
   { key: "skills", label: "Skills" },
+  { key: "capabilities", label: "Capabilities" },
+  { key: "workers", label: "Workers" },
   { key: "eval", label: "Eval" },
   { key: "system", label: "System" },
 ];
@@ -50,6 +56,8 @@ export function SettingsShell() {
     if (activeSection === "channel") return <ChannelsSection />;
     if (activeSection === "proactive") return <ProactiveSection />;
     if (activeSection === "skills") return <SkillsSection />;
+    if (activeSection === "capabilities") return <CapabilitiesSection />;
+    if (activeSection === "workers") return <WorkersSection />;
     if (activeSection === "eval") return <EvalSection />;
     return <SystemSection />;
   };

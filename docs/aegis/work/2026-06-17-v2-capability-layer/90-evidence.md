@@ -942,3 +942,50 @@ W6 residual risks:
 W6 non-goals preserved:
 - No frontend style or UI edits.
 - No W6 commit.
+
+## W7 Frontend Capability Management Evidence
+
+W7 implementation:
+- Added frontend API methods for Candidate list/get/accept/dismiss/archive/
+  snooze/mute-pattern/merge and Worker list/get/enable/disable/delete/
+  rollback/runs/versions/feedback.
+- Added `frontend/src/stores/capability-store.ts` as the dedicated Candidate
+  and Worker frontend owner.
+- Extended chat SSE parsing for `capability_candidate` and `worker_notice`.
+  `chat-store` only records/forwards those events; management actions remain
+  in `capability-store`.
+- Added a right-panel `Inbox` tab through `PreviewPanel` without changing the
+  existing aside width, tab button classes, content scroll container, sidebar,
+  or chat scroll structure.
+- Added Settings sections for Capabilities and Workers using existing
+  `SettingsCard`, `Field`, `EmptyState`, `Button`, and `Input` styling
+  conventions.
+
+W7 compose verification RED:
+- Command: `docker compose run --rm frontend sh -lc "npm run lint && npm run build"`
+- Exit code: 1
+- Result: failed before lint/build because the worktree compose project tried
+  to create fixed-name containers while the main local Docker stack was already
+  running.
+- Key output: `Conflict. The container name "/chainless-db" is already in use`.
+- Follow-up rule: do not use worktree `docker compose run frontend` for
+  frontend-only checks while the main local `chainless-*` stack is running.
+
+W7 frontend verification GREEN:
+- Command: `docker run --rm -e NEXT_PUBLIC_API_URL='' -v 'C:\Users\11367\.config\aegis\worktrees\Chainless\codex-v2-capability-layer\frontend\src:/app/src' chainless-frontend-test:latest sh -lc "npm run lint && npm run build"`
+- Exit code: 0
+- Output: `eslint` passed, Next build returned `Compiled successfully`, and
+  routes `/`, `/chat`, `/login`, and `/settings` prerendered successfully.
+
+W7 style boundary evidence:
+- No global CSS files were edited.
+- No sidebar component files were edited.
+- No chat scroll component structure was edited.
+- Existing `PreviewPanel` layout classes were preserved; only the `Inbox` tab
+  and content branch were added.
+- Browser screenshot/DOM/scroll assertions remain required in the later QA
+  workstream before final visual no-regression is claimed.
+
+W7 commit status:
+- W7 is not committed. W6 was committed locally as
+  `2ef7ef5 feat: add capability policy hooks`.
