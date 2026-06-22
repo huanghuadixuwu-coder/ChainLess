@@ -72,7 +72,15 @@ def audit_field_fingerprint(value: str | None, *, field: str) -> str | None:
 
 
 async def write_audit_log(db: AsyncSession, record: AuditRecord) -> AuditLog:
-    """Persist one audit record without storing request or response bodies."""
+    """Persist one audit record and commit for legacy callers."""
+    row = await add_audit_log(db, record)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def add_audit_log(db: AsyncSession, record: AuditRecord) -> AuditLog:
+    """Add one audit record to the caller's transaction without committing."""
     row = AuditLog(
         tenant_id=record.tenant_id,
         user_id=record.user_id,
@@ -88,8 +96,7 @@ async def write_audit_log(db: AsyncSession, record: AuditRecord) -> AuditLog:
         details=sanitize_details(record.details),
     )
     db.add(row)
-    await db.commit()
-    await db.refresh(row)
+    await db.flush()
     return row
 
 

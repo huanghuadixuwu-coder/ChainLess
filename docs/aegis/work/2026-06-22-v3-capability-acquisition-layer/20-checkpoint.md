@@ -1,0 +1,292 @@
+# V3 Capability Acquisition Layer Checkpoint
+
+## TodoCheckpointDraft
+
+Current todo: Workstream 4, Task 4.1.
+
+Completed todos:
+- Plan engineering review completed and patched.
+- Execution entered subagent-driven mode.
+- Long-task intent/checkpoint/evidence records initialized.
+- W1 implementation subagent completed code changes but Docker verification was
+  blocked by unavailable Docker Desktop/Linux engine.
+- W1 spec compliance review found 3 gaps: typed proposal target/permission
+  contracts, explicit source-evidence fields, and incomplete required-column
+  model test coverage.
+- W1 spec-fix subagent resolved those gaps; spec re-review passed.
+- W1 Docker verification passed for acquisition API contract and model tests:
+  `16 passed, 2 warnings`.
+- W1 code quality review found 2 Important issues: missing
+  `verification_requested` / `activating` proposal states and plain string
+  request enums that should be typed before W2.
+- W1 quality-fix subagent resolved those issues plus MCP pairing/numeric
+  constraints; controller reran Alembic + W1 tests: `22 passed, 2 warnings`.
+- W1 spec re-review found 2 remaining schema gaps: unconstrained
+  `ActivationTargetContract.activation_status` and raw `AcquisitionJournalView`
+  entries.
+- W1 final schema-fix subagent resolved those gaps; controller reran Alembic +
+  W1 tests: `25 passed, 2 warnings`.
+- W1 final spec review passed.
+- W1 final code quality review found 2 Important drift risks: explicit
+  `source_evidence` was not persisted separately, and schema validators did not
+  match MCP/StandingPermission DB constraints.
+- W1 post-fix quality review found 1 Critical migration defect: three explicit
+  PostgreSQL constraint names exceeded the 63-character identifier limit.
+  Reviewer left the test DB at `0011` after failed re-upgrade.
+- W1 migration-name fix subagent resolved the Critical issue; controller reran
+  `alembic downgrade 0011 && alembic upgrade head && pytest ...`: `28 passed,
+  2 warnings`.
+- W1 final closure review found no Critical or Important issues. W1 is ready
+  for W2.
+- W2.1 implementation added the acquisition repository and lifecycle owner for
+  Gap, ExplorationRun, Recommendation, and Proposal state changes.
+- W2.1 initial spec review found lifecycle gaps in status validation,
+  premature activation, fragile idempotency, and split-owner dedupe.
+- W2.1 spec-fix passes resolved those issues. Final spec review passed with
+  evidence that proposal verification order is enforced, exploration
+  idempotency ignores changed `source_run_id`, and W2.1 activation remains
+  blocked until W2.2 snapshot verification exists.
+- W2.1 code-quality review found production blockers around parent-scope
+  validation, durable idempotency, audit transaction boundaries,
+  proposal-kind-aware transitions, unsafe approval validation, and occurrence
+  evidence retention.
+- W2.1 quality-fix passes resolved those issues, including a durable
+  `acquisition_idempotency_records` authority, non-committing audit helper,
+  parent-scope validation, approval ownership validation, proposal-kind
+  transition maps, and bounded source-evidence merging.
+- W2.1 final code-quality re-review found no Critical or Important issues.
+- Controller final W2.1 verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py` -> `54 passed, 2 warnings`.
+- Controller final audit compatibility verification passed:
+  `pytest -q tests/test_audit.py tests/test_acquisition_lifecycle.py` ->
+  `32 passed, 2 warnings`.
+- W2.2 implementation added split owners for activation snapshots,
+  verification runs, and activation approval/start guards:
+  `backend/app/core/acquisition/snapshot.py`,
+  `backend/app/core/acquisition/verification.py`, and
+  `backend/app/core/acquisition/activation.py`.
+- W2.2 initial spec review found Critical gaps in credential-generation
+  snapshot redaction and generic repository bypass of guarded activation
+  states, plus Important gaps in `activating -> activated` and runtime
+  `verified -> handoff_ready` transitions.
+- W2.2 spec-fix passes resolved those gaps: credential refs and
+  `secret_generation` remain in snapshots while raw secrets are omitted;
+  generic repository transitions into `activation_approved`, `activating`, and
+  `activated` require `guarded_transition=True`; runtime proposals no longer
+  enter `handoff_ready`; and the `activating -> activated` edge exists for the
+  later activation owner.
+- W2.2 code-quality review found Important issues around mutable completed
+  verification evidence, incomplete approval/start idempotent replay, and
+  approval binding stale verification evidence.
+- W2.2 quality-fix passes made completed verification rows immutable except
+  exact replay, added full request-equivalence metadata for approval/start
+  replay, locked/re-hashed verification evidence during approval, and required
+  approval-time snapshot recomputation before writing `activation_approved`.
+- W2.2 final spec re-review passed with no Critical or Important issues.
+- W2.2 final code-quality re-review found no Critical or Important issues.
+- Controller final W2.2 snapshot verification passed:
+  `pytest -q tests/test_acquisition_snapshot.py` -> `24 passed, 2 warnings`.
+- Controller final W2.2 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py` ->
+  `78 passed, 2 warnings`.
+- Controller final W2.2 audit compatibility verification passed:
+  `pytest -q tests/test_audit.py tests/test_acquisition_lifecycle.py
+  tests/test_acquisition_snapshot.py` -> `56 passed, 2 warnings`.
+- W2.3 implementation added activation saga orchestration, rollback owner,
+  no-side-effect activation/rollback hooks, and user-scoped manifest hiding
+  support.
+- W2.3 spec compliance review passed with no Critical or Important issues.
+  Reviewer noted manifest version bumps remain later-scope.
+- W2.3 code-quality review found one Important issue: secondary-only
+  `target_ids` could activate without primary target coverage.
+- W2.3 quality-fix pass added secondary-only activation guards, required all
+  materialized targets to be active before proposal `activated`, and extended
+  tests so primary failure proves secondary targets are not executed.
+- W2.3 code-quality re-review found no Critical or Important issues. The
+  remaining Minor defensive assertion was also added before closure.
+- Controller final W2.3 verification passed:
+  `pytest -q tests/test_acquisition_lifecycle.py::test_secondary_only_target_ids_require_primary_before_proposal_activated
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_policy.py
+  tests/test_tool_manifest.py` -> `36 passed, 2 warnings`.
+- Controller final W2.3 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py` -> `88 passed,
+  2 warnings`.
+- W2.4 implementation added generated, user-private acquisition journal
+  rendering, tenant/user-scoped read-model queries, section limits/totals/API
+  links, redaction, and idempotent persisted snapshot writing.
+- W2.4 initial spec review found Important issues in scalar redaction and
+  non-canonical Runtime Planning Issue links. Fixes applied scalar redaction
+  across rendered fields and switched links/source refs to
+  `/api/v1/acquisition/runtime-planning-issues`.
+- W2.4 spec re-review passed with no Critical, Important, or Minor issues.
+- W2.4 code-quality review found Important issues in concurrent first-time
+  snapshot writes and aggregate markdown size. Fixes added a partial unique
+  snapshot index, PostgreSQL upsert, per-item JSON truncation, final persisted
+  snapshot byte budgeting, and regression tests.
+- W2.4 final code-quality re-review found no Critical, Important, or Minor
+  issues.
+- Controller final W2.4 journal verification passed:
+  `pytest -q tests/test_acquisition_journal.py` -> `7 passed, 2 warnings`.
+- Controller final W2.4 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_acquisition_journal.py` -> `95 passed, 2 warnings`.
+
+- W3.1 implementation added the V3 CredentialConnection owner with encrypted
+  secret storage, redacted response serialization, runtime resolution,
+  rotate/revoke handling, dependent activation snapshot invalidation, and
+  dependent target/config disabling.
+- W3.1 spec review initially found Critical gaps around revocation/rotation
+  invalidating `activating` proposals, fresh verification accepting revoked
+  credential refs, runtime-path revocation coverage, and dependent target/config
+  disabling. Fixes closed those gaps and final spec re-review passed.
+- W3.1 code-quality review found Important issues in malformed credential-ref
+  handling and direct durable config disabling when proposal bundles are stale.
+  Fixes normalized malformed scalar refs to canonical
+  `CREDENTIAL_REFERENCE_NOT_FOUND`, disabled direct API/browser/MCP config refs
+  independently of proposal-bundle discovery, and added regressions.
+- W3.1 final code-quality re-review found no Critical or Important issues.
+- Controller final W3.1 focused verification passed:
+  `pytest -q tests/test_acquisition_snapshot.py tests/test_acquisition_policy.py`
+  -> `36 passed, 2 warnings`.
+- Controller final W3.1 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_acquisition_journal.py` -> `105 passed, 2 warnings`.
+- W3.2 implementation added `core/security/egress_policy.py` as a pure
+  reusable egress owner with host normalization, allowlist checks, DNS evidence
+  hooks, rebinding denial, redirect target validation, private/metadata IP
+  denial, response byte caps, streaming byte checks, runtime DNS/connect guard,
+  and activated `arbitrary_network` denial.
+- W3.2 spec review passed with no Critical or Important gaps.
+- W3.2 code-quality review found Important security-owner gaps in mandatory
+  response byte caps, easy-to-misuse DNS/connect sequencing, and legacy numeric
+  IPv4 forms. Fixes added activated-runtime cap requirements,
+  `validate_egress_response_chunk`, `prepare_egress_runtime_guard`,
+  `validate_runtime_egress`, non-canonical IPv4 rejection, invalid-port
+  normalization, and regression coverage.
+- W3.2 final code-quality re-review found no Critical or Important issues.
+  A Minor malformed prior-DNS-evidence issue was also fixed and covered.
+- Controller final W3.2 focused verification passed:
+  `pytest -q tests/test_acquisition_policy.py` -> `27 passed, 2 warnings`.
+- Controller final W3.2 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_acquisition_journal.py` -> `125 passed, 2 warnings`.
+- W3.3 implementation added `core/acquisition/policy.py` as the final
+  acquisition permission gate with permission bundle validation, standing
+  permission lookup, expiration/revocation checks, boundary snapshot
+  comparison, confirmation context binding, egress-policy layering, and
+  target-policy narrowing.
+- W3.3 spec review found Important gaps in standing permission boundary
+  completeness, target permission bundle inheritance, and free-form action
+  category confirmation bypass. Fixes added full boundary snapshots, removed
+  target bundle inheritance in activation materialization, expanded action
+  aliases, and required confirmation from effective request/bundle risk.
+- W3.3 final spec re-review passed with no Critical or Important gaps.
+- W3.3 code-quality review found Important gaps in risk-level vocabulary,
+  unknown action category fail-open behavior, and `expires_at` string
+  persistence, plus a Minor list-of-dicts subset reliability issue. Fixes
+  aligned risk ordering to `safe/risky/high_risk/blocked`, made unknown actions
+  require confirmation, normalized `expires_at` before StandingPermission
+  persistence, and canonicalized list comparisons.
+- W3.3 final code-quality re-review found no Critical or Important issues.
+- Controller final W3.3 targeted verification passed:
+  `pytest -q tests/test_acquisition_policy.py tests/test_acquisition_lifecycle.py`
+  -> `98 passed, 2 warnings`.
+- Controller final W3.3 migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_acquisition_journal.py` -> `165 passed, 2 warnings`.
+- Controller W3 closure focused verification passed:
+  `pytest -q tests/test_acquisition_policy.py tests/test_acquisition_lifecycle.py
+  tests/test_acquisition_snapshot.py` -> `127 passed, 2 warnings`.
+- Controller W3 closure migration/acquisition verification passed:
+  `alembic downgrade 0011 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_acquisition_journal.py` -> `165 passed, 2 warnings`.
+- Confirmed `git status --short -- frontend` returned no frontend changes
+  during W3 closure.
+
+Active slice:
+- Workstream 4, Task 4.1: Add isolated MCP runtime and durable MCP server
+  configuration.
+
+Next step:
+- Dispatch W4.1 implementation subagent with bounded ownership when the user
+  asks to proceed.
+
+Blocked-on:
+- None at start.
+
+## ResumeStateHint
+
+Resume by reading:
+- `docs/aegis/work/2026-06-22-v3-capability-acquisition-layer/10-intent.md`
+- this checkpoint
+- V3 spec and execution plan
+- latest `git status --short`
+
+Do not resume from memory alone.
+
+## DriftCheckDraft
+
+Current decision: continue.
+
+Scope alignment:
+- Inside V3 execution plan.
+
+Compatibility boundary:
+- No frontend style edits.
+- No commits.
+- Docker-based verification only.
+
+Retirement track:
+- No old runtime path retired in W1; W1 only adds persistence/contracts.
+- W2.1 did not wire lifecycle into routes or agent runtime; direct runtime
+  writes retire only in later facade/integration workstreams.
+- W2.2 did not activate runtime targets directly; it added verification,
+  approval binding, and activation-start guards only.
+- W2.3 implemented activation saga/rollback orchestration without wiring real
+  target-specific runtime owners beyond typed hook seams. Runtime target owners
+  and manifest version bumps remain later workstreams.
+- W2.4 must render a bounded user-private journal from durable records without
+  making the generated markdown an editable source of truth.
+- W2.4 completed this journal boundary. W3 now begins credential ownership and
+  policy foundations; LLM provider and channel credentials must not be re-owned.
+
+Evidence state:
+- W1 accepted for next phase by Docker verification plus final spec/code-quality
+  review.
+- W2.1 accepted for W2.2 by Docker verification plus final spec/code-quality
+  review.
+- W2.2 accepted for W2.3 by Docker verification plus final spec/code-quality
+  review.
+- W2.3 accepted for W2.4 by Docker verification plus final spec/code-quality
+  review.
+- W2.4 accepted for W3 by Docker verification plus final spec/code-quality
+  review.
+- W3.1 accepted for W3.2 by Docker verification plus final spec/code-quality
+  review.
+- W3.2 accepted for W3.3 by Docker verification plus final spec/code-quality
+  review.
+- W3.3 accepted for W3 closure by Docker verification plus final
+  spec/code-quality review.
+- W3 accepted for W4 by W3 closure Docker verification and drift check.

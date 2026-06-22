@@ -15,6 +15,24 @@ from app.models.tool_configuration import ToolConfiguration
 from app.models.artifact import Artifact
 from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
 from app.models.worker import Worker, WorkerMatchFeedback, WorkerRun, WorkerVersion
+from app.models.acquisition import (
+    APIToolConfiguration,
+    AcquisitionIdempotencyRecord,
+    AcquisitionJournalEntry,
+    AcquisitionProposal,
+    AcquisitionVerification,
+    ActivationTarget,
+    BrowserAutomationConfiguration,
+    CapabilityGap,
+    CapabilityRecommendation,
+    CredentialConnection,
+    DevelopmentPatchProposal,
+    ExplorationRun,
+    MCPServerConfiguration,
+    RuntimePlanningIssue,
+    StandingPermission,
+    WorkspaceConnector,
+)
 
 __all__ = [
     "Base",
@@ -39,4 +57,20 @@ __all__ = [
     "WorkerMatchFeedback",
     "WorkerRun",
     "WorkerVersion",
+    "APIToolConfiguration",
+    "AcquisitionIdempotencyRecord",
+    "AcquisitionJournalEntry",
+    "AcquisitionProposal",
+    "AcquisitionVerification",
+    "ActivationTarget",
+    "BrowserAutomationConfiguration",
+    "CapabilityGap",
+    "CapabilityRecommendation",
+    "CredentialConnection",
+    "DevelopmentPatchProposal",
+    "ExplorationRun",
+    "MCPServerConfiguration",
+    "RuntimePlanningIssue",
+    "StandingPermission",
+    "WorkspaceConnector",
 ]

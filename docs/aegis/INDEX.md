@@ -31,3 +31,5 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-06-17 | work | docs/aegis/work/2026-06-17-v2-capability-layer/99-reflection.md | Chainless V2 Capability Operating Layer reflection |
 | 2026-06-19 | artifact | docs/aegis/work/2026-06-17-v2-capability-layer/gate-input-pack.json | 2026-06-17-v2-capability-layer gate input pack |
 | 2026-06-19 | work | docs/aegis/work/2026-06-17-v2-capability-layer/proof-bundle.md | 2026-06-17-v2-capability-layer proof bundle |
+| 2026-06-20 | spec | docs/aegis/specs/2026-06-20-v3-capability-acquisition-layer-design.md | Chainless V3 Capability Acquisition Layer Design Spec |
+| 2026-06-22 | plan | docs/aegis/plans/2026-06-22-v3-capability-acquisition-layer-execution-plan.md | Chainless V3 Capability Acquisition Layer Execution Plan |
