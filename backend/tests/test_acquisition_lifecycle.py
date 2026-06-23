@@ -21,6 +21,8 @@ from app.core.acquisition.activation import (
 )
 from app.core.acquisition.rollback import RollbackHookResult, rollback_activation
 from app.core.acquisition.verification import verify_proposal
+from app.core.credentials.service import create_credential_connection
+from app.core.tools.api_runtime import api_tool_name
 from app.models.acquisition import (
     APIToolConfiguration,
     AcquisitionIdempotencyRecord,
@@ -1879,6 +1881,7 @@ async def test_rollback_hides_tool_revokes_permission_terminates_session_updates
                 user_id=user_id,
                 activation_target_id=target.id,
                 name="weather",
+                tool_name=api_tool_name("weather"),
                 base_url="https://api.weather.example",
                 method="GET",
                 path_template="/weather",
@@ -2097,6 +2100,392 @@ async def test_activation_approved_proposal_activates_with_w23_noop_saga(
     assert persisted.status == "activated"
     assert activation_audit_count == 1
     assert target_count == 1
+
+
+async def test_api_tool_activation_hook_upserts_enabled_verified_manifest(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    permission = _permission_bundle(duration="until_revoked")
+    primary_target = _primary_target(permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "base_url": "https://api.weather.example",
+        "method": "GET",
+        "path_template": "/weather/{city}",
+        "input_schema": {
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        },
+        "output_schema": {"type": "object"},
+        "allowed_content_types": ["application/json"],
+        "max_request_bytes": 1024,
+        "max_response_bytes": 4096,
+        "idempotency_policy": {"idempotent": True},
+        "rate_limit": {"max_requests": 60, "per_seconds": 60},
+        "timeout_s": 5,
+        "retry_policy": {"max_retries": 0},
+        "error_contract": {"code_field": "errorCode", "message_field": "errorMessage"},
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool activation hook",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-hook",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+        config = (
+            await db.execute(select(APIToolConfiguration).where(APIToolConfiguration.activation_target_id == target.id))
+        ).scalar_one()
+        permission_row = (
+            await db.execute(select(StandingPermission).where(StandingPermission.proposal_id == proposal_id))
+        ).scalar_one()
+
+    manifest_ref = api_tool_name("weather")
+    assert activated.status == "activated"
+    assert target.activated_resource_ref["manifest_ref"] == manifest_ref
+    assert target.activated_resource_ref["exposed_to_runtime"] is True
+    assert config.enabled is True
+    assert config.last_verified_at is not None
+    assert config.activation_target_id == target.id
+    assert config.tool_name == manifest_ref
+    assert config.path_template == "/weather/{city}"
+    assert permission_row.status == "active"
+
+
+async def test_api_tool_activation_rejects_user_scoped_tool_name_collision(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    permission = _permission_bundle(duration="until_revoked")
+    first_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=_primary_target(permission_bundle=permission),
+        permission_bundle=permission,
+        dedupe_key="api tool collision first",
+    )
+    second_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=_primary_target(permission_bundle=permission),
+        permission_bundle=permission,
+        dedupe_key="api tool collision second",
+    )
+
+    async with _async_session_factory() as db:
+        first = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=first_id,
+            idempotency_key="api-tool-collision-first",
+        )
+        second = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=second_id,
+            idempotency_key="api-tool-collision-second",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        second_target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == second_id))
+        ).scalar_one()
+
+    assert first.status == "activated"
+    assert second.status == "activation_failed"
+    assert second_target.activation_status == "activation_failed"
+    assert second_target.activation_result["error_code"] == "API_TOOL_NAME_COLLISION"
+
+
+async def test_api_tool_activation_binds_current_credential_generation(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    async with _async_session_factory() as db:
+        credential = await create_credential_connection(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Weather API key",
+            provider="weather.example",
+            connection_type="api_key",
+            credential_kind="api_key",
+            secret_storage_kind="encrypted_db",
+            secret_value=f"sk-weather-{uuid.uuid4().hex}",
+            allowed_target_types=["api_tool"],
+        )
+        credential_id = credential.id
+        credential_generation = credential.secret_generation
+        await db.commit()
+
+    permission = _permission_bundle(duration="until_revoked")
+    permission["credential_connection_refs"] = [str(credential_id)]
+    primary_target = _primary_target(name="weather-with-credential", permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "name": "weather-with-credential",
+        "base_url": "https://api.weather.example",
+        "method": "GET",
+        "path_template": "/weather/{city}",
+        "auth_scheme": "api_key_header",
+        "credential_ref": str(credential_id),
+        "credential_generation": 999,
+        "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+        "allowed_content_types": ["application/json"],
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool activation credential generation",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-credential-generation",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+        config = (
+            await db.execute(select(APIToolConfiguration).where(APIToolConfiguration.activation_target_id == target.id))
+        ).scalar_one()
+
+    assert activated.status == "activated"
+    assert config.credential_generation == credential_generation
+
+
+async def test_api_tool_activation_rejects_credential_not_allowed_for_api_tool(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    async with _async_session_factory() as db:
+        credential = await create_credential_connection(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="MCP only key",
+            provider="mcp.example",
+            connection_type="api_key",
+            credential_kind="api_key",
+            secret_storage_kind="encrypted_db",
+            secret_value=f"sk-mcp-{uuid.uuid4().hex}",
+            allowed_target_types=["mcp_tool"],
+        )
+        credential_id = credential.id
+        await db.commit()
+
+    permission = _permission_bundle(duration="until_revoked")
+    permission["credential_connection_refs"] = [str(credential_id)]
+    primary_target = _primary_target(name="weather-mcp-only-credential", permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "name": "weather-mcp-only-credential",
+        "base_url": "https://api.weather.example",
+        "auth_scheme": "api_key_header",
+        "credential_ref": str(credential_id),
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool activation credential not allowed",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-credential-not-allowed",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+
+    assert activated.status == "activation_failed"
+    assert target.activation_result["error_code"] == "CREDENTIAL_NOT_ALLOWED_FOR_API_TOOL"
+
+
+async def test_api_tool_activation_rejects_credential_target_ref_mismatch(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    async with _async_session_factory() as db:
+        credential = await create_credential_connection(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Specific Weather API key",
+            provider="weather.example",
+            connection_type="api_key",
+            credential_kind="api_key",
+            secret_storage_kind="encrypted_db",
+            secret_value=f"sk-specific-{uuid.uuid4().hex}",
+            allowed_target_types=["api_tool"],
+            allowed_target_refs=[{"tool_name": api_tool_name("other-weather")}],
+        )
+        credential_id = credential.id
+        await db.commit()
+
+    permission = _permission_bundle(duration="until_revoked")
+    permission["credential_connection_refs"] = [str(credential_id)]
+    primary_target = _primary_target(name="weather-ref-mismatch", permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "name": "weather-ref-mismatch",
+        "base_url": "https://api.weather.example",
+        "auth_scheme": "api_key_header",
+        "credential_ref": str(credential_id),
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool credential ref mismatch",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-credential-ref-mismatch",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+
+    assert activated.status == "activation_failed"
+    assert target.activation_result["error_code"] == "CREDENTIAL_TARGET_NOT_ALLOWED"
+
+
+async def test_api_tool_activation_rejects_unresolvable_credential_storage(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    async with _async_session_factory() as db:
+        credential = await create_credential_connection(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="External vault Weather API key",
+            provider="weather.example",
+            connection_type="api_key",
+            credential_kind="api_key",
+            secret_storage_kind="external_vault_ref",
+            secret_ref=f"vault://weather/{uuid.uuid4().hex}",
+            allowed_target_types=["api_tool"],
+        )
+        credential_id = credential.id
+        await db.commit()
+
+    permission = _permission_bundle(duration="until_revoked")
+    permission["credential_connection_refs"] = [str(credential_id)]
+    primary_target = _primary_target(name="weather-external-vault", permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "name": "weather-external-vault",
+        "base_url": "https://api.weather.example",
+        "auth_scheme": "api_key_header",
+        "credential_ref": str(credential_id),
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool unresolvable credential storage",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-unresolvable-credential-storage",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+
+    assert activated.status == "activation_failed"
+    assert target.activation_result["error_code"] == "CREDENTIAL_SECRET_NOT_RESOLVABLE"
+
+
+async def test_api_tool_activation_rejects_unsupported_auth_scheme(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    permission = _permission_bundle(duration="until_revoked")
+    primary_target = _primary_target(name="unsupported-auth-weather", permission_bundle=permission)
+    primary_target["target_payload"] = {
+        "name": "unsupported-auth-weather",
+        "base_url": "https://api.weather.example",
+        "auth_scheme": "basic",
+    }
+    proposal_id, _ = await _approved_runtime_proposal(
+        tenant_id,
+        user_id,
+        primary_target=primary_target,
+        permission_bundle=permission,
+        dedupe_key="api tool unsupported auth scheme",
+    )
+
+    async with _async_session_factory() as db:
+        activated = await lifecycle.activate_proposal(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            idempotency_key="api-tool-unsupported-auth",
+        )
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        target = (
+            await db.execute(select(ActivationTarget).where(ActivationTarget.proposal_id == proposal_id))
+        ).scalar_one()
+
+    assert activated.status == "activation_failed"
+    assert target.activation_result["error_code"] == "INVALID_API_TOOL_POLICY"
 
 
 async def test_activation_saga_persists_iso_expires_at_as_datetime(

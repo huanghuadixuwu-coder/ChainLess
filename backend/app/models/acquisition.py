@@ -131,7 +131,7 @@ RISK_LEVELS = ("safe", "risky", "high_risk", "blocked")
 SEVERITIES = ("low", "medium", "high", "critical")
 MCP_TRANSPORTS = ("stdio", "http", "sse")
 MCP_RUNTIME_KINDS = ("remote_http", "remote_sse", "isolated_stdio")
-API_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+API_METHODS = ("GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE")
 WORKSPACE_CONNECTOR_MODES = ("read_only", "read_write")
 MOUNT_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy", "stale")
 
@@ -498,6 +498,7 @@ class MCPServerConfiguration(Base, TimestampMixin):
         CheckConstraint("transport = 'stdio' OR url IS NOT NULL", name="ck_mcp_server_configurations_remote_url"),
         CheckConstraint("stdio_max_session_seconds IS NULL OR stdio_max_session_seconds >= 1", name="ck_mcp_server_configurations_stdio_max_session_seconds_positive"),
         CheckConstraint("stdio_max_output_bytes IS NULL OR stdio_max_output_bytes >= 1", name="ck_mcp_server_configurations_stdio_max_output_bytes_positive"),
+        Index("uq_mcp_server_configurations_tenant_name_enabled", "tenant_id", "name", unique=True, postgresql_where=text("enabled")),
         Index("ix_mcp_server_configurations_tenant_user_enabled", "tenant_id", "user_id", "enabled"),
         Index("ix_mcp_server_configurations_tenant_user_risk", "tenant_id", "user_id", "risk_level"),
     )
@@ -542,6 +543,12 @@ class APIToolConfiguration(Base, TimestampMixin):
         CheckConstraint("max_request_bytes >= 1", name="ck_api_tool_configurations_max_request_bytes_positive"),
         CheckConstraint("max_response_bytes >= 1", name="ck_api_tool_configurations_max_response_bytes_positive"),
         CheckConstraint("timeout_s >= 1", name="ck_api_tool_configurations_timeout_s_positive"),
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "tool_name",
+            name="uq_api_tool_configurations_tenant_user_tool_name",
+        ),
         Index("ix_api_tool_configurations_tenant_user_enabled", "tenant_id", "user_id", "enabled"),
         Index("ix_api_tool_configurations_tenant_user_risk", "tenant_id", "user_id", "risk_level"),
     )
@@ -551,6 +558,7 @@ class APIToolConfiguration(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     activation_target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("activation_targets.id", ondelete="SET NULL"), nullable=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(120), nullable=False)
     base_url: Mapped[str] = mapped_column(String(1000), nullable=False)
     method: Mapped[str] = mapped_column(String(10), nullable=False)
     path_template: Mapped[str] = mapped_column(String(500), nullable=False)

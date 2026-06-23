@@ -502,6 +502,7 @@ def test_runtime_configuration_contracts_reject_non_positive_limits() -> None:
     with pytest.raises(ValidationError):
         APIToolConfigurationContract(
             name="weather-api",
+            tool_name="api__weather-api",
             base_url="https://weather.example",
             method="GET",
             path_template="/forecast",

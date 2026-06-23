@@ -25,6 +25,7 @@ from app.core.capabilities.policy import evaluate_worker_tool_policy
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.classifier import RiskLevel, classify_tool
+from app.core.tools.api_runtime import APIToolConfirmationRequired
 
 # ---------------------------------------------------------------------------
 # Constants — guardrails
@@ -434,6 +435,30 @@ async def run_agent(
                 consecutive_errors = 0
 
             except Exception as e:
+                if isinstance(e, APIToolConfirmationRequired):
+                    destructive_hit = True
+                    confirmation_args = dict(e.sanitized_args)
+                    confirmation_args["__acquisition_confirmation_context"] = e.confirmation_context
+                    yield {
+                        "type": "confirmation_required",
+                        "tool_call_id": tc["id"],
+                        "tool_name": tc["name"],
+                        "args": confirmation_args,
+                        "risk": e.risk,
+                        "timeout_s": 30,
+                    }
+                    await emit_capability_hook(
+                        "after_tool_call",
+                        {
+                            "tool_call_id": tc["id"],
+                            "tool_name": tc["name"],
+                            "status": "needs_confirmation",
+                            "risk": e.risk,
+                            "worker_run_id": (worker_context or {}).get("worker_run_id"),
+                        },
+                        policy_action="confirm",
+                    )
+                    break
                 consecutive_errors += 1
                 await emit_capability_hook(
                     "after_tool_call",

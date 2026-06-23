@@ -55,11 +55,12 @@ def _candidate_scope(
     return [CapabilityCandidate.tenant_id == tenant_id, CapabilityCandidate.user_id == user_id]
 
 
-async def _flush_or_validation_error(db: AsyncSession) -> None:
+async def _flush_or_validation_error(db: AsyncSession, *, rollback_on_error: bool = True) -> None:
     try:
         await db.flush()
     except IntegrityError as exc:
-        await db.rollback()
+        if rollback_on_error:
+            await db.rollback()
         message = str(exc)
         if "ck_capability_candidates_" in message:
             raise validation_error("Capability candidate metadata exceeds durable bounds") from exc
@@ -393,6 +394,62 @@ async def _accept_skill_candidate(
     )
     db.add(skill)
     await db.flush()
+    return skill
+
+
+async def activate_skill_from_acquisition(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    name: str,
+    description: str | None,
+    trigger_terms: list[str],
+    metadata: dict[str, Any],
+) -> Skill:
+    """Create a private Skill from a verified acquisition target without commit."""
+
+    skill = Skill(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        scope="private",
+        name=name,
+        description=description,
+        trigger_terms=_normalize_terms(trigger_terms),
+        enabled=True,
+        metadata_=validate_bounded_json(metadata, field="metadata"),
+    )
+    db.add(skill)
+    await _flush_or_validation_error(db, rollback_on_error=False)
+    return skill
+
+
+async def disable_skill_from_acquisition(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    skill_id: uuid.UUID,
+) -> Skill:
+    """Disable an acquired private Skill without commit."""
+
+    skill = (
+        await db.execute(
+            select(Skill)
+            .where(
+                Skill.id == skill_id,
+                Skill.tenant_id == tenant_id,
+                Skill.user_id == user_id,
+                Skill.scope == "private",
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if skill is None:
+        raise not_found("SKILL_NOT_FOUND", "Skill not found")
+    skill.enabled = False
+    await _flush_or_validation_error(db, rollback_on_error=False)
     return skill
 
 

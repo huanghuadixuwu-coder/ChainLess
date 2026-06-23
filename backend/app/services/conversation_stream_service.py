@@ -40,6 +40,7 @@ from app.core.memory.short_term import append_short_term_context
 from app.core.observability import increment_runtime_metric
 from app.core.secrets import safe_error_message
 from app.core.sandbox.manager import SandboxManager
+from app.core.tools.api_runtime import get_api_tool_definitions
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
@@ -55,14 +56,16 @@ from app.models.tool_confirmation import ToolConfirmation
 
 
 DEFAULT_CONFIRMATION_TIMEOUT_S = 30
+API_ACQUISITION_CONFIRMATION_CONTEXT_ARG = "__acquisition_confirmation_context"
 
 
-async def get_agent_tools(tenant_id: str) -> list[dict]:
+async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[dict]:
     from app.api.deps import _async_session_factory
 
     async with _async_session_factory() as db:
         configs = await get_tool_configurations(db, tenant_id)
-    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + [CODE_AS_ACTION_TOOL]
+        api_tools = await get_api_tool_definitions(db, tenant_id, user_id=user_id) if user_id else []
+    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + api_tools + [CODE_AS_ACTION_TOOL]
     return filter_enabled_tools(
         [apply_tool_configuration(tool, configs.get(_tool_name(tool))) for tool in tools]
     )
@@ -526,7 +529,7 @@ async def run_agent_stream(
     workspace_base: str | None = None,
 ) -> None:
     try:
-        tools = await get_agent_tools(tenant_id)
+        tools = await get_agent_tools(tenant_id, user_id)
         capability_context = await _capability_context_for_stream(
             gateway=gateway,
             tenant_id=tenant_id,
@@ -647,6 +650,8 @@ async def execute_confirmed_tool(
     risk: str | None = None,
 ) -> str | ToolExecutionResult:
     args, persisted_worker_context = unpack_confirmed_tool_args(args)
+    acquisition_confirmation_context = args.pop(API_ACQUISITION_CONFIRMATION_CONTEXT_ARG, None)
+    args.pop("__confirmed", None)
     effective_worker_context = worker_context or persisted_worker_context
     require_confirmed_worker_tool_policy(tool_name, effective_worker_context, risk=risk)
     if tool_name == WORKER_DELETE_TOOL_NAME:
@@ -665,17 +670,21 @@ async def execute_confirmed_tool(
         )
     if tool_name == "shell_exec":
         return await execute_shell_exec(tool_name, args, sandbox)
+    tool_context = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "tool_call_id": tool_call_id,
+        "run_id": run_id,
+        "worker_context": effective_worker_context,
+    }
+    if isinstance(acquisition_confirmation_context, dict):
+        tool_context["confirmation_context"] = {**acquisition_confirmation_context, "confirmed": True}
+
     result = await execute_tool(
         tool_name,
         args,
-        context={
-            "tenant_id": tenant_id,
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "tool_call_id": tool_call_id,
-            "run_id": run_id,
-            "worker_context": effective_worker_context,
-        },
+        context=tool_context,
     )
     return result
 
@@ -808,7 +817,7 @@ async def build_confirmation_stream_response(
                 sandbox,
                 provider,
                 resume_messages,
-                await get_agent_tools(user["tenant_id"]),
+                await get_agent_tools(user["tenant_id"], user["user_id"]),
                 tenant_id=user["tenant_id"],
                 user_id=user["user_id"],
                 conversation_id=str(conv_uuid),

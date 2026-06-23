@@ -43,6 +43,30 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _hidden_ref_evidence(resource_ref: dict[str, Any], *, hidden_at: str) -> dict[str, Any]:
+    """Return shallow manifest evidence without embedding rollback payloads."""
+
+    evidence_keys = (
+        "kind",
+        "manifest_ref",
+        "tool_name",
+        "worker_id",
+        "worker_version_id",
+        "skill_id",
+        "memory_id",
+        "config_id",
+        "server_name",
+        "connector_id",
+        "browser_session_id",
+        "exposed_to_runtime",
+    )
+    return {
+        **{key: resource_ref[key] for key in evidence_keys if key in resource_ref},
+        "hidden": True,
+        "hidden_at": hidden_at,
+    }
+
+
 async def hide_target_manifest_refs(
     db: AsyncSession,
     *,
@@ -61,8 +85,9 @@ async def hide_target_manifest_refs(
 
     resource_ref = target.activated_resource_ref if isinstance(target.activated_resource_ref, dict) else {}
     if resource_ref:
-        hidden_ref = {**resource_ref, "hidden": True, "hidden_at": now.isoformat()}
-        hidden_refs.append(hidden_ref)
+        hidden_at = now.isoformat()
+        hidden_ref = {**resource_ref, "hidden": True, "hidden_at": hidden_at}
+        hidden_refs.append(_hidden_ref_evidence(resource_ref, hidden_at=hidden_at))
         target.activated_resource_ref = validate_bounded_json(_jsonable(hidden_ref), field="activated_resource_ref")
 
     model = CONFIG_MODELS.get(target.target_type)

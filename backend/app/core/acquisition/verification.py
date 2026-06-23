@@ -243,6 +243,32 @@ async def complete_verification_run(
         proposal_id=verification.proposal_id,
         for_update=True,
     )
+    if status == "passed":
+        from app.core.acquisition.v2_targets import validate_v2_target_specs
+
+        v2_target_errors = validate_v2_target_specs(proposal)
+        if v2_target_errors:
+            verification.status = "failed"
+            verification.artifact_refs = bounded_artifact_refs
+            verification.error_code = "V2_TARGET_VERIFICATION_FAILED"
+            verification.error_message = "V2 activation target validation failed"
+            verification.completed_at = _now()
+            await repository.transition_proposal(
+                db,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                proposal_id=proposal.id,
+                status="verification_failed",
+                actor_user_id=user_id,
+                reason=verification.error_message,
+                idempotency_key=f"{idempotency_key}:v2-target-verification-failed" if idempotency_key else None,
+            )
+            verification.actual_result = validate_bounded_json(
+                {"v2_target_errors": v2_target_errors},
+                field="actual_result",
+            )
+            await db.flush()
+            return verification
     verification.status = status
     verification.actual_result = bounded_actual_result
     verification.artifact_refs = bounded_artifact_refs

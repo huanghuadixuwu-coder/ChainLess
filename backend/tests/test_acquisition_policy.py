@@ -1,6 +1,8 @@
 """Focused acquisition policy invariants for W2.3 activation rollback."""
 
+import json
 from datetime import datetime, timedelta, timezone
+from typing import Any
 import uuid
 
 import pytest
@@ -27,6 +29,13 @@ from app.core.security.egress_policy import (
     validate_egress_response_chunk,
     validate_runtime_egress,
 )
+from app.core.tools.api_runtime import (
+    APIToolConfirmationRequired,
+    api_tool_name,
+    execute_api_tool,
+    get_api_tool_definitions,
+)
+from app.core.tools.api_runtime import registry as api_runtime_registry
 from app.core.credentials.service import (
     create_credential_connection,
     credential_connection_response,
@@ -120,6 +129,9 @@ async def _runtime_permission_request(
         request_bundle.update(request_bundle_overrides)
 
     async with _async_session_factory() as db:
+        persisted_proposal = (
+            await db.execute(select(AcquisitionProposal).where(AcquisitionProposal.id == proposal.id).with_for_update())
+        ).scalar_one()
         target = ActivationTarget(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -136,6 +148,11 @@ async def _runtime_permission_request(
         )
         db.add(target)
         await db.flush()
+        persisted_proposal.activation_snapshot_hash = approved_hash
+        persisted_proposal.approval_history = [
+            *(persisted_proposal.approval_history or []),
+            {"status": "activation_approved", "approved_snapshot_hash": approved_hash},
+        ]
         permission_payload = {
             "tenant_id": tenant_id,
             "user_id": user_id,
@@ -171,6 +188,42 @@ async def _runtime_permission_request(
         )
         await db.commit()
         return request
+
+
+def _api_config_from_request(request: RuntimePermissionRequest, *, name: str = "weather") -> APIToolConfiguration:
+    return APIToolConfiguration(
+        tenant_id=request.tenant_id,
+        user_id=request.user_id,
+        activation_target_id=request.target_id,
+        name=name,
+        tool_name=api_tool_name(name),
+        base_url="https://api.weather.example",
+        method="GET",
+        path_template="/weather/{city}",
+        headers_schema={},
+        auth_scheme="none",
+        input_schema={
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        },
+        output_schema={"type": "object"},
+        allowed_hosts=["api.weather.example"],
+        deny_private_networks=True,
+        redirect_policy={"follow": False},
+        allowed_content_types=["application/json"],
+        max_request_bytes=1024,
+        max_response_bytes=4096,
+        idempotency_policy={"idempotent": True},
+        response_redaction_policy={},
+        rate_limit={},
+        timeout_s=5,
+        retry_policy={},
+        error_contract={"code_field": "errorCode", "message_field": "errorMessage", "status_field": "httpStatus"},
+        enabled=True,
+        risk_level="safe",
+        last_verified_at=datetime.now(timezone.utc),
+    )
 
 
 async def _runtime_proposal(tenant_id: uuid.UUID, user_id: uuid.UUID, credential_id: uuid.UUID) -> AcquisitionProposal:
@@ -708,6 +761,171 @@ async def test_acquisition_policy_is_final_permission_gate(tenant_a_headers: dic
 
 
 @pytest.mark.asyncio
+async def test_api_tool_definitions_are_user_scoped_within_tenant(tenant_a_headers: dict[str, str]) -> None:
+    tenant_id, owner_user_id = _identity(tenant_a_headers)
+    other_user_id = uuid.uuid4()
+    request = await _runtime_permission_request(tenant_id, owner_user_id)
+
+    async with _async_session_factory() as db:
+        db.add(_api_config_from_request(request, name="owner-weather"))
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        owner_tools = await get_api_tool_definitions(db, tenant_id, user_id=owner_user_id)
+        other_tools = await get_api_tool_definitions(db, tenant_id, user_id=other_user_id)
+
+    assert any(tool["function"]["name"] == api_tool_name("owner-weather") for tool in owner_tools)
+    assert all(tool["function"]["name"] != api_tool_name("owner-weather") for tool in other_tools)
+
+
+@pytest.mark.asyncio
+async def test_api_tool_execution_always_applies_acquisition_permission_gate(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    request = await _runtime_permission_request(
+        tenant_id,
+        user_id,
+        permission_overrides={
+            "status": "revoked",
+            "revoked_at": datetime.now(timezone.utc),
+        },
+    )
+
+    async with _async_session_factory() as db:
+        db.add(_api_config_from_request(request, name="revoked-weather"))
+        await db.commit()
+
+    result = await execute_api_tool(
+        api_tool_name("revoked-weather"),
+        {"city": "Paris"},
+        context={"tenant_id": tenant_id, "user_id": user_id},
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert payload["error"]["errorCode"] == "STANDING_PERMISSION_REVOKED"
+    assert "Paris" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_api_tool_runtime_credential_resolution_uses_target_descriptor(
+    tenant_a_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    request = await _runtime_permission_request(tenant_id, user_id)
+    async with _async_session_factory() as db:
+        credential = await create_credential_connection(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Descriptor API key",
+            provider="weather.example",
+            connection_type="api_key",
+            credential_kind="api_key",
+            secret_storage_kind="encrypted_db",
+            secret_value=f"sk-descriptor-{uuid.uuid4().hex}",
+            allowed_target_types=["api_tool"],
+            allowed_target_refs=[{"tool_name": api_tool_name("descriptor-weather")}],
+        )
+        config = _api_config_from_request(request, name="descriptor-weather")
+        config.auth_scheme = "bearer"
+        config.credential_ref = credential.id
+        config.credential_generation = credential.secret_generation
+        db.add(config)
+        await db.commit()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_resolve_credential_secret(
+        db,
+        *,
+        tenant_id,
+        user_id,
+        credential_connection_id,
+        target_type,
+        target_ref,
+    ) -> str:
+        captured["target_type"] = target_type
+        captured["target_ref"] = target_ref
+        return "secret"
+
+    class FakeAPIToolRuntimeClient:
+        def __init__(self, policy, *, credential_resolver=None, **kwargs):
+            self.policy = policy
+            self.credential_resolver = credential_resolver
+
+        async def execute(self, args, *, context=None):
+            assert self.credential_resolver is not None
+            await self.credential_resolver(self.policy.credential_ref)
+            return {"ok": True}
+
+    monkeypatch.setattr(api_runtime_registry, "resolve_credential_secret", fake_resolve_credential_secret)
+    monkeypatch.setattr(api_runtime_registry, "APIToolRuntimeClient", FakeAPIToolRuntimeClient)
+
+    result = json.loads(
+        await execute_api_tool(
+            api_tool_name("descriptor-weather"),
+            {"city": "Paris"},
+            context={"tenant_id": tenant_id, "user_id": user_id},
+        )
+    )
+
+    assert result == {"ok": True}
+    assert captured["target_type"] == "api_tool"
+    assert captured["target_ref"]["tool_name"] == api_tool_name("descriptor-weather")
+    assert captured["target_ref"]["activation_target_id"] == str(request.target_id)
+
+
+@pytest.mark.asyncio
+async def test_model_supplied_confirmed_does_not_bypass_api_tool_confirmation(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    request = await _runtime_permission_request(
+        tenant_id,
+        user_id,
+        action_category="external_write",
+    )
+    config = _api_config_from_request(request, name="write-weather")
+    config.method = "POST"
+    config.path_template = "/weather"
+    config.idempotency_policy = {"idempotent": False, "action_category": "external_write"}
+
+    async with _async_session_factory() as db:
+        db.add(config)
+        await db.commit()
+
+    with pytest.raises(APIToolConfirmationRequired) as exc:
+        await execute_api_tool(
+            api_tool_name("write-weather"),
+            {"city": "Paris", "__confirmed": True, "api_key": "model-secret"},
+            context={"tenant_id": tenant_id, "user_id": user_id},
+        )
+
+    expected_request = RuntimePermissionRequest(
+        **{
+            **request.__dict__,
+            "risk_level": "safe",
+            "action_category": "external_write",
+            "tool_context": {
+                "tool_name": api_tool_name("write-weather"),
+                "method": "POST",
+                "base_url": "https://api.weather.example",
+                "path_template": "/weather",
+            },
+        }
+    )
+    exact_context = build_runtime_confirmation_context(expected_request)
+    assert exc.value.code == "RUNTIME_CONFIRMATION_REQUIRED"
+    assert exc.value.confirmation_context == exact_context
+    assert exc.value.sanitized_args == {"city": "Paris", "api_key": "[REDACTED]"}
+    assert "__confirmed" not in exc.value.sanitized_args
+    assert "model-secret" not in json.dumps(exc.value.sanitized_args)
+
+
+@pytest.mark.asyncio
 async def test_runtime_confirmation_context_uses_same_policy_gate(tenant_a_headers: dict[str, str]) -> None:
     tenant_id, user_id = _identity(tenant_a_headers)
     generic_request = await _runtime_permission_request(
@@ -970,6 +1188,7 @@ async def test_revoked_credential_blocks_dependent_target_execution(tenant_a_hea
                 user_id=user_id,
                 activation_target_id=target.id,
                 name="weather",
+                tool_name=api_tool_name("weather"),
                 base_url="https://api.weather.example",
                 method="GET",
                 path_template="/weather",
@@ -1085,6 +1304,7 @@ async def test_revoked_credential_disables_direct_api_config_when_proposal_bundl
             user_id=user_id,
             activation_target_id=None,
             name="weather-direct",
+            tool_name=api_tool_name("weather-direct"),
             base_url="https://api.weather.example",
             method="GET",
             path_template="/weather",

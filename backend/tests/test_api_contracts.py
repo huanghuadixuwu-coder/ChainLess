@@ -362,6 +362,41 @@ async def test_tools_admin_can_register_test_and_delete_mcp_server(
         await db.commit()
 
     server_name = f"echo-{uuid.uuid4().hex}"
+    config = {
+        "transport": "stdio",
+        "runtime_kind": "isolated_stdio",
+        "command": "python",
+        "args": ["/runtime/echo_mcp_server.py"],
+        "env_secret_refs": [],
+        "egress_policy": {},
+        "stdio_runtime_image_ref": "chainless-mcp-runtime:w4-1-quality",
+        "stdio_command_provenance": {
+            "source": "activation_target",
+            "approved_by": "admin",
+            "approved_at": "2026-06-22T00:00:00Z",
+        },
+        "stdio_package_digest": "sha256:" + "a" * 64,
+        "stdio_filesystem_policy": {
+            "allow_docker_socket": False,
+            "allow_backend_fs": False,
+            "allow_host_fs": False,
+            "mounts": [],
+        },
+        "stdio_network_policy": {
+            "mode": "none",
+            "allowed_hosts": [],
+            "deny_private_networks": True,
+        },
+        "stdio_resource_limits": {
+            "memory_mb": 256,
+            "cpus": 0.5,
+            "pids": 64,
+            "timeout_seconds": 30,
+        },
+        "stdio_max_session_seconds": 30,
+        "stdio_max_output_bytes": 65536,
+        "stdio_restart_policy": {"max_restarts": 1},
+    }
     try:
         registered = await client.post(
             "/api/v1/tools/",
@@ -369,20 +404,16 @@ async def test_tools_admin_can_register_test_and_delete_mcp_server(
             json={
                 "name": server_name,
                 "tool_type": "mcp",
-                "config": {
-                    "command": "python",
-                    "args": ["scripts/mcp_echo_server.py"],
-                    "env": {},
-                },
+                "config": config,
             },
         )
         assert registered.status_code == 201, registered.text
         assert registered.json()["name"] == server_name
         assert registered.json()["tool_type"] == "mcp"
-        assert registered.json()["tools_count"] == 1
+        assert registered.json()["tools_count"] == 3
 
         tool_name = f"mcp__{server_name}__echo"
-        assert registered.json()["tools"][0]["function"]["name"] == tool_name
+        assert any(tool["function"]["name"] == tool_name for tool in registered.json()["tools"])
 
         listed = await client.get("/api/v1/tools/?limit=200&offset=0", headers=tenant_a_headers)
         assert listed.status_code == 200
@@ -406,7 +437,13 @@ async def test_tools_admin_can_register_test_and_delete_mcp_server(
         assert deleted_again.status_code == 404
         assert deleted_again.json()["error"]["code"] == "TOOL_NOT_FOUND"
     finally:
-        await mcp_manager.unregister(server_name, payload["tenant_id"])
+        async with _async_session_factory() as db:
+            await mcp_manager.unregister_durable(
+                db,
+                server_name,
+                tenant_id=payload["tenant_id"],
+                user_id=payload["user_id"],
+            )
 
 
 async def test_tools_mcp_failures_do_not_leak_exception_details(
@@ -429,10 +466,10 @@ async def test_tools_mcp_failures_do_not_leak_exception_details(
     secret = f"sk-secret-{uuid.uuid4().hex}"
     secret_command = f"secret-command-{uuid.uuid4().hex}"
 
-    async def fail_register(name, config, owner=None):
+    async def fail_register(db, name, config, *, tenant_id, user_id):
         raise RuntimeError(f"raw register failure {secret} {config['command']} {config['env']}")
 
-    monkeypatch.setattr(mcp_manager, "register", fail_register)
+    monkeypatch.setattr(mcp_manager, "register_durable", fail_register)
     register_failure = await client.post(
         "/api/v1/tools/",
         headers=tenant_a_headers,
@@ -1028,7 +1065,7 @@ async def test_tool_configuration_updates_persist_and_runtime_enforces_enabled_a
 
     from app.services.conversation_stream_service import get_agent_tools
 
-    tools_disabled = await get_agent_tools(payload["tenant_id"])
+    tools_disabled = await get_agent_tools(payload["tenant_id"], payload["user_id"])
     assert not any(
         item["function"]["name"] == "shell_exec" for item in tools_disabled
     )
@@ -1038,7 +1075,7 @@ async def test_tool_configuration_updates_persist_and_runtime_enforces_enabled_a
         headers=tenant_a_headers,
         json={"enabled": True, "risk_override": "risky"},
     )
-    tools_enabled = await get_agent_tools(payload["tenant_id"])
+    tools_enabled = await get_agent_tools(payload["tenant_id"], payload["user_id"])
     shell_tool = next(
         item for item in tools_enabled if item["function"]["name"] == "shell_exec"
     )

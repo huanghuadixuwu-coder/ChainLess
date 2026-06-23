@@ -9,11 +9,13 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.contracts import not_found
 from app.config import settings
 from app.models.memory import Memory
 
@@ -98,6 +100,33 @@ async def write_memory_source_safe(memory: Memory) -> None:
         write_memory_source(memory)
     except Exception:
         logger.warning("Failed to write memory source for %s", memory.id)
+
+
+async def delete_memory_from_acquisition(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    memory_id: uuid.UUID,
+) -> None:
+    """Remove a memory created by acquisition rollback without committing."""
+
+    memory = (
+        await db.execute(
+            select(Memory)
+            .where(
+                Memory.id == memory_id,
+                Memory.tenant_id == tenant_id,
+                Memory.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if memory is None:
+        raise not_found("MEMORY_NOT_FOUND", "Memory not found")
+    await db.delete(memory)
+    await db.flush()
 
 
 async def search_memories(

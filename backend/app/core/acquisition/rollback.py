@@ -103,6 +103,71 @@ class NoopRollbackHooks:
         return RollbackHookResult(success=True, evidence={"hook": "noop", "compensated": True})
 
 
+class ProductionRollbackHooks:
+    """Production rollback dispatcher with V2 target compensation."""
+
+    def __init__(self) -> None:
+        self._noop = NoopRollbackHooks()
+
+    async def terminate_session(
+        self,
+        db: AsyncSession,
+        *,
+        proposal: AcquisitionProposal,
+        target: ActivationTarget,
+        resource_ref: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> RollbackHookResult:
+        if target.target_type in {"worker", "skill", "memory"}:
+            from app.core.acquisition.v2_targets import V2CapabilityRollbackHooks
+
+            return await V2CapabilityRollbackHooks().terminate_session(
+                db,
+                proposal=proposal,
+                target=target,
+                resource_ref=resource_ref,
+                idempotency_key=idempotency_key,
+            )
+        return await self._noop.terminate_session(
+            db,
+            proposal=proposal,
+            target=target,
+            resource_ref=resource_ref,
+            idempotency_key=idempotency_key,
+        )
+
+    async def compensate_target(
+        self,
+        db: AsyncSession,
+        *,
+        proposal: AcquisitionProposal,
+        target: ActivationTarget,
+        resource_ref: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> RollbackHookResult:
+        if target.target_type in {"worker", "skill", "memory"}:
+            from app.core.acquisition.v2_targets import V2CapabilityRollbackHooks
+
+            return await V2CapabilityRollbackHooks().compensate_target(
+                db,
+                proposal=proposal,
+                target=target,
+                resource_ref=resource_ref,
+                idempotency_key=idempotency_key,
+            )
+        return await self._noop.compensate_target(
+            db,
+            proposal=proposal,
+            target=target,
+            resource_ref=resource_ref,
+            idempotency_key=idempotency_key,
+        )
+
+
+def default_rollback_hooks() -> RollbackHooks:
+    return ProductionRollbackHooks()
+
+
 def _rollback_entry(
     proposal: AcquisitionProposal,
     *,
@@ -308,7 +373,7 @@ async def rollback_activation(
             {"status": proposal.status},
         )
 
-    rollback_hooks = hooks or NoopRollbackHooks()
+    rollback_hooks = hooks or default_rollback_hooks()
     targets = list(
         (
             await db.execute(

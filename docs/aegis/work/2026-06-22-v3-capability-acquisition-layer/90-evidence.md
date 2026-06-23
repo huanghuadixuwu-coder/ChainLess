@@ -313,9 +313,145 @@
   tests/test_acquisition_journal.py` -> `165 passed, 2 warnings`.
 - 2026-06-22: Confirmed `git status --short -- frontend` returned no frontend
   changes during W3 closure.
+- 2026-06-23: W4.1 implementation added a compose-managed isolated MCP stdio
+  runtime service, backend `core/tools/mcp_runtime` owner, durable
+  `MCPServerConfiguration` registration/recovery, tenant-scoped enabled
+  uniqueness migration `0013`, and startup recovery.
+- 2026-06-23: W4.1 spec review initially found durable recovery, real runtime
+  execution, egress, runtime-side policy, and approved-payload binding gaps.
+  Fixes added real `mcp-runtime` HTTP service execution, runtime-side
+  approved-payload hashes, explicit fail-closed egress, durable restart
+  recovery, and isolated compose boundaries.
+- 2026-06-23: W4.1 code-quality review found identity mismatch,
+  DB/runtime side-effect ordering, startup recovery isolation, remote HTTP/SSE
+  evidence, response-cap materialization, migration duplicate safety, failed
+  replacement, and same-key concurrent replacement issues. Fixes made MCP
+  identity tenant-scoped, deduped duplicate enabled rows in migration `0013`,
+  fail-closed direct remote HTTP/SSE until a safe adapter owner exists,
+  serialized same-key operations with process-local locks, and preserved old
+  runtime/config on failed replacement.
+- 2026-06-23: Controller reran W4.1 targeted verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_mcp_runtime_isolation.py tests/test_mcp_transports.py"` ->
+  `33 passed, 2 warnings`.
+- 2026-06-23: Controller reran W4.1 affected API contract verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_contracts.py::test_tools_admin_can_register_test_and_delete_mcp_server
+  tests/test_api_contracts.py::test_tools_mcp_failures_do_not_leak_exception_details"` ->
+  `2 passed, 2 warnings`.
+- 2026-06-23: Controller reran W4.1 migration/runtime verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && alembic
+  downgrade 0012 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_mcp_runtime_isolation.py
+  tests/test_mcp_transports.py"` -> `46 passed, 2 warnings`, including
+  `0013 -> 0012 -> 0013/head` roundtrip.
+- 2026-06-23: W4.1 final spec compliance review passed with no
+  Critical/Important findings.
+- 2026-06-23: W4.1 final code-quality review passed with no
+  Critical/Important findings. Minor residuals: same-key MCP operation locks
+  are process-local, so multi-replica deployments still need a future DB
+  advisory lock or version guard; direct remote HTTP/SSE MCP stays fail-closed
+  until a safe remote transport owner exists.
+- 2026-06-23: Confirmed `git diff --check` had no whitespace errors and
+  `git status --short -- frontend` returned no frontend changes during W4.1
+  closure.
+- 2026-06-23: W4.2 implementation added generic API runtime files under
+  `backend/app/core/tools/api_runtime/`, canonical per-user API tool names,
+  activation hooks, registry exposure for active user-scoped targets, runtime
+  schema validation, credential resolution by reference, egress/content/byte
+  bounds, retry/timeout/rate-limit contracts, and confirmation enforcement for
+  non-idempotent/external writes.
+- 2026-06-23: W4.2 final verification passed:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_tool_runtime.py tests/test_acquisition_policy.py"` ->
+  `92 passed, 2 warnings`.
+- 2026-06-23: W4.2 enhanced regression verification passed:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_tool_runtime.py tests/test_acquisition_policy.py
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_hook_upserts_enabled_verified_manifest
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_user_scoped_tool_name_collision
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_binds_current_credential_generation
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_credential_not_allowed_for_api_tool
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_credential_target_ref_mismatch
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_unresolvable_credential_storage
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_unsupported_auth_scheme
+  tests/test_sse_contract.py::test_execute_confirmed_api_tool_passes_backend_acquisition_confirmation_context
+  tests/test_sse_contract.py::test_disconnected_stream_cancels_running_agent_task"` ->
+  `101 passed, 2 warnings`.
+- 2026-06-23: W4.2 final code review found no Critical/Important blockers and
+  W4.2 was closed.
+- 2026-06-23: W4.3 implementation added development patch proposal handoff
+  owner `backend/app/core/acquisition/development_patch.py` and bridge exports.
+  Runtime activation is denied; patch handoff requires artifact refs, digest
+  binding, current revision check, dry-apply validation, rollback/test-plan
+  evidence, and audit.
+- 2026-06-23: W4.3 initial review found Important digest, local-path,
+  dry-apply, and audit blockers. Fixes bound actual artifact content to
+  `sha256:` digest, rejected local/file patch refs, added pure-Python
+  unified-diff dry-apply, and wrote `acquisition.development_patch.handoff_ready`
+  audit.
+- 2026-06-23: Controller reran W4.3 focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_development_patch_proposal.py"` -> `11 passed, 2 warnings`.
+- 2026-06-23: Controller reran W4.3 regression verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_development_patch_proposal.py
+  tests/test_acquisition_models.py::test_development_patch_proposal_cannot_be_runtime_active
+  tests/test_acquisition_lifecycle.py::test_development_patch_proposal_rejects_runtime_only_states_with_lifecycle_error
+  tests/test_acquisition_journal.py::test_journal_groups_open_gaps_proposals_activated_rejected_runtime_issues_and_patch_proposals"` ->
+  `14 passed, 2 warnings`.
+- 2026-06-23: W4.3 final code review found no Critical/Important blockers and
+  W4.3 was closed.
+- 2026-06-23: W4.4 implementation added V2 target adapter
+  `backend/app/core/acquisition/v2_targets.py`, verification prechecks for
+  Worker/Skill/Memory target payloads, default activation dispatch for V2
+  targets, production rollback dispatch for V2 compensation, Worker
+  acquisition activation/rollback owner entrypoints, Skill acquisition
+  activation/disable owner entrypoints, Memory acquisition delete rollback, and
+  `backend/tests/test_v2_activation_targets.py`.
+- 2026-06-23: W4.4 initial review found Important blockers in Worker update
+  rollback, inaccurate V2 side-effect audit/history, partial rollback retry
+  idempotency, pending Worker activation-gate restoration, and transaction
+  boundaries after target activation IntegrityError. Fixes added Worker restore
+  snapshots, runtime/durable side-effect evidence, already-rolled-back skip,
+  shallow manifest evidence, pending activation-field restoration, and nested
+  savepoints for V2 activation/compensation.
+- 2026-06-23: Controller reran W4.4 focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_v2_activation_targets.py"` -> `13 passed, 2 warnings`.
+- 2026-06-23: Controller reran W4.4 plan verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_v2_activation_targets.py tests/test_capability_candidates.py
+  tests/test_worker_runtime.py"` -> `65 passed, 2 warnings`.
+- 2026-06-23: Controller reran W4 runtime regression verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_v2_activation_targets.py tests/test_acquisition_lifecycle.py
+  tests/test_development_patch_proposal.py tests/test_api_tool_runtime.py
+  tests/test_mcp_transports.py tests/test_mcp_runtime_isolation.py"` ->
+  `120 passed, 2 warnings`.
+- 2026-06-23: W4.4 final spec review passed with no Critical/Important
+  findings.
+- 2026-06-23: W4.4 final code-quality review passed with no
+  Critical/Important findings. Minor residual: Memory raw-secret detection is
+  conservative and may reject benign fields with names such as `token`.
+- 2026-06-23: Confirmed `git diff --check` on W4.4 touched files had no
+  whitespace errors, only CRLF warnings. Confirmed `git status --short --
+  frontend` returned no frontend changes during W4.4 closure.
+- 2026-06-23: W4 subagents used for spec/code-quality review were closed after
+  completion.
 
 ## Pending Evidence
 
-- W4.1 RED/GREEN evidence.
-- W4.1 spec compliance review.
-- W4.1 code quality review.
+- W5 RED/GREEN evidence.
+- W5 spec compliance review.
+- W5 code quality review.

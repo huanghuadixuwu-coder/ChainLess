@@ -6,6 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -21,7 +22,9 @@ from app.models.tool_confirmation import ToolConfirmation
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
 from app.services.conversation_stream_service import (
+    API_ACQUISITION_CONFIRMATION_CONTEXT_ARG,
     build_chat_stream_response,
+    execute_confirmed_tool,
     persist_confirmation_required,
     public_agent_event,
 )
@@ -40,6 +43,56 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
         if event_name:
             events.append((event_name, data))
     return events
+
+
+@pytest.mark.asyncio
+async def test_execute_confirmed_api_tool_passes_backend_acquisition_confirmation_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.conversation_stream_service as stream_service
+
+    confirmation_context = {
+        "proposal_id": str(uuid.uuid4()),
+        "target_id": str(uuid.uuid4()),
+        "target_type": "api_tool",
+        "approved_snapshot_hash": "approved",
+        "current_snapshot_hash": "approved",
+        "permission_scope_hash": "{}",
+        "risk_level": "risky",
+        "tool_context_hash": "{}",
+        "action_category": "external_write",
+    }
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_tool(tool_name: str, args: dict, context: dict | None = None):
+        captured["tool_name"] = tool_name
+        captured["args"] = args
+        captured["context"] = context
+        return "executed"
+
+    monkeypatch.setattr(stream_service, "execute_tool", fake_execute_tool)
+
+    result = await execute_confirmed_tool(
+        "api__write_weather",
+        {
+            "city": "Paris",
+            "__confirmed": False,
+            API_ACQUISITION_CONFIRMATION_CONTEXT_ARG: confirmation_context,
+        },
+        sandbox=object(),
+        gateway=object(),
+        tenant_id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        conversation_id=str(uuid.uuid4()),
+        tool_call_id="api-call-1",
+        run_id=str(uuid.uuid4()),
+        risk="risky",
+    )
+
+    assert result == "executed"
+    assert captured["tool_name"] == "api__write_weather"
+    assert captured["args"] == {"city": "Paris"}
+    assert captured["context"]["confirmation_context"] == {**confirmation_context, "confirmed": True}
 
 
 async def _active_runtime_worker(

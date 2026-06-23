@@ -81,6 +81,68 @@ class NoopActivationHooks:
         )
 
 
+class ProductionActivationHooks:
+    """Production activation owner dispatcher.
+
+    Runtime-specific hooks stay in their runtime packages. This dispatcher is
+    the default lifecycle owner and lazily imports them to avoid top-level
+    acquisition/runtime circular imports.
+    """
+
+    def __init__(self) -> None:
+        self._noop = NoopActivationHooks()
+
+    async def activate_target(
+        self,
+        db: AsyncSession,
+        *,
+        proposal: AcquisitionProposal,
+        target: ActivationTarget,
+        approved_hash: str,
+        idempotency_key: str | None,
+    ) -> TargetActivationResult:
+        if target.target_type == "api_tool":
+            from app.core.tools.api_runtime.activation import APIToolActivationHooks
+
+            return await APIToolActivationHooks().activate_target(
+                db,
+                proposal=proposal,
+                target=target,
+                approved_hash=approved_hash,
+                idempotency_key=idempotency_key,
+            )
+        if target.target_type in {"worker", "skill", "memory"}:
+            from app.core.acquisition.v2_targets import V2CapabilityActivationHooks
+
+            return await V2CapabilityActivationHooks().activate_target(
+                db,
+                proposal=proposal,
+                target=target,
+                approved_hash=approved_hash,
+                idempotency_key=idempotency_key,
+            )
+        if target.target_type == "development_patch_proposal":
+            return TargetActivationResult(
+                success=False,
+                error_code="DEVELOPMENT_PATCH_NOT_RUNTIME_TARGET",
+                error_message="Development patch proposals are durable handoffs, not runtime activation targets",
+                evidence={"hook": "development_patch_guard", "runtime_side_effects": False},
+            )
+        return await self._noop.activate_target(
+            db,
+            proposal=proposal,
+            target=target,
+            approved_hash=approved_hash,
+            idempotency_key=idempotency_key,
+        )
+
+
+def default_activation_hooks() -> ActivationHooks:
+    """Return production activation hooks for default lifecycle calls."""
+
+    return ProductionActivationHooks()
+
+
 def approved_snapshot_hash(proposal: AcquisitionProposal) -> str | None:
     for item in reversed(proposal.approval_history or []):
         if isinstance(item, dict) and item.get("status") == "activation_approved":
@@ -818,6 +880,7 @@ async def _record_target_activation(
                 "approved_snapshot_hash": approved_hash,
                 "idempotency_key": idempotency_key,
                 "runtime_side_effects": bool(result.evidence.get("runtime_side_effects")),
+                "durable_side_effects": bool(result.evidence.get("durable_side_effects")),
             },
         )
     else:
@@ -891,7 +954,7 @@ async def run_activation_saga(
             {"status": proposal.status},
         )
 
-    activation_hooks = hooks or NoopActivationHooks()
+    activation_hooks = hooks or default_activation_hooks()
     all_targets = await _ensure_activation_targets(db, proposal=proposal, tenant_id=tenant_id, user_id=user_id)
     targets = all_targets
     requested_ids = set(target_ids or [])
@@ -932,7 +995,18 @@ async def run_activation_saga(
         if primary_failed:
             break
         if target.activation_status == "active":
-            target_results.append({"target_id": str(target.id), "status": "active", "role": role, "replayed": True})
+            result = target.activation_result if isinstance(target.activation_result, dict) else {}
+            evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+            target_results.append(
+                {
+                    "target_id": str(target.id),
+                    "status": "active",
+                    "role": role,
+                    "replayed": True,
+                    "runtime_side_effects": bool(evidence.get("runtime_side_effects")),
+                    "durable_side_effects": bool(evidence.get("durable_side_effects")),
+                }
+            )
             continue
         try:
             result = await activation_hooks.activate_target(
@@ -963,6 +1037,8 @@ async def run_activation_saga(
                 "status": "active" if result.success else "activation_failed",
                 "role": role,
                 "error_code": result.error_code,
+                "runtime_side_effects": bool(result.evidence.get("runtime_side_effects")),
+                "durable_side_effects": bool(result.evidence.get("durable_side_effects")),
             }
         )
         if not result.success and role == "primary":
@@ -1023,7 +1099,8 @@ async def run_activation_saga(
                 "status": final_status,
                 "target_results": target_results,
                 "idempotency_key": idempotency_key,
-                "runtime_side_effects": False,
+                "runtime_side_effects": any(bool(item.get("runtime_side_effects")) for item in target_results),
+                "durable_side_effects": any(bool(item.get("durable_side_effects")) for item in target_results),
             },
         }
         proposal.approval_history = validate_bounded_json(history[-50:], field="approval_history")
@@ -1038,6 +1115,8 @@ async def run_activation_saga(
             "status": final_status,
             "target_results": target_results,
             "idempotency_key": idempotency_key,
+            "runtime_side_effects": any(bool(item.get("runtime_side_effects")) for item in target_results),
+            "durable_side_effects": any(bool(item.get("durable_side_effects")) for item in target_results),
         },
     )
     await db.flush()

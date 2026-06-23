@@ -132,6 +132,7 @@ services:
       SUBAGENT_HANDLER_TIMEOUT_SECONDS: ${SUBAGENT_HANDLER_TIMEOUT_SECONDS:-30}
       SUBAGENT_CANCELLATION_GRACE_SECONDS: ${SUBAGENT_CANCELLATION_GRACE_SECONDS:-1}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      MCP_RUNTIME_URL: http://mcp-runtime:9101
     volumes:
       - workspace_data:/workspace
       - memory_data:/data/memory
@@ -143,6 +144,7 @@ services:
       - data
       - sandbox_net
       - egress
+      - mcp_runtime
     depends_on:
       db:
         condition: service_healthy
@@ -150,12 +152,45 @@ services:
         condition: service_healthy
       sandbox-proxy:
         condition: service_healthy
+      mcp-runtime:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()\""]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  mcp-runtime:
+    build:
+      context: ./mcp-runtime
+      dockerfile: Dockerfile
+    image: chainless-mcp-runtime:w4-1-quality
+    container_name: chainless-mcp-runtime
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    networks:
+      - mcp_runtime
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    environment:
+      MCP_RUNTIME_KIND: isolated_stdio
+      MCP_RUNTIME_APPROVED_IMAGE: chainless-mcp-runtime:w4-1-quality
+      MCP_RUNTIME_APPROVED_PAYLOAD_HASHES: sha256:54e94ca437fc309cbe56945f79f4627b88eb9264caa79211b63cb3d4809b6e8a,sha256:c0a39598a8b0b8bbc5fedae539ad0e5d96fb7658ee605e1a0498a3b2e2c33893,sha256:6471075bb31a1aedacd6cece100d26f65198fc38d0cae34c2c4eb32a327bfd8f
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
   worker:
     build:
@@ -246,3 +281,5 @@ networks:
   sandbox_net:
     internal: true
   egress:
+  mcp_runtime:
+    internal: true

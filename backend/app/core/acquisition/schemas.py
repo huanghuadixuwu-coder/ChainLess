@@ -493,8 +493,9 @@ class MCPServerConfigurationContract(AcquisitionContract):
 
 class APIToolConfigurationContract(AcquisitionContract):
     name: str
+    tool_name: str
     base_url: str
-    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+    method: Literal["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]
     path_template: str
     headers_schema: dict[str, Any]
     auth_scheme: str

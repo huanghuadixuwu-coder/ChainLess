@@ -31,6 +31,16 @@ async def _commit_or_validation_error(db: AsyncSession) -> None:
         raise
 
 
+async def _flush_or_validation_error(db: AsyncSession) -> None:
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        message = str(exc)
+        if any(name in message for name in ("ck_workers_", "ck_worker_versions_", "ck_worker_runs_")):
+            raise validation_error("Worker metadata exceeds durable bounds or violates status contract") from exc
+        raise
+
+
 def _require_activation_request(worker: Worker, version: WorkerVersion, activation_token: str | None) -> None:
     if (
         not worker.activation_token
@@ -38,6 +48,51 @@ def _require_activation_request(worker: Worker, version: WorkerVersion, activati
         or worker.activation_requested_version_id != version.id
     ):
         raise api_error(409, "WORKER_ACTIVATION_NOT_REQUESTED", "Activation confirmation was not requested")
+
+
+def _dt(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value in (None, ""):
+        return None
+    return uuid.UUID(str(value))
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return datetime.fromisoformat(value)
+
+
+async def _worker_restore_state(db: AsyncSession, worker: Worker, *, mode: str) -> dict[str, Any]:
+    version: WorkerVersion | None = None
+    if worker.active_version_id is not None:
+        version = await db.get(WorkerVersion, worker.active_version_id)
+    return {
+        "mode": mode,
+        "worker_id": str(worker.id),
+        "name": worker.name,
+        "description": worker.description,
+        "status": worker.status,
+        "enabled": worker.enabled,
+        "trigger": worker.trigger or {},
+        "policy": worker.policy or {},
+        "active_version_id": str(worker.active_version_id) if worker.active_version_id else None,
+        "activation_token": worker.activation_token,
+        "activation_requested_version_id": str(worker.activation_requested_version_id)
+        if worker.activation_requested_version_id
+        else None,
+        "activation_requested_at": _dt(worker.activation_requested_at),
+        "activation_confirmed_at": _dt(worker.activation_confirmed_at),
+        "activation_confirmed_by": str(worker.activation_confirmed_by) if worker.activation_confirmed_by else None,
+        "activation_evidence": worker.activation_evidence or {},
+        "rollback_reason": worker.rollback_reason,
+        "version_status": version.status if version else None,
+        "version_activated_at": _dt(version.activated_at) if version else None,
+        "version_archived_at": _dt(version.archived_at) if version else None,
+    }
 
 
 def serialize_worker(worker: Worker) -> dict[str, Any]:
@@ -525,4 +580,186 @@ async def rollback_worker(
     version.activated_at = now
     await _commit_or_validation_error(db)
     await db.refresh(worker)
+    return worker
+
+
+async def activate_worker_from_acquisition(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    name: str,
+    description: str | None,
+    trigger: dict[str, Any],
+    policy: dict[str, Any],
+    definition: dict[str, Any],
+    verification_plan: dict[str, Any],
+    verification_evidence: dict[str, Any],
+    activation_evidence: dict[str, Any],
+    worker_id: uuid.UUID | None = None,
+) -> tuple[Worker, WorkerVersion, dict[str, Any]]:
+    """Activate a V3-verified Worker without committing the acquisition saga."""
+
+    if not verification_evidence:
+        raise validation_error("verification_evidence is required")
+    if not activation_evidence:
+        raise validation_error("activation_evidence is required")
+
+    now = datetime.now(timezone.utc)
+    bounded_trigger = validate_bounded_json(trigger, field="trigger")
+    bounded_policy = validate_bounded_json(policy, field="policy")
+    bounded_definition = validate_bounded_json(definition, field="definition")
+    bounded_verification_plan = validate_bounded_json(verification_plan, field="verification_plan")
+    bounded_verification_evidence = validate_bounded_json(verification_evidence, field="verification_evidence")
+    bounded_activation_evidence = validate_bounded_json(activation_evidence, field="activation_evidence")
+
+    if worker_id is None:
+        worker = Worker(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name=name,
+            description=description,
+            trigger=bounded_trigger,
+            policy=bounded_policy,
+        )
+        db.add(worker)
+        await _flush_or_validation_error(db)
+        next_version = 1
+        restore_state = {"mode": "created"}
+    else:
+        worker = (
+            await db.execute(
+                select(Worker)
+                .where(
+                    Worker.id == worker_id,
+                    *_scope(Worker, tenant_id, user_id),
+                    Worker.soft_deleted_at.is_(None),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if worker is None:
+            raise not_found("WORKER_NOT_FOUND", "Worker not found")
+        restore_state = await _worker_restore_state(db, worker, mode="updated")
+        worker.name = name
+        worker.description = description
+        worker.trigger = bounded_trigger
+        worker.policy = bounded_policy
+        if worker.active_version_id is not None:
+            old_version = await db.get(WorkerVersion, worker.active_version_id)
+            if old_version is not None and old_version.status == "active":
+                old_version.status = "archived"
+                old_version.archived_at = now
+        next_version = int(
+            (
+                await db.execute(
+                    select(func.max(WorkerVersion.version)).where(WorkerVersion.worker_id == worker.id)
+                )
+            ).scalar()
+            or 0
+        ) + 1
+
+    version = WorkerVersion(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        worker_id=worker.id,
+        version=next_version,
+        status="active",
+        definition=bounded_definition,
+        verification_plan=bounded_verification_plan,
+        verification_evidence=bounded_verification_evidence,
+        verified_by=user_id,
+        verified_at=now,
+        activated_at=now,
+    )
+    db.add(version)
+    await _flush_or_validation_error(db)
+
+    worker.status = "active"
+    worker.enabled = True
+    worker.active_version_id = version.id
+    worker.activation_token = None
+    worker.activation_requested_version_id = None
+    worker.activation_confirmed_at = now
+    worker.activation_confirmed_by = user_id
+    worker.activation_evidence = bounded_activation_evidence
+    await _flush_or_validation_error(db)
+    return worker, version, validate_bounded_json(restore_state, field="worker_restore_state")
+
+
+async def rollback_worker_from_acquisition(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    worker_id: uuid.UUID,
+    version_id: uuid.UUID,
+    reason: str | None,
+    restore_state: dict[str, Any] | None = None,
+) -> Worker:
+    """Disable an acquired Worker target without committing the acquisition saga."""
+
+    worker = (
+        await db.execute(
+            select(Worker)
+            .where(
+                Worker.id == worker_id,
+                *_scope(Worker, tenant_id, user_id),
+                Worker.soft_deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if worker is None:
+        raise not_found("WORKER_NOT_FOUND", "Worker not found")
+    version = (
+        await db.execute(
+            select(WorkerVersion)
+            .where(
+                WorkerVersion.id == version_id,
+                WorkerVersion.worker_id == worker.id,
+                *_scope(WorkerVersion, tenant_id, user_id),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if version is None:
+        raise not_found("WORKER_VERSION_NOT_FOUND", "Worker version not found")
+    restore_state = restore_state if isinstance(restore_state, dict) else {}
+    if version.status == "active":
+        version.status = "archived"
+        version.archived_at = datetime.now(timezone.utc)
+    if restore_state.get("mode") == "updated":
+        previous_version_id = _uuid_or_none(restore_state.get("active_version_id"))
+        worker.name = str(restore_state.get("name") or worker.name)
+        worker.description = restore_state.get("description")
+        worker.status = str(restore_state.get("status") or "draft")
+        worker.enabled = bool(restore_state.get("enabled"))
+        worker.trigger = validate_bounded_json(restore_state.get("trigger") or {}, field="trigger")
+        worker.policy = validate_bounded_json(restore_state.get("policy") or {}, field="policy")
+        worker.active_version_id = previous_version_id
+        worker.activation_token = restore_state.get("activation_token")
+        worker.activation_requested_version_id = _uuid_or_none(restore_state.get("activation_requested_version_id"))
+        worker.activation_requested_at = _datetime_or_none(restore_state.get("activation_requested_at"))
+        worker.activation_confirmed_at = _datetime_or_none(restore_state.get("activation_confirmed_at"))
+        worker.activation_confirmed_by = _uuid_or_none(restore_state.get("activation_confirmed_by"))
+        worker.activation_evidence = validate_bounded_json(
+            restore_state.get("activation_evidence") or {},
+            field="activation_evidence",
+        )
+        worker.rollback_reason = restore_state.get("rollback_reason")
+        if previous_version_id is not None and previous_version_id != version.id:
+            previous_version = await db.get(WorkerVersion, previous_version_id)
+            if previous_version is not None:
+                previous_version.status = str(restore_state.get("version_status") or previous_version.status)
+                previous_version.activated_at = _datetime_or_none(restore_state.get("version_activated_at"))
+                previous_version.archived_at = _datetime_or_none(restore_state.get("version_archived_at"))
+    else:
+        worker.status = "disabled"
+        worker.enabled = False
+        worker.rollback_reason = reason
+    await _flush_or_validation_error(db)
     return worker

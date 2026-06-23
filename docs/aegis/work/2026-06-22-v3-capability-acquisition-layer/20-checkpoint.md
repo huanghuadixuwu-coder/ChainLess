@@ -2,7 +2,7 @@
 
 ## TodoCheckpointDraft
 
-Current todo: Workstream 4, Task 4.1.
+Current todo: Workstream 4 complete; ready for Workstream 5.
 
 Completed todos:
 - Plan engineering review completed and patched.
@@ -224,14 +224,123 @@ Completed todos:
   tests/test_acquisition_journal.py` -> `165 passed, 2 warnings`.
 - Confirmed `git status --short -- frontend` returned no frontend changes
   during W3 closure.
+- W4.1 implementation added isolated MCP stdio runtime ownership:
+  `backend/app/core/tools/mcp_runtime/`, `mcp-runtime/`, durable
+  `MCPServerConfiguration` registration/recovery, startup recovery wiring,
+  and compose-managed `mcp-runtime` isolation.
+- W4.1 retired backend-process stdio MCP execution. The backend now delegates
+  stdio discovery/calls to `mcp-runtime`; the only `mcp.client.stdio` usage is
+  inside the isolated runtime service.
+- W4.1 quality fixes made MCP configuration tenant-scoped, added migration
+  `0013_tenant_scoped_mcp_config_identity`, deduped historical enabled
+  duplicates before the partial unique index, serialized same-key durable
+  register/unregister/recovery with process-local locks, and made failed
+  replacement preserve the existing enabled runtime/config.
+- W4.1 remote HTTP/SSE direct transport is fail-closed until a future safe
+  remote MCP transport owner can provide connected-peer evidence and streaming
+  response-cap enforcement.
+- W4.1 spec compliance review passed after fixing durable restart recovery,
+  runtime-side approved payload binding, explicit egress fail-closed behavior,
+  and runtime-side policy validation.
+- W4.1 code-quality review passed after fixing replacement atomicity,
+  concurrent replacement serialization, migration duplicate safety, response
+  cap boundaries, and startup recovery isolation.
+- Controller final W4.1 verification passed:
+  `pytest -q tests/test_mcp_runtime_isolation.py tests/test_mcp_transports.py`
+  -> `33 passed, 2 warnings`.
+- Controller final W4.1 API compatibility verification passed:
+  `pytest -q tests/test_api_contracts.py::test_tools_admin_can_register_test_and_delete_mcp_server
+  tests/test_api_contracts.py::test_tools_mcp_failures_do_not_leak_exception_details`
+  -> `2 passed, 2 warnings`.
+- Controller final W4.1 migration/runtime verification passed:
+  `alembic downgrade 0012 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_mcp_runtime_isolation.py
+  tests/test_mcp_transports.py` -> `46 passed, 2 warnings`.
+- Confirmed `git status --short -- frontend` returned no frontend changes
+  during W4.1 closure.
+- W4.2 implementation added the generic API tool runtime owner with
+  `core/tools/api_runtime`, canonical per-user tool names, API tool activation
+  hooks, registry exposure only after user-scoped activation, schema
+  validation, credential reference resolution, egress checks, byte caps,
+  content-type checks, retry/timeout/rate-limit contracts, and confirmation
+  handling for non-idempotent/external writes.
+- W4.2 spec/code-quality review passed after fixes for canonical tool-name
+  collisions, credential generation binding, unsupported auth schemes,
+  model-supplied confirmation bypass, no-user stream compatibility, and
+  JSON-schema/runtime contract coverage.
+- Controller final W4.2 verification passed:
+  `pytest -q tests/test_api_tool_runtime.py tests/test_acquisition_policy.py`
+  -> `92 passed, 2 warnings`.
+- Controller W4.2 enhanced regression verification passed:
+  `pytest -q tests/test_api_tool_runtime.py tests/test_acquisition_policy.py
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_hook_upserts_enabled_verified_manifest
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_user_scoped_tool_name_collision
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_binds_current_credential_generation
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_credential_not_allowed_for_api_tool
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_credential_target_ref_mismatch
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_unresolvable_credential_storage
+  tests/test_acquisition_lifecycle.py::test_api_tool_activation_rejects_unsupported_auth_scheme
+  tests/test_sse_contract.py::test_execute_confirmed_api_tool_passes_backend_acquisition_confirmation_context
+  tests/test_sse_contract.py::test_disconnected_stream_cancels_running_agent_task`
+  -> `101 passed, 2 warnings`.
+- W4.3 implementation added `development_patch_proposal` as a durable handoff
+  owner. Runtime activation is explicitly denied; patch handoff requires an
+  artifact ref, digest binding, current revision match, dry-apply validation,
+  audit, rollback/test-plan/checklist fields, and no runtime repo mutation.
+- W4.3 review initially found digest, local-path, dry-apply, and audit gaps.
+  Fixes bound `sha256:` artifact content, rejected local/file paths, added a
+  pure-Python dry-apply validator for the backend-test container, and wrote
+  handoff-ready audit events.
+- Controller final W4.3 verification passed:
+  `pytest -q tests/test_development_patch_proposal.py` -> `11 passed,
+  2 warnings`.
+- Controller W4.3 regression verification passed:
+  `pytest -q tests/test_development_patch_proposal.py
+  tests/test_acquisition_models.py::test_development_patch_proposal_cannot_be_runtime_active
+  tests/test_acquisition_lifecycle.py::test_development_patch_proposal_rejects_runtime_only_states_with_lifecycle_error
+  tests/test_acquisition_journal.py::test_journal_groups_open_gaps_proposals_activated_rejected_runtime_issues_and_patch_proposals`
+  -> `14 passed, 2 warnings`.
+- W4.4 implementation added V2 activation targets through their existing
+  owners: Worker activation/rollback via `core/workers/service.py`, Skill
+  activation/disable via `core/capabilities/service.py`, Memory create/delete
+  via `core/memory/persistent.py`, and a thin acquisition adapter in
+  `core/acquisition/v2_targets.py`.
+- W4.4 verification now rejects invalid Worker/Skill/Memory targets before
+  activation approval: Worker requires object input schema and allowed tools;
+  Skill requires trigger or semantic-match evidence and forbids embedded
+  runtime permission; Memory requires private user scope, source evidence,
+  content, and raw-secret rejection.
+- W4.4 review found Important gaps in Worker update rollback, V2 side-effect
+  audit accuracy, partial rollback retry idempotency, pending Worker activation
+  gate restoration, and target-level transaction boundaries. Fixes added
+  Worker restore snapshots, runtime/durable side-effect audit/history flags,
+  already-rolled-back target skipping, shallow manifest evidence, pending
+  activation-gate restoration, and nested savepoints for V2 activation and
+  compensation.
+- Controller final W4.4 verification passed:
+  `pytest -q tests/test_v2_activation_targets.py` -> `13 passed,
+  2 warnings`.
+- Controller final W4.4 plan verification passed:
+  `pytest -q tests/test_v2_activation_targets.py tests/test_capability_candidates.py
+  tests/test_worker_runtime.py` -> `65 passed, 2 warnings`.
+- Controller W4 runtime regression verification passed:
+  `pytest -q tests/test_v2_activation_targets.py
+  tests/test_acquisition_lifecycle.py tests/test_development_patch_proposal.py
+  tests/test_api_tool_runtime.py tests/test_mcp_transports.py
+  tests/test_mcp_runtime_isolation.py` -> `120 passed, 2 warnings`.
+- W4.4 final spec review passed with no Critical/Important findings.
+- W4.4 final code-quality review passed with no Critical/Important findings.
+  Minor residual: Memory target raw-secret detection is conservative and may
+  reject benign keys containing words such as `token`; this is accepted as a
+  safe false-positive risk for W4.
+- Confirmed `git status --short -- frontend` returned no frontend changes
+  during W4.4 closure.
 
 Active slice:
-- Workstream 4, Task 4.1: Add isolated MCP runtime and durable MCP server
-  configuration.
+- Workstream 4 complete.
 
 Next step:
-- Dispatch W4.1 implementation subagent with bounded ownership when the user
-  asks to proceed.
+- Enter Workstream 5 when the user asks to proceed.
 
 Blocked-on:
 - None at start.
@@ -271,6 +380,20 @@ Retirement track:
   making the generated markdown an editable source of truth.
 - W2.4 completed this journal boundary. W3 now begins credential ownership and
   policy foundations; LLM provider and channel credentials must not be re-owned.
+- W4.1 completed the isolated stdio MCP runtime boundary. Backend-process
+  stdio launch is retired; direct remote HTTP/SSE MCP is intentionally
+  fail-closed until a future safe remote transport owner provides connected-peer
+  evidence and streaming response-cap enforcement.
+- W4.2 completed the generic API runtime boundary. Builtin tools remain
+  available, while acquired API tools only enter runtime registry after
+  activation, policy, and user-scope checks.
+- W4.3 completed the self-modification safety boundary. Development patch
+  proposals are durable review handoffs only; no runtime path applies patches,
+  edits repo files, stages, commits, pushes, deploys, or mutates production.
+- W4.4 completed the V2 capability target boundary. Acquisition owns
+  verification/approval/snapshot/audit/rollback state; Worker, Skill, and
+  Memory persistence/runtime effects remain in their V2 owners. Candidate
+  metadata remains inert and is not used as V3 activation state.
 
 Evidence state:
 - W1 accepted for next phase by Docker verification plus final spec/code-quality
@@ -290,3 +413,15 @@ Evidence state:
 - W3.3 accepted for W3 closure by Docker verification plus final
   spec/code-quality review.
 - W3 accepted for W4 by W3 closure Docker verification and drift check.
+- W4.1 accepted for W4.2 by Docker verification plus final
+  spec/code-quality review. Residual risk: same-key durable MCP
+  register/unregister serialization is process-local; multi-replica deployments
+  will need a future DB advisory lock or version guard.
+- W4.2 accepted for W4.3 by Docker verification plus final
+  spec/code-quality review.
+- W4.3 accepted for W4.4 by Docker verification plus final
+  spec/code-quality review.
+- W4.4 accepted for W4 closure by Docker verification plus final
+  spec/code-quality review.
+- W4 accepted for W5 by W4 runtime-target regression verification and drift
+  check.

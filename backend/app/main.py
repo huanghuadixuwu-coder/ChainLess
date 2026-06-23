@@ -54,6 +54,23 @@ async def run_migrations() -> None:
     await loop.run_in_executor(None, _run_migrations_sync)
 
 
+async def recover_mcp_servers_on_startup() -> None:
+    """Reload durable MCP server configs without failing app startup."""
+    try:
+        from app.api.deps import _async_session_factory
+        from app.core.tools.mcp.manager import mcp_manager
+
+        async with _async_session_factory() as db:
+            result = await mcp_manager.recover_enabled_from_db(db)
+        logger.info(
+            "Recovered %d durable MCP server configuration(s); %d failed",
+            result.recovered,
+            result.failed,
+        )
+    except Exception:
+        logger.exception("Failed to recover durable MCP server configurations on startup")
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -77,6 +94,8 @@ async def lifespan(app: FastAPI):
         await app_state.sandbox_manager.warm_pool()
     except Exception as exc:
         logger.warning("Could not warm sandbox pool: %s", exc)
+
+    await recover_mcp_servers_on_startup()
 
     yield
 
