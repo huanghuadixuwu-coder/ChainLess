@@ -1,0 +1,72 @@
+[
+  {
+    "id": "capability-gap-train-query",
+    "runner": "capability_acquisition_probe",
+    "case": "capability_gap_train_query",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify an unsupported train-query task becomes a deduped Capability Gap instead of an ad-hoc builtin tool requirement."
+  },
+  {
+    "id": "public-weather-api-exploration",
+    "runner": "capability_acquisition_probe",
+    "case": "public_weather_api_exploration",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify low-risk public weather data exploration can run automatically and persist bounded exploration evidence."
+  },
+  {
+    "id": "safe-exploration-high-risk-block",
+    "runner": "capability_acquisition_probe",
+    "case": "safe_exploration_high_risk_block",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify high-risk exploration boundaries require explicit approval before execution."
+  },
+  {
+    "id": "workspace-connector-recommendation",
+    "runner": "capability_acquisition_probe",
+    "case": "workspace_connector_recommendation",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify tasks needing host file access become Workspace Connector recommendations, not broad workspace scans."
+  },
+  {
+    "id": "browser-automation-recommendation",
+    "runner": "capability_acquisition_probe",
+    "case": "browser_automation_recommendation",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify browser automation and external-write needs become approval-gated Browser Automation recommendations."
+  },
+  {
+    "id": "activation-state-machine",
+    "runner": "capability_acquisition_probe",
+    "case": "activation_state_machine",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify activation approval is forbidden before verification and then binds the verified snapshot hash."
+  },
+  {
+    "id": "partial-activation-rollback",
+    "runner": "capability_acquisition_probe",
+    "case": "partial_activation_rollback",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify secondary target failure records partial activation and rollback compensates active targets."
+  },
+  {
+    "id": "development-patch-proposal",
+    "runner": "capability_acquisition_probe",
+    "case": "development_patch_proposal",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify self-modification becomes a development patch proposal handoff, never a runtime activation target."
+  },
+  {
+    "id": "acquisition-disabled-fallback",
+    "runner": "capability_acquisition_probe",
+    "case": "acquisition_disabled_fallback",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify disabled acquisition mode does not break normal Agent/file/code-as-action surfaces or enqueue acquisition records."
+  },
+  {
+    "id": "runtime-planning-issue-classification",
+    "runner": "capability_acquisition_probe",
+    "case": "runtime_planning_issue_classification",
+    "pass_criteria": "runtime_evidence",
+    "prompt": "Verify planner misses of existing tools become RuntimePlanningIssue records instead of Acquisition Gaps."
+  }
+]

@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 # Ensure backend package is importable
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -48,7 +49,6 @@ logger = logging.getLogger("eval")
 
 TASKS_DIR = Path(__file__).resolve().parent.parent / "tests" / "eval" / "tasks"
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "tests" / "eval" / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class DeterministicEvalGateway:
@@ -1181,9 +1181,797 @@ async def run_capability_layer_probe(
                     )
 
 
+def _acquisition_eval_permission_bundle(
+    *,
+    target_type: str = "api_tool",
+    duration: str = "one_run",
+    risk_level: str = "safe",
+) -> dict:
+    return {
+        "target_type": target_type,
+        "permission_scope": {"hosts": ["api.weather.example"], "methods": ["GET"]},
+        "risk_level": risk_level,
+        "confirmation_policy": "never_for_safe" if risk_level == "safe" else "confirm_once",
+        "credential_scope": "none",
+        "credential_connection_refs": [],
+        "data_scope": "none",
+        "network_scope": "public_web",
+        "egress_policy": {"allow_hosts": ["api.weather.example"]},
+        "write_scope": "none",
+        "execution_scope": target_type,
+        "duration": duration,
+        "revocation_plan": {"disable": True},
+        "audit_events": [],
+    }
+
+
+def _acquisition_eval_target(
+    *,
+    target_type: str = "api_tool",
+    name: str = "weather",
+    owner: str = "core.api_tools",
+    permission_bundle: dict | None = None,
+) -> dict:
+    bundle = permission_bundle or _acquisition_eval_permission_bundle(target_type=target_type)
+    payload_by_type = {
+        "api_tool": {"base_url": "https://api.weather.example", "path_template": "/v1/weather"},
+        "browser_automation": {"allowlisted_domains": ["booking.example"], "max_session_seconds": 30},
+        "workspace_connector": {"connector_id": name, "display_path": "C:/approved/user-folder"},
+        "worker": {"definition": {"instructions": "Run the learned workflow."}},
+        "skill": {"trigger_terms": ["learned workflow"], "body": "Use the learned method."},
+        "memory": {"name": name, "body": "Remember the learned fact.", "scope": "private"},
+    }
+    return {
+        "target_type": target_type,
+        "target_name": name,
+        "target_owner": owner,
+        "target_payload": payload_by_type.get(target_type, {"name": name}),
+        "permission_bundle": bundle,
+        "verification_plan": {"kind": "deterministic_eval"},
+        "rollback_plan": {"disable": True},
+        "activation_status": "draft",
+        "activation_result": {},
+    }
+
+
+async def _acquisition_eval_gap(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    prefix: str,
+    gap_type: str = "missing_api",
+    title: str = "Missing acquisition capability",
+    source_run_id: str | None = None,
+    dedupe_key: str | None = None,
+    evidence: dict | None = None,
+):
+    from app.core.acquisition import lifecycle
+
+    return await lifecycle.record_gap(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        source_kind="eval",
+        source_run_id=source_run_id or f"{prefix}-run",
+        dedupe_key=dedupe_key or f"{prefix}:{gap_type}",
+        title=title,
+        description=f"Deterministic eval gap for {title}.",
+        gap_type=gap_type,
+        severity="medium",
+        evidence=evidence or {"prefix": prefix},
+        source_evidence=[{"kind": "eval", "source_run_id": source_run_id or f"{prefix}-run"}],
+        idempotency_key=f"{prefix}:gap:{uuid.uuid4().hex}",
+    )
+
+
+async def _acquisition_eval_recommendation(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    gap_id: uuid.UUID,
+    prefix: str,
+    recommendation_type: str = "api_recommendation",
+    target_type: str = "api_tool",
+    exploration_run_id: uuid.UUID | None = None,
+):
+    from app.core.acquisition import lifecycle
+
+    return await lifecycle.create_recommendation(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        gap_id=gap_id,
+        exploration_run_id=exploration_run_id,
+        recommendation_type=recommendation_type,
+        title=f"{prefix} recommendation",
+        summary=f"Use a bounded {target_type} capability.",
+        reason="The eval gap needs an explicit, reviewable acquisition path.",
+        evidence={"prefix": prefix, "target_type": target_type},
+        risk_level="safe" if target_type != "browser_automation" else "risky",
+        expected_value={"reusable": True},
+        required_permissions={"target_type": target_type},
+        candidate_targets=[{"target_type": target_type, "name": f"{prefix}-{target_type}"}],
+        idempotency_key=f"{prefix}:recommendation:{uuid.uuid4().hex}",
+    )
+
+
+async def _acquisition_eval_proposal(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    gap_id: uuid.UUID,
+    recommendation_id: uuid.UUID,
+    prefix: str,
+    proposal_kind: str = "runtime_activation",
+    primary_target: dict | None = None,
+    secondary_targets: list[dict] | None = None,
+):
+    from app.core.acquisition import lifecycle
+
+    return await lifecycle.create_proposal(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        proposal_kind=proposal_kind,
+        gap_id=gap_id,
+        recommendation_id=recommendation_id,
+        title=f"{prefix} proposal",
+        reason="Deterministic eval proposal.",
+        evidence={"prefix": prefix},
+        risk_level="safe",
+        permission_bundle=_acquisition_eval_permission_bundle(),
+        primary_target=(primary_target or _acquisition_eval_target()) if proposal_kind == "runtime_activation" else None,
+        secondary_targets=secondary_targets or [],
+        development_handoff={"kind": "development_patch_proposal"} if proposal_kind == "development_patch_proposal" else None,
+        verification_plan={"kind": "deterministic_eval"},
+        rollback_plan={"disable": True},
+        user_visible_effect="A reviewed capability can be activated after verification.",
+        idempotency_key=f"{prefix}:proposal:{uuid.uuid4().hex}",
+    )
+
+
+class _AcquisitionEvalActivationHooks:
+    def __init__(self, *, fail_roles: set[str] | None = None) -> None:
+        self.fail_roles = fail_roles or set()
+        self.calls: list[str] = []
+
+    async def activate_target(
+        self,
+        db,
+        *,
+        proposal,
+        target,
+        approved_hash: str,
+        idempotency_key: str | None,
+    ):
+        from app.core.acquisition.activation import TargetActivationResult
+
+        role = str((target.activation_result or {}).get("role") or "secondary")
+        self.calls.append(f"{role}:{target.target_name}")
+        if role in self.fail_roles:
+            return TargetActivationResult(
+                success=False,
+                error_code=f"{role.upper()}_FAILED",
+                error_message=f"{role} activation failed",
+                evidence={"role": role, "eval": True},
+            )
+        return TargetActivationResult(
+            success=True,
+            activated_resource_ref={
+                "kind": target.target_type,
+                "name": target.target_name,
+                "manifest_ref": f"{target.target_type}:{target.target_name}",
+            },
+            runtime_session_ref={"session_id": f"eval-session-{target.target_name}"},
+            evidence={"role": role, "eval": True, "runtime_side_effects": False},
+        )
+
+
+async def run_capability_acquisition_probe(
+    task: dict,
+    tenant_id: str,
+    llm_gateway: LLMGateway,
+) -> dict:
+    """Run deterministic V3 Capability Acquisition Layer assertions."""
+
+    start = time.monotonic()
+    prefix = f"qa-v3-acquisition-{task['id']}-{uuid.uuid4().hex[:8]}"
+    tenant_uuid = uuid.UUID(str(tenant_id))
+
+    from fastapi import HTTPException
+    from sqlalchemy import func, select
+
+    from app.api.deps import _async_session_factory
+    from app.core.acquisition import lifecycle
+    from app.core.acquisition.activation import approve_activation, run_activation_saga
+    from app.core.acquisition.development_patch import record_development_patch_proposal
+    import app.core.acquisition.facade as acquisition_facade
+    from app.core.acquisition.rollback import rollback_activation
+    from app.core.acquisition.verification import verify_proposal
+    from app.core.planning_issues.service import (
+        classify_runtime_issue,
+        create_runtime_planning_issue,
+    )
+    from app.models.acquisition import (
+        AcquisitionAnalysisJob,
+        ActivationTarget,
+        CapabilityGap,
+    )
+
+    evidence: dict = {"case": task.get("case"), "prefix": prefix}
+    old_acquisition_enabled = settings.acquisition_enabled
+    old_api_runtime_enabled = settings.acquisition_api_runtime_enabled
+    user_uuid: uuid.UUID | None = None
+
+    async with _async_session_factory() as db:
+        try:
+            user, _ = await _capability_eval_user(db, tenant_uuid, prefix)
+            user_uuid = uuid.UUID(str(user.id))
+            case = task.get("case")
+
+            if case == "capability_gap_train_query":
+                classification = lifecycle.classify_failure_for_gap("requires_paid_api")
+                first = await lifecycle.record_failure(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    failure_class="requires_paid_api",
+                    source_kind="eval",
+                    source_run_id=f"{prefix}-train-run-1",
+                    dedupe_key=f"{prefix}:train-search",
+                    title="Train ticket search needs acquired capability",
+                    description="Public train search needs a stable acquired capability.",
+                    evidence={"domain": "train_search"},
+                    idempotency_key=f"{prefix}:train-gap-1",
+                )
+                second = await lifecycle.record_failure(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    failure_class="requires_paid_api",
+                    source_kind="eval",
+                    source_run_id=f"{prefix}-train-run-2",
+                    dedupe_key=f"{prefix}:train-search",
+                    title="Train ticket search needs acquired capability",
+                    description="Public train search needs a stable acquired capability.",
+                    evidence={"domain": "train_search"},
+                    idempotency_key=f"{prefix}:train-gap-2",
+                )
+                evidence.update(
+                    {
+                        "classification": classification.__dict__,
+                        "gap_type": getattr(second, "gap_type", None),
+                        "occurrence_count": getattr(second, "occurrence_count", None),
+                    }
+                )
+                passed = (
+                    first is not None
+                    and second is not None
+                    and classification.should_create_gap
+                    and second.gap_type == "missing_api"
+                    and second.occurrence_count == 2
+                )
+                reason = "train-query failure became a deduped missing_api Capability Gap"
+
+            elif case == "public_weather_api_exploration":
+                gap = await _acquisition_eval_gap(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    gap_type="missing_api",
+                    title="Missing public weather API",
+                )
+                exploration = await lifecycle.start_exploration(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    source_run_id=f"{prefix}-weather-exploration",
+                    strategy="web_fetch",
+                    risk_level="safe",
+                    bounds={"read_only": True, "network_scope": "public_web"},
+                    idempotency_key=f"{prefix}:weather-exploration",
+                )
+                started_status = exploration.status
+                completed = await lifecycle.complete_exploration(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    exploration_id=exploration.id,
+                    status="succeeded",
+                    result_summary="Fetched public weather data.",
+                    idempotency_key=f"{prefix}:weather-complete",
+                )
+                await db.refresh(gap)
+                evidence.update({"exploration_status": completed.status, "gap_status": gap.status})
+                passed = (
+                    started_status == "running"
+                    and completed.status == "succeeded"
+                    and gap.status == "explored_success"
+                )
+                reason = "low-risk public exploration auto-ran and persisted success"
+
+            elif case == "safe_exploration_high_risk_block":
+                gap = await _acquisition_eval_gap(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    gap_type="unsupported_external_action",
+                    title="High-risk external write",
+                )
+                decision = lifecycle.evaluate_exploration_bounds(
+                    {
+                        "read_only": False,
+                        "external_write": True,
+                        "uses_credentials": True,
+                        "browser_automation": True,
+                    }
+                )
+                error_code = None
+                try:
+                    await lifecycle.start_exploration(
+                        db,
+                        tenant_id=tenant_uuid,
+                        user_id=user_uuid,
+                        gap_id=gap.id,
+                        source_run_id=f"{prefix}-blocked-exploration",
+                        strategy="browser_probe",
+                        risk_level="high_risk",
+                        bounds={
+                            "read_only": False,
+                            "external_write": True,
+                            "uses_credentials": True,
+                            "browser_automation": True,
+                        },
+                        idempotency_key=f"{prefix}:blocked-exploration",
+                    )
+                except HTTPException as exc:
+                    error_code = _http_error_code(exc)
+                evidence.update({"bounds": decision.__dict__, "error_code": error_code})
+                passed = decision.requires_approval and error_code == "EXPLORATION_APPROVAL_REQUIRED"
+                reason = "high-risk exploration required explicit approval"
+
+            elif case == "workspace_connector_recommendation":
+                gap = await lifecycle.record_failure(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    failure_class="requires_host_filesystem",
+                    source_kind="eval",
+                    source_run_id=f"{prefix}-workspace",
+                    dedupe_key=f"{prefix}:workspace",
+                    title="Local folder access needed",
+                    description="The task needs approved host file access.",
+                    evidence={"requested_path": "C:/Users/me/Documents"},
+                    idempotency_key=f"{prefix}:workspace-gap",
+                )
+                recommendation = await _acquisition_eval_recommendation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    prefix=prefix,
+                    recommendation_type="workspace_connector_recommendation",
+                    target_type="workspace_connector",
+                )
+                target_types = [item.get("target_type") for item in recommendation.candidate_targets]
+                evidence.update({"gap_type": gap.gap_type, "recommendation_type": recommendation.recommendation_type, "target_types": target_types})
+                passed = gap.gap_type == "missing_workspace_access" and "workspace_connector" in target_types
+                reason = "host file access became a Workspace Connector recommendation"
+
+            elif case == "browser_automation_recommendation":
+                gap = await lifecycle.record_failure(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    failure_class="requires_browser_automation",
+                    source_kind="eval",
+                    source_run_id=f"{prefix}-browser",
+                    dedupe_key=f"{prefix}:browser",
+                    title="Browser automation needed",
+                    description="The task needs browser automation with confirmation.",
+                    evidence={"external_write": True},
+                    idempotency_key=f"{prefix}:browser-gap",
+                )
+                recommendation = await _acquisition_eval_recommendation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    prefix=prefix,
+                    recommendation_type="browser_automation_recommendation",
+                    target_type="browser_automation",
+                )
+                decision = lifecycle.evaluate_exploration_bounds(
+                    {"read_only": False, "browser_automation": True, "external_write": True}
+                )
+                evidence.update(
+                    {
+                        "gap_type": gap.gap_type,
+                        "recommendation_type": recommendation.recommendation_type,
+                        "requires_approval": decision.requires_approval,
+                    }
+                )
+                passed = (
+                    gap.gap_type == "missing_browser_automation"
+                    and recommendation.recommendation_type == "browser_automation_recommendation"
+                    and decision.requires_approval
+                )
+                reason = "browser automation need became approval-gated recommendation"
+
+            elif case == "activation_state_machine":
+                gap = await _acquisition_eval_gap(db, tenant_id=tenant_uuid, user_id=user_uuid, prefix=prefix)
+                recommendation = await _acquisition_eval_recommendation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    prefix=prefix,
+                )
+                proposal = await _acquisition_eval_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    recommendation_id=recommendation.id,
+                    prefix=prefix,
+                )
+                pre_verify_error = None
+                try:
+                    await approve_activation(
+                        db,
+                        tenant_id=tenant_uuid,
+                        user_id=user_uuid,
+                        proposal_id=proposal.id,
+                        approved_hash="sha256:stale",
+                        idempotency_key=f"{prefix}:approve-before-verify",
+                    )
+                except HTTPException as exc:
+                    pre_verify_error = _http_error_code(exc)
+                verification = await verify_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    verification_kind="contract",
+                    input_fixture={"city": "Wuxi"},
+                    expected_result={"ok": True},
+                    actual_result={"ok": True},
+                    artifact_refs=[{"artifact_id": f"{prefix}-verification", "digest": "sha256:evidence"}],
+                    idempotency_key=f"{prefix}:verify",
+                )
+                approved = await approve_activation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    approved_hash=verification.verified_snapshot_hash,
+                    idempotency_key=f"{prefix}:approve-after-verify",
+                )
+                evidence.update(
+                    {
+                        "pre_verify_error": pre_verify_error,
+                        "verified_hash": verification.verified_snapshot_hash,
+                        "proposal_status": approved.status,
+                        "activation_snapshot_hash": approved.activation_snapshot_hash,
+                    }
+                )
+                passed = (
+                    pre_verify_error is not None
+                    and approved.status == "activation_approved"
+                    and approved.activation_snapshot_hash == verification.verified_snapshot_hash
+                )
+                reason = "activation approval is bound to verified snapshot hash"
+
+            elif case == "partial_activation_rollback":
+                gap = await _acquisition_eval_gap(db, tenant_id=tenant_uuid, user_id=user_uuid, prefix=prefix)
+                recommendation = await _acquisition_eval_recommendation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    prefix=prefix,
+                )
+                secondary = _acquisition_eval_target(name=f"{prefix}-secondary-worker")
+                proposal = await _acquisition_eval_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    recommendation_id=recommendation.id,
+                    prefix=prefix,
+                    secondary_targets=[secondary],
+                )
+                verification = await verify_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    actual_result={"ok": True},
+                    artifact_refs=[{"artifact_id": f"{prefix}-partial-verify", "digest": "sha256:evidence"}],
+                    idempotency_key=f"{prefix}:partial-verify",
+                )
+                await approve_activation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    approved_hash=verification.verified_snapshot_hash,
+                    idempotency_key=f"{prefix}:partial-approve",
+                )
+                hooks = _AcquisitionEvalActivationHooks(fail_roles={"secondary"})
+                saga = await run_activation_saga(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    approved_hash=verification.verified_snapshot_hash,
+                    idempotency_key=f"{prefix}:partial-saga",
+                    hooks=hooks,
+                )
+                saga_status = saga.status
+                rollback = await rollback_activation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    reason="eval rollback",
+                    idempotency_key=f"{prefix}:rollback",
+                )
+                targets = list(
+                    (
+                        await db.execute(
+                            select(ActivationTarget).where(ActivationTarget.proposal_id == proposal.id)
+                        )
+                    ).scalars()
+                )
+                target_statuses = sorted(target.activation_status for target in targets)
+                rollback_target_results = list(rollback.target_results or [])
+                evidence.update(
+                    {
+                        "saga_status": saga_status,
+                        "rollback_status": rollback.status,
+                        "target_statuses": target_statuses,
+                        "rollback_target_result_count": len(rollback_target_results),
+                    }
+                )
+                passed = (
+                    saga_status == "partial_activation"
+                    and rollback.status == "rolled_back"
+                    and bool(target_statuses)
+                    and all(status == "rolled_back" for status in target_statuses)
+                    and bool(rollback_target_results)
+                )
+                reason = "partial activation can be rolled back with target compensation"
+
+            elif case == "development_patch_proposal":
+                gap = await _acquisition_eval_gap(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    prefix=prefix,
+                    gap_type="requires_product_change",
+                    title="Self-modification patch needed",
+                )
+                recommendation = await _acquisition_eval_recommendation(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    prefix=prefix,
+                    recommendation_type="development_patch_recommendation",
+                    target_type="api_tool",
+                )
+                proposal = await _acquisition_eval_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    gap_id=gap.id,
+                    recommendation_id=recommendation.id,
+                    prefix=prefix,
+                    proposal_kind="development_patch_proposal",
+                )
+                patch = await record_development_patch_proposal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    proposal_id=proposal.id,
+                    base_git_commit="eval-base",
+                    patch_artifact_ref=f"artifact://{uuid.uuid4()}",
+                    patch_digest="sha256:" + "a" * 64,
+                    test_plan_ref="artifact://test-plan",
+                    rollback_plan_ref="artifact://rollback-plan",
+                    review_checklist_ref="artifact://review-checklist",
+                    idempotency_key=f"{prefix}:patch",
+                )
+                target_count = (
+                    await db.execute(
+                        select(func.count()).select_from(ActivationTarget).where(ActivationTarget.proposal_id == proposal.id)
+                    )
+                ).scalar_one()
+                evidence.update(
+                    {
+                        "proposal_kind": proposal.proposal_kind,
+                        "primary_target": proposal.primary_target,
+                        "target_count": int(target_count),
+                        "working_tree_mutation_allowed": patch.working_tree_mutation_allowed,
+                    }
+                )
+                passed = (
+                    proposal.proposal_kind == "development_patch_proposal"
+                    and proposal.primary_target is None
+                    and int(target_count) == 0
+                    and patch.working_tree_mutation_allowed is False
+                )
+                reason = "development patch proposal remains a non-runtime handoff"
+
+            elif case == "acquisition_disabled_fallback":
+                settings.acquisition_enabled = False
+                settings.acquisition_api_runtime_enabled = False
+                await acquisition_facade.record_code_as_action_exploration(
+                    db=db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    source_run_id=f"{prefix}-disabled-code",
+                    tool_call_id=f"{prefix}-tool-call",
+                    script="print(42)",
+                    status="succeeded",
+                    risk_level="safe",
+                    stdout="42\n",
+                )
+                job = await acquisition_facade.enqueue_runtime_analysis(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    source_run_id=f"{prefix}-disabled-stream",
+                    source_kind="conversation_stream",
+                    payload={"status": "completed"},
+                )
+                gap_count = (
+                    await db.execute(
+                        select(func.count()).select_from(CapabilityGap).where(CapabilityGap.source_run_id == f"{prefix}-disabled-code")
+                    )
+                ).scalar_one()
+                job_count = (
+                    await db.execute(
+                        select(func.count()).select_from(AcquisitionAnalysisJob).where(
+                            AcquisitionAnalysisJob.source_run_id == f"{prefix}-disabled-stream"
+                        )
+                    )
+                ).scalar_one()
+                evidence.update(
+                    {
+                        "job": job,
+                        "gap_count": int(gap_count),
+                        "job_count": int(job_count),
+                        "api_runtime_enabled": acquisition_facade.runtime_capability_enabled("api_tool"),
+                        "code_as_action_enabled": acquisition_facade.runtime_capability_enabled("code_as_action"),
+                    }
+                )
+                passed = (
+                    job is None
+                    and int(gap_count) == 0
+                    and int(job_count) == 0
+                    and acquisition_facade.runtime_capability_enabled("api_tool") is False
+                    and acquisition_facade.runtime_capability_enabled("code_as_action") is True
+                )
+                reason = "disabled acquisition skips acquisition records while base runtime remains available"
+
+            elif case == "runtime_planning_issue_classification":
+                classification = classify_runtime_issue(
+                    failure_reason="planner missed existing tool",
+                    available_capability_ref={"tool_name": "weather_get"},
+                )
+                issue = await create_runtime_planning_issue(
+                    db,
+                    tenant_id=tenant_uuid,
+                    user_id=user_uuid,
+                    source_run_id=f"{prefix}-planner",
+                    issue_type=classification.issue_type or "planner_missed_existing_tool",
+                    available_capability_ref={"tool_name": "weather_get"},
+                    missed_signal="Existing weather tool was available.",
+                    planner_decision_summary="Agent tried generic search.",
+                    expected_decision_summary="Agent should call weather_get.",
+                    severity=classification.severity,
+                    evidence={"prefix": prefix},
+                )
+                gap_count = (
+                    await db.execute(
+                        select(func.count()).select_from(CapabilityGap).where(
+                            CapabilityGap.source_run_id == f"{prefix}-planner"
+                        )
+                    )
+                ).scalar_one()
+                evidence.update(
+                    {
+                        "should_create_gap": classification.should_create_gap,
+                        "issue_type": issue.issue_type,
+                        "gap_count": int(gap_count),
+                    }
+                )
+                passed = (
+                    classification.should_create_gap is False
+                    and issue.issue_type == "planner_missed_existing_tool"
+                    and int(gap_count) == 0
+                )
+                reason = "planner miss became RuntimePlanningIssue, not Acquisition Gap"
+
+            else:
+                passed = False
+                reason = f"Unknown capability acquisition probe case: {case}"
+
+            return _capability_probe_result(
+                task,
+                start=start,
+                passed=bool(passed),
+                reason=reason,
+                evidence=evidence,
+            )
+        except Exception as exc:
+            error = safe_error_message(exc, "Capability acquisition probe")
+            return _capability_probe_result(
+                task,
+                start=start,
+                passed=False,
+                reason="capability acquisition probe raised an exception",
+                evidence=evidence,
+                error=error,
+            )
+        finally:
+            settings.acquisition_enabled = old_acquisition_enabled
+            settings.acquisition_api_runtime_enabled = old_api_runtime_enabled
+            await db.rollback()
+
+
 # ---------------------------------------------------------------------------
 # Task runner
 # ---------------------------------------------------------------------------
+
+def _approved_eval_stdio_mcp_config() -> dict[str, Any]:
+    """Return the compose-approved isolated MCP runtime config used by eval."""
+
+    return {
+        "transport": "stdio",
+        "runtime_kind": "isolated_stdio",
+        "command": "python",
+        "args": ["/runtime/echo_mcp_server.py"],
+        "env_secret_refs": [],
+        "egress_policy": {},
+        "stdio_runtime_image_ref": "chainless-mcp-runtime:w4-1-quality",
+        "stdio_runtime_url": os.environ.get("MCP_RUNTIME_URL", "http://mcp-runtime:9101"),
+        "stdio_command_provenance": {
+            "source": "activation_target",
+            "approved_by": "admin",
+            "approved_at": "2026-06-22T00:00:00Z",
+        },
+        "stdio_package_digest": "sha256:" + "a" * 64,
+        "stdio_filesystem_policy": {
+            "allow_docker_socket": False,
+            "allow_backend_fs": False,
+            "allow_host_fs": False,
+            "mounts": [],
+        },
+        "stdio_network_policy": {
+            "mode": "none",
+            "allowed_hosts": [],
+            "deny_private_networks": True,
+        },
+        "stdio_resource_limits": {
+            "memory_mb": 256,
+            "cpus": 0.5,
+            "pids": 64,
+            "timeout_seconds": 30,
+        },
+        "stdio_max_session_seconds": 30,
+        "stdio_max_output_bytes": 65536,
+        "stdio_restart_policy": {"max_restarts": 1},
+    }
+
 
 async def run_single_task(
     llm_gateway: LLMGateway,
@@ -1195,6 +1983,8 @@ async def run_single_task(
     """Run one eval task and return results."""
     if task.get("runner") == "capability_layer_probe":
         return await run_capability_layer_probe(task, tenant_id, llm_gateway)
+    if task.get("runner") == "capability_acquisition_probe":
+        return await run_capability_acquisition_probe(task, tenant_id, llm_gateway)
     if task.get("runner") == "parallel_subagent_runtime_probe":
         start = time.monotonic()
         try:
@@ -1276,12 +2066,11 @@ async def run_single_task(
             "error": None,
             "judge_result": None,
         }
-    if task.get("runner") == "mcp_filesystem_runtime_probe":
+    if task.get("runner") in {"mcp_isolated_runtime_probe", "mcp_filesystem_runtime_probe"}:
         start = time.monotonic()
         client = MCPToolClient(
-            "fs",
-            command=sys.executable,
-            args=["scripts/mcp_filesystem_server.py"],
+            "eval",
+            **_approved_eval_stdio_mcp_config(),
         )
         error = None
         evidence = {"passed": False}
@@ -1290,20 +2079,21 @@ async def run_single_task(
             tools = client.get_tool_definitions()
             tool_names = [tool["function"]["name"] for tool in tools]
             raw_result = await client.call_tool(
-                "mcp__fs__list_directory",
-                {"path": "scripts"},
+                "mcp__eval__echo",
+                {"text": "eval-runtime-ok"},
             )
-            listing = json.loads(raw_result)
+            content = json.loads(raw_result)
             evidence = {
                 "passed": (
-                    "mcp__fs__list_directory" in tool_names
-                    and "mcp_filesystem_server.py" in listing
+                    "mcp__eval__echo" in tool_names
+                    and content == ["eval-runtime-ok"]
                 ),
                 "tool_names": tool_names,
-                "listed": listing,
+                "content": content,
+                "runtime_kind": "isolated_stdio",
             }
         except Exception as exc:
-            error = safe_error_message(exc, "MCP filesystem runtime probe")
+            error = safe_error_message(exc, "MCP isolated runtime probe")
             evidence = {"passed": False, "error": error}
         finally:
             await client.disconnect()
@@ -1314,12 +2104,12 @@ async def run_single_task(
             "judge": None,
             "passed": evidence["passed"],
             "reason": (
-                "MCP filesystem tool discovered and invoked"
+                "MCP isolated runtime tool discovered and invoked"
                 if evidence["passed"]
-                else "MCP filesystem runtime evidence failed"
+                else "MCP isolated runtime evidence failed"
             ),
             "response": "",
-            "tool_calls": ["mcp__fs__list_directory"],
+            "tool_calls": ["mcp__eval__echo"],
             "confirmations_required": [],
             "tool_log": [{"type": "runtime_evidence", "evidence": evidence}],
             "tokens_used": 0,
@@ -1541,6 +2331,7 @@ async def main():
 
     # Save results
     result_path = RESULTS_DIR / f"{args.suite}_results.json"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "results": results}, f, indent=2, ensure_ascii=False)
     logger.info("Results saved to %s", result_path)

@@ -799,6 +799,85 @@
   Screenshots:
   `01-chat-acquisition-panel.png` and `02-settings-acquisition.png`.
 
+## Workstream 9 Evidence
+
+- 2026-06-24: W9.1 RED confirmed before implementation:
+  `docker compose exec -T backend python scripts/run-eval.py --suite
+  capability_acquisition --json --min-pass-rate 1.0` initially failed because
+  `backend/tests/eval/tasks/capability_acquisition.json` was missing.
+- 2026-06-24: Added `backend/tests/eval/tasks/capability_acquisition.json`
+  with ten deterministic cases: train query Gap, public weather API
+  exploration, high-risk exploration approval block, Workspace Connector
+  recommendation, Browser Automation recommendation, activation state machine,
+  partial activation rollback, development patch proposal, disabled
+  acquisition fallback, and RuntimePlanningIssue classification.
+- 2026-06-24: Added `capability_acquisition_probe` to
+  `backend/scripts/run-eval.py`. First GREEN attempt exposed two false
+  negatives where SQLAlchemy reused the same ORM instance after later state
+  transitions. Fix captured `started_status` before exploration completion and
+  `saga_status` before rollback; reviewer confirmed this preserved intended
+  pre-transition evidence rather than masking a core bug.
+- 2026-06-24: W9.1 final targeted verification passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_acquisition_agent_integration.py"` -> `9 passed, 2 warnings`.
+- 2026-06-24: W9.1 final eval passed after rebuilding main backend:
+  `docker compose exec -T backend python scripts/run-eval.py --suite
+  capability_acquisition --json --min-pass-rate 1.0` -> `10 / 10`, pass rate
+  `100.00%`.
+- 2026-06-24: W9.1 read-only subagent review found no Critical or Important
+  findings. Minor feedback was addressed by removing an unused import and
+  strengthening partial rollback eval success to require rolled-back target
+  statuses and rollback target results. The reviewer was closed after
+  completion.
+- 2026-06-24: First full backend W9.2 run failed with three owner-local
+  issues: `run-eval.py` created results directories at import time under the
+  read-only `/repo` test mount; eval's old MCP runtime probe lacked the W4
+  `isolated_stdio` approval payload; and the multitenant concurrency test still
+  registered legacy unapproved stdio. Fixes moved `RESULTS_DIR.mkdir()` to the
+  result write path and updated eval/tests to use the compose-approved MCP
+  runtime echo server.
+- 2026-06-24: Targeted regressions passed after the MCP/eval fixes:
+  `tests/test_eval_contract.py::test_w8_deterministic_eval_runners_return_hard_runtime_evidence
+  tests/test_provider_runtime_consumers.py::test_eval_consumer_passes_tenant_scope`
+  -> `2 passed`; `tests/test_multitenant_concurrency.py::test_three_tenants_concurrently_isolate_every_v1_resource_family`
+  -> `1 passed`.
+- 2026-06-24: W9.2 full backend suite passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q"`
+  -> `792 passed, 5 skipped, 3 warnings`.
+- 2026-06-24: W9.2 live Docker connector/runtime verification passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml --profile
+  live-docker run --rm -e PYTHONPATH=/repo/backend backend-test-live sh -lc
+  "cd /repo/backend && pytest -q tests/test_workspace_connectors.py
+  tests/test_mcp_runtime_isolation.py -m live_docker"` -> `1 passed,
+  55 deselected, 2 warnings`.
+- 2026-06-24: W9.2 frontend verification passed:
+  `docker compose run --rm --no-deps frontend sh -lc "npm run lint && npm run
+  build"` -> eslint passed; Next build compiled, typechecked, and prerendered
+  `/`, `/_not-found`, `/chat`, `/login`, and `/settings`.
+- 2026-06-24: W9.2 eval verification passed:
+  `capability_acquisition` -> `10 / 10`, pass rate `100.00%`;
+  `spec_complete` -> `4 / 4`, pass rate `100.00%`.
+- 2026-06-24: W9.2 compose smoke passed after restoring main compose:
+  `docker compose ps` showed backend, MCP runtime, Browser runtime, nginx, DB,
+  Redis, sandbox proxy, sandbox, frontend, and worker running; direct container
+  health probes returned HTTP 200 for backend, MCP runtime, and Browser runtime.
+- 2026-06-24: W9.2 Windows browser QA passed:
+  `powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url
+  http://localhost -Browser chrome -Headless -Suite capability-acquisition
+  -TimeoutMs 240000` -> `ok: true`. Report:
+  `.gstack/qa-reports/local/capability-acquisition-2026-06-24T08-12-59-142Z`.
+- 2026-06-24: W9.2 metrics smoke passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_acquisition_observability.py"` -> `10 passed, 2 warnings`.
+- 2026-06-24: W9.2 hygiene passed:
+  `git diff --check` returned no whitespace errors, only CRLF warnings.
+- 2026-06-24: W9.3 added durable architecture documentation at
+  `docs/architecture/capability-acquisition-layer.md` and updated
+  `docs/aegis/INDEX.md`.
+
 ## Pending Evidence
 
-- None for Workstream 8.
+- None for Workstream 9.

@@ -18,9 +18,9 @@
     "prompt": "Verify mcp__fs__list_directory defaults to risky unless explicitly pre-authorized."
   },
   {
-    "id": "mcp-filesystem-runtime-contract",
-    "runner": "mcp_filesystem_runtime_probe",
+    "id": "mcp-isolated-runtime-contract",
+    "runner": "mcp_isolated_runtime_probe",
     "pass_criteria": "runtime_evidence",
-    "prompt": "Start a real filesystem MCP server, discover mcp__fs__list_directory, invoke it, and verify the result."
+    "prompt": "Start a real approved isolated MCP runtime, discover mcp__eval__echo, invoke it, and verify the result."
   }
 ]

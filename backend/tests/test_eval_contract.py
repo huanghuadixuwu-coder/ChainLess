@@ -35,7 +35,7 @@ def test_spec_complete_suite_contains_deterministic_w8_contract_probes() -> None
     assert "parallel_subagent_runtime_probe" in runners
     assert "tool_schema_probe" in runners
     assert "mcp_default_risk_probe" in runners
-    assert "mcp_filesystem_runtime_probe" in runners
+    assert "mcp_isolated_runtime_probe" in runners
 
 
 @pytest.mark.asyncio
@@ -69,8 +69,8 @@ async def test_w8_deterministic_eval_runners_return_hard_runtime_evidence() -> N
         object(),
         {
             "id": "mcp-runtime",
-            "prompt": "validate filesystem mcp runtime",
-            "runner": "mcp_filesystem_runtime_probe",
+            "prompt": "validate isolated mcp runtime",
+            "runner": "mcp_isolated_runtime_probe",
             "pass_criteria": "runtime_evidence",
         },
         tenant_id="tenant-a",
@@ -81,8 +81,9 @@ async def test_w8_deterministic_eval_runners_return_hard_runtime_evidence() -> N
     assert mcp_result["passed"] is True
     assert mcp_result["tool_log"][0]["evidence"]["risk"] == "risky"
     assert mcp_runtime_result["passed"] is True
-    assert "mcp__fs__list_directory" in mcp_runtime_result["tool_calls"]
-    assert "mcp_filesystem_server.py" in mcp_runtime_result["tool_log"][0]["evidence"]["listed"]
+    assert "mcp__eval__echo" in mcp_runtime_result["tool_calls"]
+    assert mcp_runtime_result["tool_log"][0]["evidence"]["runtime_kind"] == "isolated_stdio"
+    assert mcp_runtime_result["tool_log"][0]["evidence"]["content"] == ["eval-runtime-ok"]
 
 
 def test_eval_workflow_runs_required_w8_tests_and_threshold_gate() -> None:

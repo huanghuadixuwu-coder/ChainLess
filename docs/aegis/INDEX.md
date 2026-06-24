@@ -33,3 +33,7 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-06-19 | work | docs/aegis/work/2026-06-17-v2-capability-layer/proof-bundle.md | 2026-06-17-v2-capability-layer proof bundle |
 | 2026-06-20 | spec | docs/aegis/specs/2026-06-20-v3-capability-acquisition-layer-design.md | Chainless V3 Capability Acquisition Layer Design Spec |
 | 2026-06-22 | plan | docs/aegis/plans/2026-06-22-v3-capability-acquisition-layer-execution-plan.md | Chainless V3 Capability Acquisition Layer Execution Plan |
+| 2026-06-22 | work | docs/aegis/work/2026-06-22-v3-capability-acquisition-layer/10-intent.md | Chainless V3 Capability Acquisition Layer intent |
+| 2026-06-22 | work | docs/aegis/work/2026-06-22-v3-capability-acquisition-layer/20-checkpoint.md | Chainless V3 Capability Acquisition Layer checkpoint |
+| 2026-06-22 | work | docs/aegis/work/2026-06-22-v3-capability-acquisition-layer/90-evidence.md | Chainless V3 Capability Acquisition Layer evidence |
+| 2026-06-24 | architecture | docs/architecture/capability-acquisition-layer.md | Chainless V3 Capability Acquisition Layer Architecture |

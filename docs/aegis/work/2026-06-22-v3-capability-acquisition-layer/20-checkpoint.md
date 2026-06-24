@@ -2,7 +2,8 @@
 
 ## TodoCheckpointDraft
 
-Current todo: Workstream 6 complete; ready for Workstream 7.
+Current todo: Workstream 9 complete; ready for final commit and push after
+final verification review.
 
 Completed todos:
 - Plan engineering review completed and patched.
@@ -491,10 +492,12 @@ Completed todos:
   during W6.2 closure.
 
 Active slice:
-- Workstream 7 complete; ready for Workstream 8 after user approval.
+- Workstream 9 complete; final review/commit/push remains.
 
 Next step:
-- Enter Workstream 8 only after user approval or next instruction.
+- Run final status/doc checks, restore the main compose stack after any test
+  compose replacement, then commit and push because the user explicitly
+  requested it.
 
 Blocked-on:
 - None.
@@ -662,3 +665,27 @@ Evidence state:
   risk: browser QA currently covered empty acquisition data plus runtime controls
   absence; seeded activated-target rollback/control interaction remains a W9
   full-QA/eval candidate if fixture data is added.
+- W9.1 added `backend/tests/eval/tasks/capability_acquisition.json` and
+  deterministic `capability_acquisition_probe` cases in
+  `backend/scripts/run-eval.py`. Initial eval failures were false negatives
+  from SQLAlchemy identity-map state mutation after lifecycle transitions; the
+  probe now snapshots pre-completion and pre-rollback state before later
+  transitions mutate the same ORM object.
+- W9.1 final eval verification passed:
+  `docker compose exec -T backend python scripts/run-eval.py --suite
+  capability_acquisition --json --min-pass-rate 1.0` -> `10 / 10`, pass rate
+  `100.00%`.
+- W9.2 full backend verification initially exposed stale eval/test contracts:
+  `run-eval.py` created results directories during import in a read-only test
+  mount, and old MCP eval/multitenant tests still attempted unapproved local
+  stdio. Fixes moved results directory creation to result writing and updated
+  eval/tests to use the W4 isolated MCP stdio runtime approval payload.
+- W9.2 final verification passed: full backend `792 passed, 5 skipped`, live
+  Docker connector/runtime `1 passed, 55 deselected`, frontend lint/build
+  passed, `capability_acquisition` eval `10 / 10`, `spec_complete` eval
+  `4 / 4`, acquisition observability `10 passed`, compose health smoke
+  returned HTTP 200 for backend/MCP runtime/Browser runtime, `git diff --check`
+  had no whitespace errors beyond CRLF warnings, and Windows browser QA
+  `capability-acquisition` returned `ok: true`.
+- W9.3 added `docs/architecture/capability-acquisition-layer.md` and indexed
+  V3 work/evidence records in `docs/aegis/INDEX.md`.

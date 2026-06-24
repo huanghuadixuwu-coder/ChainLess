@@ -34,6 +34,44 @@ PRODUCT_TIMEOUT_SECONDS = 5.0
 P95_LIMIT_MS = 1000.0
 
 
+def _approved_stdio_mcp_config() -> dict:
+    return {
+        "transport": "stdio",
+        "runtime_kind": "isolated_stdio",
+        "command": "python",
+        "args": ["/runtime/echo_mcp_server.py"],
+        "env_secret_refs": [],
+        "egress_policy": {},
+        "stdio_runtime_image_ref": "chainless-mcp-runtime:w4-1-quality",
+        "stdio_command_provenance": {
+            "source": "activation_target",
+            "approved_by": "admin",
+            "approved_at": "2026-06-22T00:00:00Z",
+        },
+        "stdio_package_digest": "sha256:" + "a" * 64,
+        "stdio_filesystem_policy": {
+            "allow_docker_socket": False,
+            "allow_backend_fs": False,
+            "allow_host_fs": False,
+            "mounts": [],
+        },
+        "stdio_network_policy": {
+            "mode": "none",
+            "allowed_hosts": [],
+            "deny_private_networks": True,
+        },
+        "stdio_resource_limits": {
+            "memory_mb": 256,
+            "cpus": 0.5,
+            "pids": 64,
+            "timeout_seconds": 30,
+        },
+        "stdio_max_session_seconds": 30,
+        "stdio_max_output_bytes": 65536,
+        "stdio_restart_policy": {"max_restarts": 1},
+    }
+
+
 @dataclass
 class TenantSession:
     index: int
@@ -485,11 +523,7 @@ async def _register_source_mcp(
         json={
             "name": resource.mcp_server_name,
             "tool_type": "mcp",
-            "config": {
-                "command": "python",
-                "args": ["scripts/mcp_echo_server.py"],
-                "env": {},
-            },
+            "config": _approved_stdio_mcp_config(),
         },
     )
     _assert_ok(registered, 201)
