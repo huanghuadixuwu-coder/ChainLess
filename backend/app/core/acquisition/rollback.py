@@ -15,6 +15,7 @@ from app.core.audit.service import AuditRecord, add_audit_log
 from app.core.acquisition import repository
 from app.core.acquisition.tool_manifest import hide_target_manifest_refs
 from app.core.capabilities.bounds import validate_bounded_json
+from app.core.observability import increment_acquisition_metric
 from app.models.acquisition import AcquisitionJournalEntry, AcquisitionProposal, ActivationTarget, StandingPermission
 
 
@@ -406,6 +407,8 @@ async def rollback_activation(
             )
         except Exception as exc:  # pragma: no cover - explicit failure results are easier to assert.
             terminate_result = RollbackHookResult(False, {"hook_exception": exc.__class__.__name__}, exc.__class__.__name__, str(exc))
+        if terminate_result.success:
+            increment_acquisition_metric("acquisition_session_cleanups")
         try:
             compensate_result = await rollback_hooks.compensate_target(
                 db,
@@ -431,6 +434,7 @@ async def rollback_activation(
         if target_status == "rolled_back":
             target.activation_status = "rolled_back"
         else:
+            increment_acquisition_metric("acquisition_rollback_failures")
             failure = {
                 "target_id": str(target.id),
                 "terminate_error_code": terminate_result.error_code,

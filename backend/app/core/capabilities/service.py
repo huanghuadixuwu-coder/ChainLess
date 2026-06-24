@@ -613,25 +613,23 @@ async def analyze_run_tail_for_candidates(
     if not signal.should_analyze:
         return None
 
-    payload = _analysis_payload(
-        source_run_id=source_run_id,
-        conversation_id=conversation_id,
-        user_messages=user_messages,
-        assistant_content=assistant_content,
-        signal=signal,
-        provider=provider,
-        tool_events=tool_events or [],
-        artifacts=artifacts or [],
-    )
-    job = await enqueue_run_analysis(
+    job = await enqueue_run_tail_for_candidate_analysis(
         db,
         tenant_id=tenant_uuid,
         user_id=user_uuid,
+        conversation_id=conversation_id,
         source_run_id=source_run_id,
-        source_kind="conversation",
-        payload=payload,
+        user_messages=user_messages,
+        assistant_content=assistant_content,
+        provider=provider,
+        tool_events=tool_events or [],
+        artifacts=artifacts or [],
+        signal=signal,
     )
     await db.commit()
+    if job is None:
+        return None
+    payload = job.payload
 
     try:
         analyzed = await asyncio.wait_for(
@@ -679,6 +677,53 @@ async def analyze_run_tail_for_candidates(
     if not persisted:
         return None
     return _candidate_sse_hint(persisted[0])
+
+
+async def enqueue_run_tail_for_candidate_analysis(
+    db: AsyncSession,
+    *,
+    tenant_id: str | uuid.UUID,
+    user_id: str | uuid.UUID,
+    conversation_id: str,
+    source_run_id: str,
+    user_messages: list[str],
+    assistant_content: str,
+    provider: str = "default",
+    tool_events: list[dict[str, Any]] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    signal: RunAnalysisSignal | None = None,
+) -> CapabilityAnalysisJob | None:
+    """Durably enqueue eligible run-tail analysis without blocking the stream."""
+
+    tenant_uuid = uuid.UUID(str(tenant_id))
+    user_uuid = uuid.UUID(str(user_id))
+    analysis_signal = signal or should_analyze_run(
+        user_messages=user_messages,
+        assistant_messages=[assistant_content],
+        tool_events=tool_events or [],
+        artifacts=artifacts or [],
+    )
+    if not analysis_signal.should_analyze:
+        return None
+
+    payload = _analysis_payload(
+        source_run_id=source_run_id,
+        conversation_id=conversation_id,
+        user_messages=user_messages,
+        assistant_content=assistant_content,
+        signal=analysis_signal,
+        provider=provider,
+        tool_events=tool_events or [],
+        artifacts=artifacts or [],
+    )
+    return await enqueue_run_analysis(
+        db,
+        tenant_id=tenant_uuid,
+        user_id=user_uuid,
+        source_run_id=source_run_id,
+        source_kind="conversation",
+        payload=payload,
+    )
 
 
 async def process_pending_capability_analysis(

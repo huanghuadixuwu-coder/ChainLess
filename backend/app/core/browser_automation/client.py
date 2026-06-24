@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from app.core.observability import increment_acquisition_metric
+
 from .policy import (
     BrowserAutomationPolicyError,
     BrowserAutomationRuntimePolicy,
@@ -247,6 +249,7 @@ class BrowserAutomationRuntimeClient:
         finally:
             if lease is not None:
                 await self.limiter.release(lease, self.policy, reason=cleanup_reason)
+                increment_acquisition_metric("acquisition_session_cleanups")
 
 
 def _confirmation_payload(context: Mapping[str, Any] | None) -> dict[str, Any]:

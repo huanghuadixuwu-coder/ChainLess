@@ -10,6 +10,7 @@ from app.core.capabilities.orchestration import evaluate_stream_worker_policy
 from app.core.capabilities.retrieval import CapabilityContext, CapabilityWorkerMatch
 from app.core.llm.gateway import LLMGateway
 from app.core.sandbox.manager import SandboxManager
+from app.core.workers.acquisition_policy import evaluate_acquired_worker_policy
 from app.core.workers.runtime import execute_worker_run
 from app.models.worker import Worker, WorkerVersion
 
@@ -80,6 +81,48 @@ async def maybe_execute_worker_for_stream(
             )
             return False
         if policy.action != "allow":
+            return False
+
+        acquisition_policy = await evaluate_acquired_worker_policy(
+            worker_db,
+            worker=worker,
+            version=version,
+            input_payload=input_payload,
+            source_run_id=source_run_id,
+        )
+        if acquisition_policy.action == "confirm":
+            await queue.put(
+                (
+                    "worker_notice",
+                    _worker_selection_notice(
+                        worker=worker,
+                        decision=selected,
+                        status="needs_confirmation",
+                        message=(
+                            f"Worker '{worker.name}' requires acquisition permission confirmation; "
+                            "continuing with the normal Agent path."
+                        ),
+                        reason=acquisition_policy.code,
+                    ),
+                )
+            )
+            return False
+        if acquisition_policy.action != "allow":
+            await queue.put(
+                (
+                    "worker_notice",
+                    _worker_selection_notice(
+                        worker=worker,
+                        decision=selected,
+                        status="blocked_by_policy",
+                        message=(
+                            f"Worker '{worker.name}' is blocked by acquisition policy; "
+                            "continuing with the normal Agent path."
+                        ),
+                        reason=acquisition_policy.code,
+                    ),
+                )
+            )
             return False
 
         await queue.put(

@@ -17,8 +17,9 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.acquisition.facade import runtime_capability_enabled
 from app.core.secrets import SecretDecryptionError, decrypt_secret
-from app.models.acquisition import WorkspaceConnector
+from app.models.acquisition import ActivationTarget, WorkspaceConnector
 
 
 _RUNTIME_MATERIALIZED_CONNECTOR_MODE = "read_only"
@@ -168,6 +169,11 @@ async def resolve_mount_bundle(
 ) -> WorkspaceConnectorMountBundle:
     """Resolve enabled user-scoped connectors to a sanitized runtime bundle."""
 
+    if not runtime_capability_enabled("workspace_connector"):
+        raise WorkspaceConnectorMountError(
+            "WORKSPACE_CONNECTOR_RUNTIME_DISABLED",
+            "Workspace Connector runtime is disabled.",
+        )
     if not connector_ids:
         return WorkspaceConnectorMountBundle(schema_version="workspace_connector_mounts.v1", mounts=[])
 
@@ -192,6 +198,12 @@ async def resolve_mount_bundle(
             raise WorkspaceConnectorMountError(
                 "WORKSPACE_CONNECTOR_NOT_FOUND",
                 f"Workspace Connector not found or not accessible for this user: {connector_id}",
+                connector_id=connector_id,
+            )
+        if not await _workspace_connector_visible_to_runtime(db, record):
+            raise WorkspaceConnectorMountError(
+                "WORKSPACE_CONNECTOR_REVOKED",
+                f"Workspace Connector is not active for runtime use; ask the user to approve it again: {connector_id}",
                 connector_id=connector_id,
             )
         if not record.enabled:
@@ -234,6 +246,11 @@ async def resolve_trusted_mount_sources(
 ) -> list[TrustedWorkspaceConnectorMountSource]:
     """Resolve connector generation pins to real host paths for the mount owner only."""
 
+    if not runtime_capability_enabled("workspace_connector"):
+        raise WorkspaceConnectorMountError(
+            "WORKSPACE_CONNECTOR_RUNTIME_DISABLED",
+            "Workspace Connector runtime is disabled.",
+        )
     if not connector_generations:
         return []
 
@@ -317,6 +334,9 @@ async def build_workspace_connector_runtime_context(
         not a write-back surface.
     """
 
+    if not runtime_capability_enabled("workspace_connector"):
+        return None
+
     records = list(
         (
             await db.execute(
@@ -336,6 +356,8 @@ async def build_workspace_connector_runtime_context(
     now = datetime.now(timezone.utc)
     for record in records:
         try:
+            if not await _workspace_connector_visible_to_runtime(db, record):
+                continue
             _raise_if_connector_not_mountable(record, now=now)
             if not record.host_path_secret_ref:
                 raise WorkspaceConnectorMountError(
@@ -381,6 +403,32 @@ async def build_workspace_connector_runtime_context(
         "workspace_connector_trusted_sources": materialized_sources,
         "workspace_connector_sandbox_mount_payload": build_sandbox_mount_payload(bundle),
     }
+
+
+async def _workspace_connector_visible_to_runtime(db: AsyncSession, record: WorkspaceConnector) -> bool:
+    if not record.enabled or record.last_verified_at is None:
+        return False
+    if record.activation_target_id is None:
+        return True
+    target = (
+        await db.execute(
+            select(ActivationTarget).where(
+                ActivationTarget.id == record.activation_target_id,
+                ActivationTarget.tenant_id == record.tenant_id,
+                ActivationTarget.user_id == record.user_id,
+                ActivationTarget.target_type == "workspace_connector",
+                ActivationTarget.activation_status == "active",
+            )
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        return False
+    resource_ref = target.activated_resource_ref if isinstance(target.activated_resource_ref, dict) else {}
+    if resource_ref.get("hidden") is True:
+        return False
+    if resource_ref and resource_ref.get("exposed_to_runtime") is False:
+        return False
+    return True
 
 
 def _raise_if_connector_not_mountable(record: WorkspaceConnector, *, now: datetime) -> None:

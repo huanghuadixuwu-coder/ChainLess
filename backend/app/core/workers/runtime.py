@@ -18,6 +18,7 @@ from app.core.capabilities.policy import (
     risk_for,
     worker_context_for_confirmation,
 )
+from app.core.workers.acquisition_policy import evaluate_acquired_worker_policy
 from app.models.capability import CapabilityCandidate
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 
@@ -71,6 +72,29 @@ async def execute_worker_run(
             reason=blocked_reason,
         )
         await _emit_after_worker_run(worker=worker, result=result, policy_action="block")
+        return result
+
+    acquisition_policy = await evaluate_acquired_worker_policy(
+        db,
+        worker=worker,
+        version=version,
+        input_payload=input_payload,
+        source_run_id=source_run_id,
+        worker_context=worker_context,
+    )
+    if acquisition_policy.action != "allow":
+        result = await _record_blocked_run(
+            db,
+            worker=worker,
+            version=version,
+            input_payload=input_payload,
+            matched_request=matched_request,
+            match_score=match_score,
+            source_run_id=source_run_id,
+            reason=acquisition_policy.code,
+            status="needs_user_confirmation" if acquisition_policy.action == "confirm" else "blocked_by_policy",
+        )
+        await _emit_after_worker_run(worker=worker, result=result, policy_action=acquisition_policy.action)
         return result
 
     policy = evaluate_worker_policy(worker, version, input_payload=input_payload)

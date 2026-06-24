@@ -491,10 +491,10 @@ Completed todos:
   during W6.2 closure.
 
 Active slice:
-- Workstream 7 next.
+- Workstream 7 complete; ready for Workstream 8 after user approval.
 
 Next step:
-- Enter Workstream 7 only after user approval or next instruction.
+- Enter Workstream 8 only after user approval or next instruction.
 
 Blocked-on:
 - None.
@@ -621,3 +621,19 @@ Evidence state:
   risk: `__persisted_args` intentionally carries backend-only raw replay args
   internally; current SSE paths strip double-underscore fields, and future
   direct serializers must preserve that boundary.
+- W7 implementation added the runtime acquisition facade/outbox seam,
+  RuntimePlanningIssue owner, acquired tool manifest enforcement, ARQ
+  acquisition analysis task registration, runtime Worker acquisition policy
+  checks, disabled-mode behavior, and observability metrics.
+- W7 review found and fixed two production boundary issues before closure:
+  durable candidate/acquisition outbox enqueue originally happened after SSE
+  `done`, which could be skipped by clients closing immediately after `done`;
+  API acquired confirmation public args also leaked backend-only
+  `__acquired_tool_manifest_version`. Both were fixed with regressions.
+- W7 accepted for next phase by Docker verification plus final read-only
+  re-review. Evidence included targeted sensitive/manifest tests, W7 runtime
+  and plan-command regressions, candidate outbox regressions, migration
+  roundtrip, `git diff --check`, and frontend no-change check. Residual risk:
+  the legacy admin MCP test route still directly calls the MCP manager for
+  administrative smoke testing; this is outside the acquired Agent runtime and
+  confirmation path reviewed for W7.

@@ -657,6 +657,90 @@
   warnings. Confirmed `git status --short -- frontend` returned no frontend
   changes during W6.2 closure.
 
+## Workstream 7 Evidence
+
+- 2026-06-24: W7 implementation added acquisition facade/outbox integration,
+  RuntimePlanningIssue ownership, per-user acquired tool manifest enforcement,
+  acquisition analysis ARQ scheduling, runtime Worker acquisition policy checks,
+  disabled-mode behavior, and acquisition observability metrics.
+- 2026-06-24: Initial W7 targeted regression verification passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm
+  backend-test pytest -q
+  tests/test_sse_contract.py::test_persisted_confirmation_keeps_raw_args_out_of_message_metadata
+  tests/test_sse_contract.py::test_acquired_mcp_confirmation_public_args_are_redacted_but_persisted_args_remain_executable
+  tests/test_tool_manifest.py::test_acquired_api_runtime_enforces_manifest_version_on_execution
+  tests/test_capability_candidates.py::test_completed_chat_run_persists_inactive_candidate_and_emits_sse_hint
+  tests/test_acquisition_observability.py::test_acquisition_analysis_is_registered_on_arq_worker`
+  -> `5 passed`.
+- 2026-06-24: W7 broad runtime/SSE/policy/tool verification initially passed:
+  `tests/test_worker_runtime.py tests/test_sse_contract.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_api_tool_runtime.py
+  tests/test_browser_automation_runtime.py::test_activated_browser_target_registers_tool
+  tests/test_browser_automation_runtime.py::test_unverified_browser_target_is_not_callable
+  tests/test_workspace_connectors.py::test_workspace_connector_runtime_flag_blocks_mount_materialization`
+  -> `148 passed`.
+- 2026-06-24: W7 acquisition model/API/lifecycle/disabled/observability
+  verification passed:
+  `tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_acquisition_lifecycle.py tests/test_acquisition_snapshot.py
+  tests/test_acquisition_observability.py tests/test_acquisition_disabled_mode.py
+  tests/test_api_contracts.py::test_tools_admin_can_register_test_and_delete_mcp_server
+  tests/test_api_contracts.py::test_tools_mcp_failures_do_not_leak_exception_details
+  tests/test_file_upload_security.py::test_available_tools_endpoint_is_user_readable_for_chat_picker`
+  -> `119 passed`.
+- 2026-06-24: W7 candidate outbox regression passed:
+  `pytest -q tests/test_capability_candidates.py` -> `30 passed`.
+- 2026-06-24: W7 planning/workspace/MCP/browser/development-patch regression
+  passed:
+  `tests/test_planning_issues.py tests/test_workspace_connectors.py
+  tests/test_mcp_runtime_isolation.py tests/test_mcp_transports.py
+  tests/test_browser_automation_runtime.py
+  tests/test_development_patch_proposal.py` -> `111 passed, 1 skipped`.
+- 2026-06-24: W7 plan-command verification passed:
+  `tests/test_acquisition_agent_integration.py tests/test_acquisition_disabled_mode.py
+  tests/test_planning_issues.py tests/test_acquisition_journal.py
+  tests/test_acquisition_policy.py tests/test_tool_manifest.py
+  tests/test_worker_runtime.py tests/test_acquisition_observability.py`
+  -> `138 passed`.
+- 2026-06-24: W7 migration roundtrip passed:
+  `alembic downgrade 0015 && alembic upgrade head`.
+- 2026-06-24: W7 spec review found durable outbox enqueue happened after SSE
+  `done`, risking skipped analysis if clients closed immediately after `done`.
+  Fix moved durable candidate/acquisition enqueue before `done` and added
+  `test_done_is_sent_after_durable_analysis_enqueue`.
+- 2026-06-24: After the after-`done` fix, targeted verification passed:
+  `tests/test_sse_contract.py::test_done_is_sent_after_durable_analysis_enqueue
+  tests/test_sse_contract.py::test_stream_disconnect_does_not_drop_durable_acquisition_analysis
+  tests/test_sse_contract.py::test_persisted_confirmation_keeps_raw_args_out_of_message_metadata
+  tests/test_tool_manifest.py::test_acquired_api_runtime_enforces_manifest_version_on_execution
+  tests/test_capability_candidates.py::test_completed_chat_run_persists_inactive_candidate_and_emits_sse_hint`
+  -> `5 passed`; broad runtime/SSE/policy/tool verification updated to
+  `149 passed`; W7 plan-command verification remained `138 passed`.
+- 2026-06-24: W7 re-review found an Important public-boundary leak:
+  API acquired confirmation public args could include backend-only
+  `__acquired_tool_manifest_version`. Fix stripped that key in
+  `_public_confirmation_args` while retaining it in persisted backend replay
+  args.
+- 2026-06-24: After the public-boundary fix, targeted verification passed:
+  `tests/test_sse_contract.py::test_acquired_api_confirmation_hides_manifest_version_from_public_args
+  tests/test_sse_contract.py::test_persisted_confirmation_keeps_raw_args_out_of_message_metadata
+  tests/test_sse_contract.py::test_acquired_mcp_confirmation_public_args_are_redacted_but_persisted_args_remain_executable
+  tests/test_tool_manifest.py::test_acquired_api_runtime_enforces_manifest_version_on_execution`
+  -> `4 passed`.
+- 2026-06-24: Final W7 verification passed after all fixes:
+  broad runtime/SSE/policy/tool group -> `150 passed`; W7 plan-command group
+  -> `138 passed`; candidate outbox group -> `30 passed`; migration
+  `downgrade 0015 && upgrade head` passed; `git diff --check` returned no
+  whitespace errors beyond CRLF warnings; `git status --short -- frontend`
+  returned no frontend changes.
+- 2026-06-24: Final W7 read-only re-review passed with no Critical or
+  Important findings. Reviewer confirmed the previous manifest-version public
+  leak was fixed, stream analysis is durable/outbox based and enqueued before
+  `done`, runtime evidence includes `runtime_events` plus
+  `runtime_planning_issue`, and acquired API/MCP/browser manifest checks cover
+  execution plus confirmation resume. The reviewer was closed after completion.
+
 ## Pending Evidence
 
-- None for Workstream 6.
+- None for Workstream 7.

@@ -13,7 +13,9 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from app.config import settings
+from app.core.acquisition.tasks import process_acquisition_analysis
 from app.core.channel.configuration import resolve_channel_configuration
+from app.core.capabilities.tasks import process_capability_analysis
 from app.core.tools.classifier import is_pre_authorized
 from app.core.secrets import is_sensitive_key, safe_error_message
 from app.core.ops.health import write_worker_heartbeat
@@ -715,8 +717,12 @@ class WorkerSettings:
     """ARQ worker settings for proactive scheduling."""
 
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [execute_proactive_task]
-    cron_jobs = [cron(check_scheduled_tasks, minute=None)]
+    functions = [execute_proactive_task, process_acquisition_analysis, process_capability_analysis]
+    cron_jobs = [
+        cron(check_scheduled_tasks, minute=None),
+        cron(process_acquisition_analysis, minute=None),
+        cron(process_capability_analysis, minute=None),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     queue_name = ARQ_QUEUE_NAME

@@ -21,7 +21,7 @@ from typing import AsyncIterator, Any
 
 from app.core.artifacts import ToolExecutionResult
 from app.core.agent.code_executor import stream_code_as_action
-from app.core.agent.tool_router import execute_tool
+from app.core.agent.tool_router import AcquiredToolConfirmationRequired, execute_tool
 from app.core.capabilities.hooks import emit_capability_hook
 from app.core.capabilities.policy import evaluate_worker_tool_policy
 from app.core.tools.builtin import ALL_TOOLS
@@ -113,6 +113,7 @@ async def run_agent(
     workspace_base: str | None = None,
     connector_mount_context: dict[str, Any] | None = None,
     acquisition_recorder: Any | None = None,
+    acquired_tool_manifest_version: str | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
 
@@ -399,10 +400,15 @@ async def run_agent(
                     "tool_call_id": tc["id"],
                     "workspace_base": workspace_base,
                     "worker_context": worker_context,
+                    "acquired_tool_manifest_version": acquired_tool_manifest_version,
                 }
                 if connector_mount_context:
                     tool_context.update(connector_mount_context)
                 if tc["name"] == "code_as_action":
+                    from app.core.acquisition.facade import runtime_capability_enabled
+
+                    if not runtime_capability_enabled("code_as_action"):
+                        raise RuntimeError("Code-as-Action acquisition runtime is disabled")
                     if is_sub_agent:
                         raise RuntimeError("sub-agents cannot execute Code-as-Action")
                     if not tenant_id:
@@ -447,6 +453,16 @@ async def run_agent(
                         failure_reason=None,
                         mount_bundle=code_action_mount_bundle,
                     )
+                    acquisition_event = _code_as_action_acquisition_event(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_run_id=run_id,
+                        tool_call_id=tc["id"],
+                        status="succeeded",
+                        risk_level=risk.value,
+                    )
+                    if acquisition_event is not None:
+                        yield acquisition_event
                 elif tc["name"] == "shell_exec":
                     result = await execute_shell_exec(tc["name"], args, sandbox_manager)
                 else:
@@ -477,11 +493,13 @@ async def run_agent(
                 consecutive_errors = 0
 
             except Exception as e:
-                if isinstance(e, (APIToolConfirmationRequired, BrowserAutomationConfirmationRequired)):
+                if isinstance(e, (APIToolConfirmationRequired, BrowserAutomationConfirmationRequired, AcquiredToolConfirmationRequired)):
                     destructive_hit = True
                     confirmation_args = dict(getattr(e, "original_args", None) or e.sanitized_args)
-                    if isinstance(e, BrowserAutomationConfirmationRequired):
+                    if isinstance(e, (BrowserAutomationConfirmationRequired, AcquiredToolConfirmationRequired)):
                         confirmation_args["__public_args"] = dict(e.sanitized_args)
+                    if acquired_tool_manifest_version:
+                        confirmation_args["__acquired_tool_manifest_version"] = acquired_tool_manifest_version
                     confirmation_args["__acquisition_confirmation_context"] = e.confirmation_context
                     yield {
                         "type": "confirmation_required",
@@ -519,6 +537,17 @@ async def run_agent(
                         failure_reason=str(e),
                         mount_bundle=code_action_mount_bundle,
                     )
+                    acquisition_event = _code_as_action_acquisition_event(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_run_id=run_id,
+                        tool_call_id=tc["id"],
+                        status="failed",
+                        risk_level=risk.value,
+                        failure_reason=str(e),
+                    )
+                    if acquisition_event is not None:
+                        yield acquisition_event
                 await emit_capability_hook(
                     "after_tool_call",
                     {
@@ -688,6 +717,40 @@ def _schedule_code_as_action_acquisition(**kwargs: Any) -> None:
     task.add_done_callback(_ACQUISITION_RECORDING_TASKS.discard)
 
 
+def _code_as_action_acquisition_event(
+    *,
+    tenant_id: str | None,
+    user_id: str | None,
+    source_run_id: str | None,
+    tool_call_id: str | None,
+    status: str,
+    risk_level: str,
+    failure_reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Expose a real V3 exploration notice without waiting on durable analysis."""
+
+    if not tenant_id or not user_id:
+        return None
+    try:
+        from app.core.acquisition.facade import acquisition_enabled, acquisition_notice
+
+        if not acquisition_enabled():
+            return None
+        return acquisition_notice(
+            "acquisition_exploration",
+            {
+                "source_run_id": source_run_id,
+                "tool_call_id": tool_call_id,
+                "strategy": "code_as_action",
+                "status": status,
+                "risk_level": risk_level,
+                "failure_reason": failure_reason,
+            },
+        )
+    except Exception:
+        return None
+
+
 async def _record_code_as_action_acquisition(
     *,
     acquisition_recorder: Any | None,
@@ -709,7 +772,7 @@ async def _record_code_as_action_acquisition(
     try:
         recorder = acquisition_recorder
         if recorder is None:
-            from app.core.acquisition.bridge import record_code_as_action_exploration
+            from app.core.acquisition.facade import record_code_as_action_exploration
 
             recorder = record_code_as_action_exploration
         result = recorder(

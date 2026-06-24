@@ -30,6 +30,7 @@ from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.api_runtime import get_api_tool_definitions
 from app.core.tools.mcp.manager import mcp_manager
 from app.models.tool_configuration import ToolConfiguration
+from app.services.conversation_stream_service import get_agent_tools as get_runtime_agent_tools
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ async def list_available_tools(
     """List enabled tools available to the chat composer for the current user."""
     enabled_tools = [
         tool
-        for tool in await _configured_tools(db, user["tenant_id"], user["user_id"])
+        for tool in await get_runtime_agent_tools(user["tenant_id"], user["user_id"])
         if tool.get("enabled", True) is not False
     ]
     total = len(enabled_tools)

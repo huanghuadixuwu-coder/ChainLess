@@ -66,6 +66,14 @@ class Settings(BaseSettings):
         "http://127.0.0.1,http://127.0.0.1:3000"
     )
 
+    # Capability acquisition
+    acquisition_enabled: bool = True
+    acquisition_code_as_action_enabled: bool = True
+    acquisition_api_runtime_enabled: bool = True
+    acquisition_browser_runtime_enabled: bool = True
+    acquisition_mcp_runtime_enabled: bool = True
+    acquisition_workspace_connectors_enabled: bool = True
+
     # Debug
     debug: bool = False
     app_env: str = "development"

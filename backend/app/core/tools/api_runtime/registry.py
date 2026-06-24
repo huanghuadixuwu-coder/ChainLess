@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.acquisition.activation import approved_snapshot_hash
+from app.core.acquisition.facade import runtime_capability_enabled
 from app.core.acquisition.policy import (
     RuntimePermissionRequest,
     TargetPolicyDecision,
@@ -17,6 +18,7 @@ from app.core.acquisition.policy import (
     evaluate_runtime_permission,
 )
 from app.core.credentials.service import resolve_credential_secret
+from app.core.tools.manifest import assert_user_tool_manifest_current
 from app.models.acquisition import APIToolConfiguration, ActivationTarget, AcquisitionProposal, CredentialConnection
 
 from .client import APIToolRuntimeClient, APIToolRuntimeError
@@ -68,13 +70,10 @@ async def get_api_tool_definitions(
 ) -> list[dict[str, Any]]:
     """List enabled and verified API tools visible to the current tenant/user."""
 
-    query = select(APIToolConfiguration).where(
-        APIToolConfiguration.tenant_id == _uuid(tenant_id),
-        APIToolConfiguration.user_id == _uuid(user_id),
-        APIToolConfiguration.enabled.is_(True),
-        APIToolConfiguration.last_verified_at.is_not(None),
-    ).order_by(APIToolConfiguration.created_at.asc())
-    records = (await db.execute(query)).scalars().all()
+    if not runtime_capability_enabled("api_tool"):
+        return []
+
+    records = await _visible_records(db, tenant_id=_uuid(tenant_id), user_id=_uuid(user_id))
     tools: list[dict[str, Any]] = []
     for record in records:
         try:
@@ -97,6 +96,8 @@ async def execute_api_tool(
     user_id = context.get("user_id")
     if tenant_id is None or user_id is None:
         raise ValueError("API tool execution requires tenant_id and user_id")
+    if not runtime_capability_enabled("api_tool"):
+        raise ValueError("API tool runtime is disabled")
 
     db = context.get("db")
     if db is not None:
@@ -119,6 +120,12 @@ async def _execute_api_tool_with_db(
 ) -> dict[str, Any]:
     tenant_id = _uuid(context["tenant_id"])
     user_id = _uuid(context["user_id"])
+    await assert_user_tool_manifest_current(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        expected_version=context.get("acquired_tool_manifest_version"),
+    )
     record = await _record_for_tool_name(db, tool_name, tenant_id=tenant_id, user_id=user_id)
     if record is None:
         raise ValueError(f"API tool not found: {tool_name}")
@@ -208,6 +215,12 @@ async def _runtime_permission_request_for_config(
             "PERMISSION_EVIDENCE_REQUIRED",
             "API tool execution requires an active activation target",
         )
+    resource_ref = target.activated_resource_ref if isinstance(target.activated_resource_ref, Mapping) else {}
+    if resource_ref.get("hidden") is True or resource_ref.get("exposed_to_runtime") is False:
+        raise APIToolRuntimeError(
+            "PERMISSION_EVIDENCE_REQUIRED",
+            "API tool execution requires a visible activation target",
+        )
     proposal = (
         await db.execute(
             select(AcquisitionProposal).where(
@@ -292,17 +305,52 @@ async def _record_for_tool_name(
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> APIToolConfiguration | None:
-    return (
-        await db.execute(
-            select(APIToolConfiguration).where(
-                APIToolConfiguration.tenant_id == tenant_id,
-                APIToolConfiguration.user_id == user_id,
-                APIToolConfiguration.tool_name == tool_name,
-                APIToolConfiguration.enabled.is_(True),
-                APIToolConfiguration.last_verified_at.is_not(None),
+    for record in await _visible_records(db, tenant_id=tenant_id, user_id=user_id):
+        if record.tool_name == tool_name:
+            return record
+    return None
+
+
+async def _visible_records(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> list[APIToolConfiguration]:
+    records = list(
+        (
+            await db.execute(
+                select(APIToolConfiguration)
+                .where(
+                    APIToolConfiguration.tenant_id == tenant_id,
+                    APIToolConfiguration.user_id == user_id,
+                    APIToolConfiguration.enabled.is_(True),
+                    APIToolConfiguration.last_verified_at.is_not(None),
+                )
+                .order_by(APIToolConfiguration.created_at.asc())
             )
-        )
-    ).scalar_one_or_none()
+        ).scalars()
+    )
+    visible: list[APIToolConfiguration] = []
+    for record in records:
+        if record.activation_target_id is None:
+            continue
+        target = (
+            await db.execute(
+                select(ActivationTarget).where(
+                    ActivationTarget.id == record.activation_target_id,
+                    ActivationTarget.tenant_id == tenant_id,
+                    ActivationTarget.user_id == user_id,
+                    ActivationTarget.target_type == "api_tool",
+                    ActivationTarget.activation_status == "active",
+                )
+            )
+        ).scalar_one_or_none()
+        resource_ref = target.activated_resource_ref if target and isinstance(target.activated_resource_ref, Mapping) else {}
+        if target is None or resource_ref.get("hidden") is True or resource_ref.get("exposed_to_runtime") is False:
+            continue
+        visible.append(record)
+    return visible
 
 
 async def _validate_credential_generation(

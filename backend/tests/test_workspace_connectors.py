@@ -1411,6 +1411,44 @@ async def test_runtime_context_skips_missing_source_without_raw_path(
     assert context is None
 
 
+async def test_workspace_connector_runtime_flag_blocks_mount_materialization(
+    tenant_a_headers: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id, user_id = _identity(tenant_a_headers)
+    host_path = tmp_path / "runtime-disabled-source"
+    host_path.mkdir()
+    approval = await _confirmation(tenant_id, user_id, host_path=host_path)
+    async with _async_session_factory() as db:
+        connector = await create_workspace_connector(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Runtime disabled connector",
+            host_path=host_path,
+            mode="read_only",
+            approval_id=approval.id,
+        )
+        await db.commit()
+
+    monkeypatch.setattr("app.core.acquisition.facade.settings.acquisition_workspace_connectors_enabled", False)
+
+    async with _async_session_factory() as db:
+        assert await build_workspace_connector_runtime_context(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        ) is None
+        with pytest.raises(WorkspaceConnectorMountError, match="Workspace Connector runtime is disabled"):
+            await resolve_mount_bundle(
+                db,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                connector_ids=[connector.connector_id],
+            )
+
+
 async def test_connector_file_read_missing_path_does_not_leak_host_path(
     tenant_a_headers: dict[str, str],
     tmp_path: Path,

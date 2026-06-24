@@ -5,7 +5,11 @@ from fastapi.responses import PlainTextResponse
 
 from app.api.deps import require_role
 from app.config import settings
-from app.core.observability import get_runtime_metric_snapshot, summarize_eval_outcomes
+from app.core.observability import (
+    ACQUISITION_METRIC_NAMES,
+    get_runtime_metric_snapshot,
+    summarize_eval_outcomes,
+)
 from app.core.ops.health import collect_operational_health
 from app.core.proactive.scheduler import summarize_run_records
 from app.core.sandbox.manager import SandboxManager, get_sandbox_manager
@@ -90,6 +94,12 @@ async def system_metrics(
         "# HELP chainless_artifact_quota_rejections_total Artifact quota rejections observed.",
         "# TYPE chainless_artifact_quota_rejections_total counter",
         f"chainless_artifact_quota_rejections_total {runtime_metrics.get('artifact_quota_rejections', 0)}",
+        "# HELP chainless_acquisition_runtime_events_total Acquisition runtime events by counter name.",
+        "# TYPE chainless_acquisition_runtime_events_total counter",
+        *[
+            f'chainless_acquisition_runtime_events_total{{counter="{name}"}} {runtime_metrics.get(name, 0)}'
+            for name in sorted(ACQUISITION_METRIC_NAMES)
+        ],
         "# HELP chainless_eval_outcomes_total Eval outcomes observed by status.",
         "# TYPE chainless_eval_outcomes_total counter",
         f'chainless_eval_outcomes_total{{status="pass"}} {eval_outcomes["pass"]}',

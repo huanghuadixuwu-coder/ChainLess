@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.observability import increment_acquisition_metric
 from app.core.security.egress_policy import EgressPolicy, validate_egress_request
 from app.models.acquisition import StandingPermission
 
@@ -183,7 +184,10 @@ async def evaluate_runtime_permission(
     """Evaluate final acquisition permission for one runtime attempt."""
 
     base_decision = await _evaluate_acquisition_permission(db, request, now=now or _now())
-    return apply_target_policy_narrowing(base_decision, target_policy)
+    decision = apply_target_policy_narrowing(base_decision, target_policy)
+    if not decision.allowed and not decision.confirmation_required:
+        increment_acquisition_metric("acquisition_policy_blocks")
+    return decision
 
 
 def validate_permission_bundle(

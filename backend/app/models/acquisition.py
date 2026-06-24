@@ -419,6 +419,50 @@ class RuntimePlanningIssue(Base, TimestampMixin):
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
+class AcquisitionAnalysisJob(Base, TimestampMixin):
+    """Durable V3 acquisition analysis job owned by acquisition/outbox.py."""
+
+    __tablename__ = "acquisition_analysis_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'timed_out', 'skipped_duplicate')",
+            name="ck_acquisition_analysis_jobs_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_acquisition_analysis_jobs_attempts_non_negative"),
+        CheckConstraint("octet_length(payload::text) <= 8192", name="ck_acquisition_analysis_jobs_payload_size"),
+        CheckConstraint(
+            "octet_length(result_metadata::text) <= 8192",
+            name="ck_acquisition_analysis_jobs_result_metadata_size",
+        ),
+        CheckConstraint(
+            "error_message IS NULL OR char_length(error_message) <= 1024",
+            name="ck_acquisition_analysis_jobs_error_message_size",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "source_run_id",
+            name="uq_acquisition_analysis_jobs_run",
+        ),
+        Index("ix_acquisition_analysis_jobs_tenant_user_status", "tenant_id", "user_id", "status"),
+        Index("ix_acquisition_analysis_jobs_tenant_user_source_run", "tenant_id", "user_id", "source_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=gen_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    source_run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    result_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class CredentialConnection(Base, TimestampMixin):
     """User-private credential reference without raw secret material."""
 

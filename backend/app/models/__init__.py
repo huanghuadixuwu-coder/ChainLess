@@ -17,6 +17,7 @@ from app.models.capability import CapabilityAnalysisJob, CapabilityCandidate
 from app.models.worker import Worker, WorkerMatchFeedback, WorkerRun, WorkerVersion
 from app.models.acquisition import (
     APIToolConfiguration,
+    AcquisitionAnalysisJob,
     AcquisitionIdempotencyRecord,
     AcquisitionJournalEntry,
     AcquisitionProposal,
@@ -58,6 +59,7 @@ __all__ = [
     "WorkerRun",
     "WorkerVersion",
     "APIToolConfiguration",
+    "AcquisitionAnalysisJob",
     "AcquisitionIdempotencyRecord",
     "AcquisitionJournalEntry",
     "AcquisitionProposal",

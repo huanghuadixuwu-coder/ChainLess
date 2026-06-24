@@ -14,6 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import _async_session_factory
+from app.core.acquisition import lifecycle
+from app.core.acquisition.policy import build_standing_permission_scope
 from app.core.agent.engine import run_agent
 from app.core.capabilities.policy import WorkerPolicyError
 from app.core.workers.matcher import match_workers
@@ -21,6 +23,7 @@ from app.core.workers.runtime import execute_worker_run
 from app.core.workers.service import create_worker, update_worker
 from app.core.workers.control_intent import queue_worker_delete_confirmation
 from app.models.capability import CapabilityCandidate
+from app.models.acquisition import ActivationTarget, StandingPermission
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
 from app.services.conversation_stream_service import (
@@ -178,6 +181,133 @@ async def _active_worker(
         await db.refresh(worker)
         await db.refresh(version)
         return worker, version
+
+
+def _worker_permission_bundle(worker_id: uuid.UUID) -> dict:
+    return {
+        "target_type": "worker",
+        "permission_scope": {"worker_id": str(worker_id)},
+        "risk_level": "safe",
+        "confirmation_policy": "never_for_safe",
+        "credential_scope": "none",
+        "data_scope": "user_worker_context",
+        "network_scope": "none",
+        "egress_policy": {},
+        "write_scope": "none",
+        "execution_scope": "worker_runtime",
+        "duration": "until_revoked",
+        "revocation_plan": {"disable_worker": True},
+        "action_category": "read",
+    }
+
+
+async def _attach_acquisition_worker_target(
+    worker: Worker,
+    version: WorkerVersion,
+    *,
+    revoked: bool = False,
+) -> None:
+    async with _async_session_factory() as db:
+        db_worker = await db.get(Worker, worker.id)
+        bundle = _worker_permission_bundle(worker.id)
+        gap = await lifecycle.record_gap(
+            db,
+            tenant_id=worker.tenant_id,
+            user_id=worker.user_id,
+            source_kind="agent_runtime",
+            source_run_id=f"worker-acquisition-{uuid.uuid4().hex}",
+            dedupe_key=f"worker-acquisition-{uuid.uuid4().hex}",
+            title="Missing reusable worker",
+            description="A successful task should activate a reusable Worker.",
+            gap_type="missing_tool",
+            severity="medium",
+            evidence={"worker_id": str(worker.id)},
+            source_evidence=[{"kind": "worker"}],
+            idempotency_key=f"gap-{uuid.uuid4().hex}",
+        )
+        recommendation = await lifecycle.create_recommendation(
+            db,
+            tenant_id=worker.tenant_id,
+            user_id=worker.user_id,
+            gap_id=gap.id,
+            recommendation_type="worker_recommendation",
+            title="Activate Worker",
+            summary="Use this Worker automatically for matching tasks.",
+            reason="The Worker has verified execution evidence.",
+            evidence={"worker_id": str(worker.id)},
+            risk_level="safe",
+            expected_value={"reusable": True},
+            required_permissions={"execution_scope": "worker_runtime"},
+            candidate_targets=[{"target_type": "worker", "worker_id": str(worker.id)}],
+            idempotency_key=f"recommendation-{uuid.uuid4().hex}",
+        )
+        approved_hash = f"snapshot-{uuid.uuid4().hex}"
+        proposal = await lifecycle.create_proposal(
+            db,
+            tenant_id=worker.tenant_id,
+            user_id=worker.user_id,
+            proposal_kind="runtime_activation",
+            gap_id=gap.id,
+            recommendation_id=recommendation.id,
+            title="Activate acquired Worker",
+            reason="Verified Worker should be reusable.",
+            evidence={"worker_id": str(worker.id)},
+            risk_level="safe",
+            permission_bundle=bundle,
+            primary_target={"target_type": "worker", "target_name": "worker", "permission_bundle": bundle},
+            verification_plan={"kind": "worker_run"},
+            rollback_plan={"disable_worker": True},
+            user_visible_effect="Worker can run automatically for matching tasks.",
+            idempotency_key=f"proposal-{uuid.uuid4().hex}",
+        )
+        proposal.activation_snapshot_hash = approved_hash
+        proposal.approval_history = [{"status": "activation_approved", "approved_snapshot_hash": approved_hash}]
+        target = ActivationTarget(
+            tenant_id=worker.tenant_id,
+            user_id=worker.user_id,
+            proposal_id=proposal.id,
+            target_type="worker",
+            target_name="worker",
+            target_owner="core.workers",
+            target_payload={"worker_id": str(worker.id)},
+            permission_bundle=bundle,
+            verification_plan={"kind": "worker_run"},
+            rollback_plan={"disable_worker": True},
+            activation_status="active",
+            activation_result={"phase": "active"},
+            activated_resource_ref={
+                "kind": "worker",
+                "worker_id": str(worker.id),
+                "worker_version_id": str(version.id),
+                "exposed_to_runtime": True,
+            },
+        )
+        db.add(target)
+        await db.flush()
+        permission = StandingPermission(
+            tenant_id=worker.tenant_id,
+            user_id=worker.user_id,
+            proposal_id=proposal.id,
+            target_id=target.id,
+            target_type="worker",
+            permission_scope=build_standing_permission_scope(bundle),
+            risk_level="safe",
+            duration="until_revoked",
+            approved_snapshot_hash=approved_hash,
+            status="revoked" if revoked else "active",
+            revoked_at=datetime.now(timezone.utc) if revoked else None,
+            revocation_plan={"disable_worker": True},
+            audit_events=[],
+        )
+        db.add(permission)
+        db_worker.activation_evidence = {
+            "source": "acquisition",
+            "proposal_id": str(proposal.id),
+            "target_id": str(target.id),
+            "approved_snapshot_hash": approved_hash,
+            "permission_bundle": bundle,
+        }
+        await db.commit()
 
 
 class TextGateway:
@@ -489,6 +619,67 @@ async def test_worker_recursion_and_max_depth_are_blocked_with_traceable_reasons
     assert same_worker["reason"] == "worker_recursion_blocked"
     assert too_deep["status"] == "blocked_by_policy"
     assert too_deep["reason"] == "worker_max_depth_exceeded"
+
+
+async def test_acquired_worker_runtime_is_blocked_when_standing_permission_is_revoked(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, version = await _active_worker(tenant_id=tenant_id, user_id=user_id)
+    await _attach_acquisition_worker_target(worker, version, revoked=True)
+
+    async with _async_session_factory() as db:
+        result = await execute_worker_run(
+            db,
+            gateway=TextGateway(),
+            sandbox_manager=object(),
+            provider="default",
+            worker=await db.get(Worker, worker.id),
+            version=await db.get(WorkerVersion, version.id),
+            messages=[{"role": "user", "content": "weather"}],
+            input_payload={"city": "Wuxi"},
+            matched_request="weather",
+            match_score=0.99,
+            source_run_id="acquired-worker-revoked",
+            tools=[],
+        )
+
+    assert result["status"] == "blocked_by_policy"
+    assert result["reason"] == "STANDING_PERMISSION_REVOKED"
+
+
+async def test_acquired_worker_with_incomplete_activation_evidence_fails_closed(
+    tenant_a_headers: dict[str, str],
+) -> None:
+    identity = _identity(tenant_a_headers)
+    tenant_id = uuid.UUID(identity["tenant_id"])
+    user_id = uuid.UUID(identity["user_id"])
+    worker, version = await _active_worker(tenant_id=tenant_id, user_id=user_id)
+
+    async with _async_session_factory() as db:
+        db_worker = await db.get(Worker, worker.id)
+        db_worker.activation_evidence = {"source": "acquisition"}
+        await db.commit()
+
+    async with _async_session_factory() as db:
+        result = await execute_worker_run(
+            db,
+            gateway=TextGateway(),
+            sandbox_manager=object(),
+            provider="default",
+            worker=await db.get(Worker, worker.id),
+            version=await db.get(WorkerVersion, version.id),
+            messages=[{"role": "user", "content": "weather"}],
+            input_payload={"city": "Wuxi"},
+            matched_request="weather",
+            match_score=0.99,
+            tools=[],
+        )
+
+    assert result["status"] == "blocked_by_policy"
+    assert result["reason"] == "ACQUIRED_WORKER_EVIDENCE_INCOMPLETE"
 
 
 async def test_natural_language_worker_delete_uses_confirmation_before_soft_delete(

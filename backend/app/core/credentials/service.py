@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.contracts import api_error, not_found, validation_error
 from app.core.acquisition.snapshot import credential_ref_ids_from_bundles, permission_bundles_for_proposal
 from app.core.capabilities.bounds import validate_bounded_json
+from app.core.observability import increment_acquisition_metric
 from app.core.secrets import decrypt_secret, encrypt_secret, redact_sensitive_data, secret_metadata
 from app.core.acquisition.schemas import CredentialConnectionResponse
 from app.models.acquisition import (
@@ -327,8 +328,11 @@ async def revoke_credential_connection(
         credential_connection_id=credential_connection_id,
         for_update=True,
     )
+    was_revoked = credential.status == "revoked"
     credential.status = "revoked"
     credential.revoked_at = _now()
+    if not was_revoked:
+        increment_acquisition_metric("acquisition_credential_revocations")
     await invalidate_dependent_activation_snapshots(
         db,
         tenant_id=tenant_id,

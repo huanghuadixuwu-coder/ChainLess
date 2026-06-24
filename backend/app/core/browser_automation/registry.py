@@ -14,12 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.acquisition.activation import approved_snapshot_hash
+from app.core.acquisition.facade import runtime_capability_enabled
 from app.core.acquisition.policy import (
     RuntimePermissionRequest,
     TargetPolicyDecision,
     build_runtime_confirmation_context,
     evaluate_runtime_permission,
 )
+from app.core.tools.manifest import assert_user_tool_manifest_current
 from app.models.acquisition import ActivationTarget, AcquisitionProposal, BrowserAutomationConfiguration
 
 from .client import BrowserAutomationRuntimeClient, BrowserAutomationRuntimeError
@@ -103,6 +105,9 @@ async def get_browser_tool_definitions(
 ) -> list[dict[str, Any]]:
     """List active verified browser automation tools for the current tenant/user."""
 
+    if not runtime_capability_enabled("browser_automation"):
+        return []
+
     records = await _active_records(db, tenant_id=_uuid(tenant_id), user_id=_uuid(user_id))
     tools: list[dict[str, Any]] = []
     for record, target in records:
@@ -132,6 +137,8 @@ async def execute_browser_tool(
     user_id = context.get("user_id")
     if tenant_id is None or user_id is None:
         raise ValueError("Browser automation execution requires tenant_id and user_id")
+    if not runtime_capability_enabled("browser_automation"):
+        raise ValueError("Browser automation runtime is disabled")
 
     db = context.get("db")
     if db is not None:
@@ -154,6 +161,12 @@ async def _execute_browser_tool_with_db(
 ) -> dict[str, Any]:
     tenant_id = _uuid(context["tenant_id"])
     user_id = _uuid(context["user_id"])
+    await assert_user_tool_manifest_current(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        expected_version=context.get("acquired_tool_manifest_version"),
+    )
     record, target = await _record_for_tool_name(db, tool_name, tenant_id=tenant_id, user_id=user_id)
     if record is None or target is None:
         raise ValueError(f"Browser automation tool not found: {tool_name}")

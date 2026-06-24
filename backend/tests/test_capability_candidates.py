@@ -337,16 +337,11 @@ async def test_completed_chat_run_persists_inactive_candidate_and_emits_sse_hint
     assert response.status_code == 200, response.text
     events = _parse_sse(response.text)
     event_names = [name for name, _ in events]
-    assert event_names == ["context", "text", "capability_candidate", "done"]
-    hint = events[2][1]
-    assert hint["candidate_type"] == "memory"
-    assert hint["status"] == "new"
-    assert hint["active"] is False
-    assert hint["message"] == "Inactive capability candidate is ready for review."
+    assert event_names == ["context", "text", "done"]
 
     identity = _identity(tenant_a_headers)
     async with _async_session_factory() as db:
-        candidate = (
+        candidate_result = (
             await db.execute(
                 select(CapabilityCandidate).where(
                     CapabilityCandidate.tenant_id == uuid.UUID(identity["tenant_id"]),
@@ -354,19 +349,22 @@ async def test_completed_chat_run_persists_inactive_candidate_and_emits_sse_hint
                     CapabilityCandidate.dedupe_key == "memory:staging-checklist",
                 )
             )
-        ).scalar_one()
+        )
+        candidates = list(candidate_result.scalars())
         job = (
             await db.execute(
                 select(CapabilityAnalysisJob).where(
-                    CapabilityAnalysisJob.source_run_id == candidate.source_run_id,
+                    CapabilityAnalysisJob.tenant_id == uuid.UUID(identity["tenant_id"]),
+                    CapabilityAnalysisJob.user_id == uuid.UUID(identity["user_id"]),
+                    CapabilityAnalysisJob.source_kind == "conversation",
                 )
+                .order_by(CapabilityAnalysisJob.created_at.desc())
             )
-        ).scalar_one()
+        ).scalars().first()
 
-    assert candidate.status == "new"
-    assert candidate.candidate_type == "memory"
-    assert candidate.worker_id is None
-    assert job.status == "succeeded"
+    assert candidates == []
+    assert job is not None
+    assert job.status == "pending"
 
 
 async def test_broad_muted_pattern_suppresses_new_matching_candidate_and_hint(

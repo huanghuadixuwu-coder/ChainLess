@@ -12,10 +12,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.acquisition import lifecycle
+from app.core.acquisition import outbox
+from app.core.observability import increment_acquisition_metric
+from app.core.secrets import is_sensitive_key, redact_sensitive_data
+from app.config import settings
 from app.models.acquisition import CapabilityRecommendation, ExplorationRun
 
 
 _EVIDENCE_SCHEMA_VERSION = "code_as_action_exploration.v1"
+ACQUISITION_SSE_EVENT_NAMES = frozenset(
+    {
+        "acquisition_gap",
+        "acquisition_exploration",
+        "acquisition_recommendation",
+        "acquisition_approval_required",
+        "acquisition_verification",
+        "acquisition_activation",
+        "acquisition_runtime_planning_issue",
+        "acquisition_permission",
+        "acquisition_browser_trace",
+    }
+)
 _MAX_EXCERPT_CHARS = 1000
 _MAX_EVENT_EXCERPT_CHARS = 400
 _MAX_TOOL_EVENTS = 24
@@ -38,6 +55,94 @@ _POSIX_HOST_PATH_RE = re.compile(
     rf"(?<![A-Za-z0-9_.:-])/(?:home|root|var|mnt|Users|tmp|private/(?:tmp|var))(?:/{_HOST_PATH_TOKEN})?(?![A-Za-z0-9_.-])"
 )
 _WINDOWS_HOST_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s,'\")\]]+")
+
+
+def acquisition_enabled() -> bool:
+    return bool(getattr(settings, "acquisition_enabled", True))
+
+
+def runtime_capability_enabled(capability: str) -> bool:
+    attr = {
+        "api_tool": "acquisition_api_runtime_enabled",
+        "browser_automation": "acquisition_browser_runtime_enabled",
+        "mcp_tool": "acquisition_mcp_runtime_enabled",
+        "workspace_connector": "acquisition_workspace_connectors_enabled",
+        "code_as_action": "acquisition_code_as_action_enabled",
+    }.get(capability)
+    if capability == "code_as_action":
+        # Code-as-Action is a base Agent runtime. ACQUISITION_ENABLED disables
+        # V3 acquisition writes/targets, not normal Agent execution.
+        return bool(getattr(settings, attr, True))
+    if not acquisition_enabled():
+        return False
+    return bool(getattr(settings, attr, True)) if attr else True
+
+
+def acquisition_notice(event_name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a spec-named public acquisition notice payload."""
+
+    if event_name not in ACQUISITION_SSE_EVENT_NAMES:
+        raise ValueError("unknown acquisition SSE event")
+    return {
+        "type": event_name,
+        "payload": _public_notice_payload(payload or {}),
+    }
+
+
+async def enqueue_runtime_analysis(
+    db: AsyncSession,
+    *,
+    tenant_id: str | uuid.UUID | None,
+    user_id: str | uuid.UUID | None,
+    conversation_id: str | uuid.UUID | None = None,
+    source_run_id: str | None,
+    source_kind: str | None,
+    payload: dict[str, Any],
+):
+    """Durably enqueue a runtime acquisition analysis job through one facade."""
+
+    if not acquisition_enabled():
+        increment_acquisition_metric("acquisition_disabled_events")
+        return None
+    tenant_uuid = _parse_uuid(tenant_id)
+    user_uuid = _parse_uuid(user_id)
+    if tenant_uuid is None or user_uuid is None or not source_run_id:
+        return None
+    clean_payload = _public_notice_payload(
+        {
+            **payload,
+            "conversation_id": str(conversation_id) if conversation_id else None,
+            "source_run_id": source_run_id,
+        }
+    )
+    return await outbox.enqueue_run_analysis(
+        db,
+        tenant_id=tenant_uuid,
+        user_id=user_uuid,
+        source_run_id=source_run_id,
+        source_kind=source_kind,
+        payload=clean_payload,
+    )
+
+
+async def process_pending_runtime_analysis(
+    db: AsyncSession,
+    *,
+    tenant_id: str | uuid.UUID | None = None,
+    user_id: str | uuid.UUID | None = None,
+    batch_limit: int | None = None,
+) -> list[outbox.AcquisitionAnalysisJob]:
+    """Process durable acquisition analysis jobs through the runtime facade."""
+
+    if not acquisition_enabled():
+        increment_acquisition_metric("acquisition_disabled_events")
+        return []
+    return await outbox.process_pending_acquisition_analysis(
+        db,
+        tenant_id=_parse_uuid(tenant_id),
+        user_id=_parse_uuid(user_id),
+        batch_limit=batch_limit,
+    )
 
 
 async def record_code_as_action_exploration(
@@ -63,6 +168,10 @@ async def record_code_as_action_exploration(
     succeeds or fails usefully. The facade intentionally stores a digest and
     bounded/redacted excerpts, never the raw script as the durable key.
     """
+
+    if not acquisition_enabled():
+        increment_acquisition_metric("acquisition_disabled_events")
+        return
 
     tenant_uuid = _parse_uuid(tenant_id)
     user_uuid = _parse_uuid(user_id)
@@ -579,7 +688,43 @@ def _redact_text(value: str) -> str:
     )
     text = _POSIX_HOST_PATH_RE.sub("<redacted-host-path>", text)
     text = _WINDOWS_HOST_PATH_RE.sub("<redacted-host-path>", text)
+    text = re.sub(
+        r"(?i)\b(authorization)\s*[:=]\s*bearer\s+[^\s,;]+",
+        r"\1: Bearer <redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(secret|token|password|credential|api_key|apikey|access_token|refresh_token|id_token)\s*([=:])\s*([^&\s,;]+)",
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
+        text,
+    )
     return text
+
+
+def _public_notice_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    redacted_payload = redact_sensitive_data(payload)
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        if isinstance(value, dict):
+            cleaned: dict[str, Any] = {}
+            for key, item in value.items():
+                if item is None:
+                    continue
+                key_text = _redact_text(str(key))
+                if is_sensitive_key(key_text):
+                    key_text = "redacted"
+                cleaned[key_text] = clean(item)
+            return cleaned
+        if isinstance(value, (list, tuple)):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            return _bounded_text(value)[0]
+        return value
+
+    cleaned_payload = clean(redacted_payload)
+    return cleaned_payload if isinstance(cleaned_payload, dict) else {}
 
 
 def _parse_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:

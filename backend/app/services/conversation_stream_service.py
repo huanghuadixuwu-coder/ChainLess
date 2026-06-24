@@ -25,12 +25,14 @@ from app.core.agent.code_executor import CODE_AS_ACTION_TOOL, execute_code_as_ac
 from app.core.agent.engine import run_agent
 from app.core.agent.prompt_builder import build_context, merge_capability_context_into_messages
 from app.core.agent.tool_router import execute_tool
+from app.core.acquisition.facade import ACQUISITION_SSE_EVENT_NAMES, enqueue_runtime_analysis
+from app.core.acquisition.facade import runtime_capability_enabled
 from app.core.capabilities.orchestration import (
     require_confirmed_worker_tool_policy,
     unpack_confirmed_tool_args,
 )
 from app.core.capabilities.retrieval import CapabilityContext, get_capability_context
-from app.core.capabilities.service import analyze_run_tail_for_candidates
+from app.core.capabilities.service import enqueue_run_tail_for_candidate_analysis
 from app.core.tools.configuration import (
     apply_tool_configuration,
     filter_enabled_tools,
@@ -39,12 +41,13 @@ from app.core.tools.configuration import (
 from app.core.llm.gateway import LLMGateway
 from app.core.memory.short_term import append_short_term_context
 from app.core.observability import increment_runtime_metric
-from app.core.secrets import safe_error_message
+from app.core.secrets import redact_sensitive_data, safe_error_message
 from app.core.sandbox.manager import SandboxManager
 from app.core.browser_automation import get_browser_tool_definitions
 from app.core.tools.api_runtime import get_api_tool_definitions
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
+from app.core.tools.manifest import get_user_tool_manifest_version
 from app.core.tools.mcp.manager import mcp_manager
 from app.core.workspace_connectors.mounts import sandbox_mount_payload_from_context
 from app.core.workers.control_intent import (
@@ -65,21 +68,64 @@ PUBLIC_CONFIRMATION_ARGS_ARG = "__public_args"
 PERSISTED_CONFIRMATION_ARGS_ARG = "__persisted_args"
 
 
-async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[dict]:
+async def get_agent_tool_bundle(tenant_id: str, user_id: str | None = None) -> dict[str, Any]:
     from app.api.deps import _async_session_factory
 
     async with _async_session_factory() as db:
         configs = await get_tool_configurations(db, tenant_id)
         api_tools = await get_api_tool_definitions(db, tenant_id, user_id=user_id) if user_id else []
         browser_tools = await get_browser_tool_definitions(db, tenant_id, user_id=user_id) if user_id else []
-    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + api_tools + browser_tools + [CODE_AS_ACTION_TOOL]
-    return filter_enabled_tools(
-        [apply_tool_configuration(tool, configs.get(_tool_name(tool))) for tool in tools]
-    )
+        mcp_tools = await _visible_mcp_tools(db, tenant_id, user_id) if user_id else []
+        manifest_version = (
+            await get_user_tool_manifest_version(db, tenant_id=tenant_id, user_id=user_id)
+            if user_id
+            else "none"
+        )
+    acquired_tools = []
+    if runtime_capability_enabled("code_as_action"):
+        acquired_tools.append(CODE_AS_ACTION_TOOL)
+    tools = ALL_TOOLS + mcp_tools + api_tools + browser_tools + acquired_tools
+    return {
+        "tools": filter_enabled_tools(
+            [apply_tool_configuration(tool, configs.get(_tool_name(tool))) for tool in tools]
+        ),
+        "manifest_version": manifest_version,
+    }
+
+
+async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[dict]:
+    bundle = await get_agent_tool_bundle(tenant_id, user_id)
+    return list(bundle["tools"])
+
+
+async def _visible_mcp_tools(db: AsyncSession, tenant_id: str, user_id: str) -> list[dict]:
+    if not runtime_capability_enabled("mcp_tool"):
+        return []
+    from app.core.tools.manifest import build_user_tool_manifest
+
+    manifest = await build_user_tool_manifest(db, tenant_id=tenant_id, user_id=user_id)
+    visible_servers = {
+        str(tool.get("tool_name") or "").removeprefix("mcp_tool:")
+        for tool in manifest.get("tools", [])
+        if tool.get("target_type") == "mcp_tool"
+    }
+    visible_servers.discard("")
+    if not visible_servers:
+        return []
+    return [
+        tool
+        for tool in mcp_manager.get_all_tools(tenant_id)
+        if _mcp_server_name(_tool_name(tool)) in visible_servers
+    ]
 
 
 def _tool_name(tool: dict) -> str:
     return tool.get("function", {}).get("name", "")
+
+
+def _mcp_server_name(tool_name: str) -> str:
+    parts = tool_name.split("__", 2)
+    return parts[1] if len(parts) == 3 and parts[0] == "mcp" else ""
 
 
 def _public_confirmation_args(args: dict | None, *, tool_name: str | None = None) -> dict:
@@ -94,7 +140,9 @@ def _public_confirmation_args(args: dict | None, *, tool_name: str | None = None
     safe_args.pop(WORKSPACE_CONNECTOR_CONTEXT_ARG, None)
     safe_args.pop(API_ACQUISITION_CONFIRMATION_CONTEXT_ARG, None)
     safe_args.pop("__worker_policy_context", None)
-    return safe_args
+    safe_args.pop("__acquired_tool_manifest_version", None)
+    redacted = redact_sensitive_data(safe_args)
+    return dict(redacted) if isinstance(redacted, dict) else {}
 
 
 def _persisted_confirmation_args(args: dict | None) -> dict:
@@ -208,6 +256,7 @@ async def persist_confirmation_required(
     args: dict,
     risk: str,
     timeout_s: int,
+    public_args: dict | None = None,
     worker_policy_context: dict | None = None,
 ) -> None:
     persisted_args = _persisted_confirmation_args(args)
@@ -230,7 +279,7 @@ async def persist_confirmation_required(
             confirmation="pending",
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            args=args,
+            args=public_args or args,
             risk=risk,
             timeout_s=timeout_s,
         )
@@ -373,6 +422,9 @@ def public_agent_event(event: dict) -> tuple[str, dict] | None:
             for key, value in event.items()
             if key != "type"
         }
+    if event_type in ACQUISITION_SSE_EVENT_NAMES:
+        payload = event.get("payload")
+        return event_type, dict(payload) if isinstance(payload, dict) else {}
     if event_type == "done":
         return "done", {"tokens_used": event.get("tokens_used", 0)}
     if event_type == "error":
@@ -469,7 +521,7 @@ async def build_chat_stream_response(
         errored = False
         cancelled = False
         event_index = 0
-        capability_hint: dict | None = None
+        runtime_events: list[dict[str, Any]] = []
 
         try:
             if context_summary:
@@ -515,12 +567,15 @@ async def build_chat_stream_response(
                         tool_call_id=data.get("tool_call_id", ""),
                         tool_name=data["tool_name"],
                         args=data.get(PERSISTED_CONFIRMATION_ARGS_ARG) or data["args"],
+                        public_args=data["args"],
                         risk=data["risk"],
                         timeout_s=data["timeout_s"],
                         worker_policy_context=data.get("worker_policy_context"),
                     )
 
-                yield sse_event(event_type, _public_event_data(data), event_id=str(event_index))
+                public_data = _public_event_data(data)
+                _capture_runtime_event(runtime_events, event_type, public_data)
+                yield sse_event(event_type, public_data, event_id=str(event_index))
 
         except asyncio.CancelledError:
             cancelled = True
@@ -544,29 +599,51 @@ async def build_chat_stream_response(
                     role="assistant",
                     content=full_content,
                 )
-                if user_id:
-                    try:
-                        capability_hint = await analyze_run_tail_for_candidates(
-                            db,
-                            gateway=gateway,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                            conversation_id=str(conv_id),
-                            source_run_id=run_id,
-                            user_messages=_user_messages_for_analysis(messages),
-                            assistant_content=full_content,
-                            provider=provider,
-                            artifacts=_artifact_refs_for_analysis(attachments or []),
-                        )
-                    except Exception:
-                        increment_runtime_metric("capability_analysis_failures")
+            if user_id and full_content and not errored and not cancelled:
+                try:
+                    await enqueue_run_tail_for_candidate_analysis(
+                        db,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        conversation_id=str(conv_id),
+                        source_run_id=run_id,
+                        user_messages=_user_messages_for_analysis(messages),
+                        assistant_content=full_content,
+                        provider=provider,
+                        artifacts=_artifact_refs_for_analysis(attachments or []),
+                    )
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    increment_runtime_metric("capability_analysis_failures")
+
+            if user_id:
+                try:
+                    await enqueue_runtime_analysis(
+                        db,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        conversation_id=str(conv_id),
+                        source_run_id=run_id,
+                        source_kind="conversation_stream",
+                        payload=_runtime_analysis_payload(
+                            runtime_events,
+                            status="cancelled" if cancelled else "completed",
+                            errored=errored,
+                            cancelled=cancelled,
+                            assistant_content_chars=len(full_content),
+                            artifact_count=len(attachments or []),
+                        ),
+                    )
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    increment_runtime_metric("sse_errors")
 
             if not cancelled:
-                if capability_hint is not None:
-                    event_index += 1
-                    yield sse_event("capability_candidate", capability_hint, event_id=str(event_index))
                 event_index += 1
                 yield sse_event("done", {"tokens_used": tokens_used}, event_id=str(event_index))
+
             if run_workspace is not None:
                 cleanup_run_workspace(run_id=run_workspace.run_id)
 
@@ -595,6 +672,63 @@ def _artifact_refs_for_analysis(artifacts: list[Artifact]) -> list[dict[str, str
     ]
 
 
+def _capture_runtime_event(events: list[dict[str, Any]], event_type: str, data: dict[str, Any]) -> None:
+    """Keep a bounded, public-only runtime signal trail for durable analysis."""
+
+    if len(events) >= 20:
+        return
+    if event_type not in {"worker_notice", "tool_result", "confirmation_required"}:
+        return
+    safe = redact_sensitive_data(data)
+    if isinstance(safe, dict):
+        events.append({"event_type": event_type, **safe})
+
+
+def _runtime_analysis_payload(
+    runtime_events: list[dict[str, Any]],
+    status: str,
+    *,
+    errored: bool,
+    cancelled: bool,
+    assistant_content_chars: int,
+    artifact_count: int,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": status,
+        "errored": errored,
+        "cancelled": cancelled,
+        "assistant_content_chars": assistant_content_chars,
+        "artifact_count": artifact_count,
+        "runtime_events": runtime_events[:20],
+    }
+    issue = _runtime_planning_issue_from_events(runtime_events)
+    if issue is not None:
+        payload["runtime_planning_issue"] = issue
+    return payload
+
+
+def _runtime_planning_issue_from_events(runtime_events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in runtime_events:
+        if event.get("event_type") != "worker_notice":
+            continue
+        if event.get("status") not in {"blocked_by_policy", "needs_confirmation"}:
+            continue
+        worker_id = event.get("worker_id")
+        if not worker_id:
+            continue
+        return {
+            "available_capability_ref": {
+                "target_type": "worker",
+                "worker_id": str(worker_id),
+                "worker_version_id": str(event.get("version_id") or ""),
+            },
+            "missed_signal": str(event.get("reason") or event.get("message") or "Worker matched but was not executed."),
+            "planner_decision_summary": "Normal Agent path continued after a matched Worker notice.",
+            "expected_decision_summary": "Planner should use the existing Worker when policy permits, or surface the policy/confirmation boundary clearly.",
+        }
+    return None
+
+
 async def heartbeat_loop(queue: asyncio.Queue) -> None:
     try:
         while True:
@@ -618,7 +752,9 @@ async def run_agent_stream(
     connector_mount_context: dict[str, Any] | None = None,
 ) -> None:
     try:
-        tools = await get_agent_tools(tenant_id, user_id)
+        tool_bundle = await get_agent_tool_bundle(tenant_id, user_id)
+        tools = tool_bundle["tools"]
+        acquired_tool_manifest_version = tool_bundle["manifest_version"]
         capability_context = await _capability_context_for_stream(
             gateway=gateway,
             tenant_id=tenant_id,
@@ -671,6 +807,7 @@ async def run_agent_stream(
             run_id=run_id,
             workspace_base=workspace_base,
             connector_mount_context=connector_mount_context,
+            acquired_tool_manifest_version=acquired_tool_manifest_version,
         ):
             mapped = public_agent_event(event)
             if mapped is not None:
@@ -742,6 +879,7 @@ async def execute_confirmed_tool(
 ) -> str | ToolExecutionResult:
     args, persisted_worker_context = unpack_confirmed_tool_args(args)
     acquisition_confirmation_context = args.pop(API_ACQUISITION_CONFIRMATION_CONTEXT_ARG, None)
+    acquired_tool_manifest_version = args.pop("__acquired_tool_manifest_version", None)
     args.pop(WORKSPACE_CONNECTOR_CONTEXT_ARG, None)
     args.pop("__confirmed", None)
     effective_worker_context = worker_context or persisted_worker_context
@@ -754,6 +892,8 @@ async def execute_confirmed_tool(
             user_id=user_id,
         )
     if tool_name == "code_as_action":
+        if not runtime_capability_enabled("code_as_action"):
+            raise ValueError("Code-as-action runtime is disabled")
         return await execute_code_as_action(
             args.get("script", ""),
             sandbox,
@@ -771,6 +911,7 @@ async def execute_confirmed_tool(
         "tool_call_id": tool_call_id,
         "run_id": run_id,
         "worker_context": effective_worker_context,
+        "acquired_tool_manifest_version": acquired_tool_manifest_version,
     }
     if isinstance(acquisition_confirmation_context, dict):
         tool_context["confirmation_context"] = {**acquisition_confirmation_context, "confirmed": True}
@@ -834,7 +975,7 @@ async def build_confirmation_stream_response(
             confirmation=claimed.status,
             tool_call_id=tool_call_id,
             tool_name=resolved_tool_name,
-            args=resolved_args,
+            args=_public_confirmation_args(resolved_args, tool_name=resolved_tool_name),
             risk=risk,
             timeout_s=timeout_s,
         )
@@ -896,7 +1037,9 @@ async def build_confirmation_stream_response(
                                 "type": "function",
                                 "function": {
                                     "name": resolved_tool_name,
-                                    "arguments": json.dumps(resolved_args),
+                                    "arguments": json.dumps(
+                                        _public_confirmation_args(resolved_args, tool_name=resolved_tool_name)
+                                    ),
                                 },
                             }
                         ],
@@ -910,17 +1053,19 @@ async def build_confirmation_stream_response(
                     }
                 )
 
+            tool_bundle = await get_agent_tool_bundle(user["tenant_id"], user["user_id"])
             async for event in run_agent(
                 gateway,
                 sandbox,
                 provider,
                 resume_messages,
-                await get_agent_tools(user["tenant_id"], user["user_id"]),
+                tool_bundle["tools"],
                 tenant_id=user["tenant_id"],
                 user_id=user["user_id"],
                 conversation_id=str(conv_uuid),
                 worker_context=resolved_worker_context,
                 connector_mount_context=connector_mount_context,
+                acquired_tool_manifest_version=tool_bundle["manifest_version"],
             ):
                 mapped = public_agent_event(event)
                 if mapped is None:
@@ -939,6 +1084,7 @@ async def build_confirmation_stream_response(
                             tool_call_id=data.get("tool_call_id", ""),
                             tool_name=data["tool_name"],
                             args=data.get(PERSISTED_CONFIRMATION_ARGS_ARG) or data["args"],
+                            public_args=data["args"],
                             risk=data["risk"],
                             timeout_s=data["timeout_s"],
                             worker_policy_context=data.get("worker_policy_context"),

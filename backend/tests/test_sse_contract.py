@@ -17,12 +17,15 @@ from app.core.artifacts import ToolExecutionResult
 from app.core.agent.code_executor import CODE_AS_ACTION_TOOL
 from app.core.agent.engine import run_agent
 from app.core.workers.runtime import MAX_CAPTURED_EVENTS
+from app.models.capability import CapabilityAnalysisJob
+from app.models.acquisition import AcquisitionAnalysisJob
 from app.models.conversation import Message
 from app.models.tool_confirmation import ToolConfirmation
 from app.models.worker import Worker, WorkerRun, WorkerVersion
 from app.services.auth_service import decode_token
 from app.services.conversation_stream_service import (
     API_ACQUISITION_CONFIRMATION_CONTEXT_ARG,
+    PERSISTED_CONFIRMATION_ARGS_ARG,
     build_chat_stream_response,
     execute_confirmed_tool,
     persist_confirmation_required,
@@ -390,6 +393,156 @@ async def test_chat_endpoint_emits_canonical_events_and_persists_once(
     assistant_messages = [row for row in rows if row.role == "assistant"]
     assert len(assistant_messages) == 1
     assert assistant_messages[0].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_code_as_action_emits_spec_named_acquisition_exploration_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.agent import engine
+
+    class FakeGateway:
+        calls = 0
+
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "type": "tool_call",
+                    "index": 0,
+                    "id": "code",
+                    "name": "code_as_action",
+                    "arguments": '{"script":"print(42)"}',
+                }
+            else:
+                yield {"type": "text", "content": "done"}
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "sandbox_output", "stream": "stdout", "data": "42"}
+
+    monkeypatch.setattr(engine, "stream_code_as_action", fake_stream)
+    events = [
+        event
+        async for event in run_agent(
+            FakeGateway(),
+            object(),
+            "default",
+            [{"role": "user", "content": "run code"}],
+            tools=[CODE_AS_ACTION_TOOL],
+            tenant_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            run_id="w7-code-action-sse",
+        )
+    ]
+
+    notice = next(event for event in events if event["type"] == "acquisition_exploration")
+    mapped = public_agent_event(notice)
+    assert mapped is not None
+    assert mapped[0] == "acquisition_exploration"
+    assert mapped[1]["source_run_id"] == "w7-code-action-sse"
+    assert mapped[1]["strategy"] == "code_as_action"
+    assert mapped[1]["status"] == "succeeded"
+
+
+def test_acquired_mcp_confirmation_public_args_are_redacted_but_persisted_args_remain_executable() -> None:
+    from app.core.agent.tool_router import AcquiredToolConfirmationRequired
+
+    confirmation = AcquiredToolConfirmationRequired(
+        tool_name="mcp__demo__send",
+        args={"api_key": "sk-secret", "query": "hello"},
+        risk="risky",
+        confirmation_context={"target_id": "target-1"},
+        code="RUNTIME_CONFIRMATION_REQUIRED",
+        message="confirm",
+    )
+    raw_args = dict(confirmation.original_args)
+    raw_args["__public_args"] = dict(confirmation.sanitized_args)
+    mapped = public_agent_event(
+        {
+            "type": "confirmation_required",
+            "tool_call_id": "call-1",
+            "tool_name": confirmation.tool_name,
+            "args": raw_args,
+            "risk": confirmation.risk,
+            "timeout_s": 30,
+        }
+    )
+
+    assert mapped is not None
+    payload = mapped[1]
+    assert payload["args"]["api_key"] == "[redacted]"
+    assert payload["args"]["query"] == "hello"
+    assert payload[PERSISTED_CONFIRMATION_ARGS_ARG]["api_key"] == "sk-secret"
+
+
+def test_acquired_api_confirmation_hides_manifest_version_from_public_args() -> None:
+    mapped = public_agent_event(
+        {
+            "type": "confirmation_required",
+            "tool_call_id": "call-api",
+            "tool_name": "api__weather_write",
+            "args": {
+                "city": "Paris",
+                "api_key": "sk-secret",
+                "__acquired_tool_manifest_version": "manifest-v1",
+            },
+            "risk": "risky",
+            "timeout_s": 30,
+        }
+    )
+
+    assert mapped is not None
+    payload = mapped[1]
+    assert payload["args"] == {"city": "Paris", "api_key": "[redacted]"}
+    assert payload[PERSISTED_CONFIRMATION_ARGS_ARG]["api_key"] == "sk-secret"
+    assert payload[PERSISTED_CONFIRMATION_ARGS_ARG]["__acquired_tool_manifest_version"] == "manifest-v1"
+
+
+@pytest.mark.asyncio
+async def test_persisted_confirmation_keeps_raw_args_out_of_message_metadata(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+) -> None:
+    from app.api.deps import _async_session_factory
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "confirmation-redaction"},
+    )
+    assert created.status_code == 200, created.text
+    conv_id = uuid.UUID(created.json()["id"])
+
+    async with _async_session_factory() as db:
+        await persist_confirmation_required(
+            db,
+            conv_id,
+            tool_call_id="call-secret",
+            tool_name="api__demo__send",
+            args={"api_key": "sk-secret", "query": "hello", "__acquired_tool_manifest_version": "manifest-v1"},
+            public_args={"api_key": "[redacted]", "query": "hello", "__acquired_tool_manifest_version": "manifest-v1"},
+            risk="risky",
+            timeout_s=30,
+        )
+        message = (
+            await db.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id, Message.role == "tool")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+        confirmation = (
+            await db.execute(
+                select(ToolConfirmation).where(ToolConfirmation.conversation_id == conv_id)
+            )
+        ).scalar_one()
+
+    assert message is not None
+    assert "sk-secret" not in repr(message.meta_data)
+    assert "__acquired_tool_manifest_version" not in message.meta_data["args"]
+    assert message.meta_data["args"]["api_key"] == "[redacted]"
+    assert confirmation.args["api_key"] == "sk-secret"
+    assert confirmation.args["__acquired_tool_manifest_version"] == "manifest-v1"
 
 
 @pytest.mark.asyncio
@@ -951,6 +1104,168 @@ async def test_disconnected_stream_cancels_running_agent_task(
         assert [chunk async for chunk in response.body_iterator] == []
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stream_disconnect_does_not_drop_durable_acquisition_analysis(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+) -> None:
+    from app.api.deps import _async_session_factory
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class BlockingGateway:
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            if False:
+                yield {}
+
+    class DisconnectedAfterStart:
+        async def is_disconnected(self) -> bool:
+            await started.wait()
+            return True
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "disconnect-acquisition-outbox-test"},
+    )
+    assert created.status_code == 200, created.text
+    conv_id = uuid.UUID(created.json()["id"])
+    token = tenant_a_headers["Authorization"].removeprefix("Bearer ")
+    identity = decode_token(token)
+    tenant_id = identity["tenant_id"]
+    user_id = identity["user_id"]
+
+    async with _async_session_factory() as db:
+        response = await build_chat_stream_response(
+            BlockingGateway(),
+            object(),
+            db,
+            conv_id,
+            [{"role": "user", "content": "hi"}],
+            DisconnectedAfterStart(),
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        assert [chunk async for chunk in response.body_iterator] == []
+
+    assert cancelled.is_set()
+
+    async with _async_session_factory() as db:
+        jobs = list(
+            (
+                await db.execute(
+                    select(AcquisitionAnalysisJob).where(
+                        AcquisitionAnalysisJob.tenant_id == uuid.UUID(tenant_id),
+                        AcquisitionAnalysisJob.user_id == uuid.UUID(user_id),
+                        AcquisitionAnalysisJob.source_kind == "conversation_stream",
+                    )
+                )
+            ).scalars()
+        )
+
+    matching = [
+        job
+        for job in jobs
+        if isinstance(job.payload, dict) and job.payload.get("conversation_id") == str(conv_id)
+    ]
+    assert len(matching) == 1
+    assert matching[0].payload["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_done_is_sent_after_durable_analysis_enqueue(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+) -> None:
+    from app.api.deps import _async_session_factory
+
+    class FakeGateway:
+        async def chat_stream(self, provider, messages, tools, tenant_id=None):
+            _ = (provider, messages, tools, tenant_id)
+            yield {"type": "text", "content": "Next time I will reuse the release checklist."}
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "done-after-durable-enqueue"},
+    )
+    assert created.status_code == 200, created.text
+    conv_id = uuid.UUID(created.json()["id"])
+    token = tenant_a_headers["Authorization"].removeprefix("Bearer ")
+    identity = decode_token(token)
+    tenant_id = identity["tenant_id"]
+    user_id = identity["user_id"]
+
+    async with _async_session_factory() as db:
+        response = await build_chat_stream_response(
+            FakeGateway(),
+            object(),
+            db,
+            conv_id,
+            [{"role": "user", "content": "Remember this release checklist."}],
+            None,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        iterator = response.body_iterator
+        chunks: list[str] = []
+        while True:
+            chunk = await iterator.__anext__()
+            text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+            chunks.append(text)
+            if "event: done" in text:
+                break
+        if hasattr(iterator, "aclose"):
+            await iterator.aclose()
+
+    events = _parse_sse("".join(chunks))
+    assert [name for name, _ in events] == ["text", "done"]
+
+    async with _async_session_factory() as db:
+        acquisition_jobs = list(
+            (
+                await db.execute(
+                    select(AcquisitionAnalysisJob).where(
+                        AcquisitionAnalysisJob.tenant_id == uuid.UUID(tenant_id),
+                        AcquisitionAnalysisJob.user_id == uuid.UUID(user_id),
+                        AcquisitionAnalysisJob.source_kind == "conversation_stream",
+                    )
+                )
+            ).scalars()
+        )
+        candidate_jobs = list(
+            (
+                await db.execute(
+                    select(CapabilityAnalysisJob).where(
+                        CapabilityAnalysisJob.tenant_id == uuid.UUID(tenant_id),
+                        CapabilityAnalysisJob.user_id == uuid.UUID(user_id),
+                        CapabilityAnalysisJob.source_kind == "conversation",
+                    )
+                )
+            ).scalars()
+        )
+
+    matching_acquisition_jobs = [
+        job
+        for job in acquisition_jobs
+        if isinstance(job.payload, dict) and job.payload.get("conversation_id") == str(conv_id)
+    ]
+    matching_candidate_jobs = [
+        job
+        for job in candidate_jobs
+        if isinstance(job.payload, dict) and job.payload.get("conversation_id") == str(conv_id)
+    ]
+    assert len(matching_acquisition_jobs) == 1
+    assert matching_acquisition_jobs[0].payload["status"] == "completed"
+    assert len(matching_candidate_jobs) == 1
 
 
 @pytest.mark.asyncio
