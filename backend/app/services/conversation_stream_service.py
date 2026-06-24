@@ -7,6 +7,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -40,10 +41,12 @@ from app.core.memory.short_term import append_short_term_context
 from app.core.observability import increment_runtime_metric
 from app.core.secrets import safe_error_message
 from app.core.sandbox.manager import SandboxManager
+from app.core.browser_automation import get_browser_tool_definitions
 from app.core.tools.api_runtime import get_api_tool_definitions
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.mcp.manager import mcp_manager
+from app.core.workspace_connectors.mounts import sandbox_mount_payload_from_context
 from app.core.workers.control_intent import (
     WORKER_DELETE_TOOL_NAME,
     execute_confirmed_worker_delete,
@@ -57,6 +60,9 @@ from app.models.tool_confirmation import ToolConfirmation
 
 DEFAULT_CONFIRMATION_TIMEOUT_S = 30
 API_ACQUISITION_CONFIRMATION_CONTEXT_ARG = "__acquisition_confirmation_context"
+WORKSPACE_CONNECTOR_CONTEXT_ARG = "__workspace_connector_context"
+PUBLIC_CONFIRMATION_ARGS_ARG = "__public_args"
+PERSISTED_CONFIRMATION_ARGS_ARG = "__persisted_args"
 
 
 async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[dict]:
@@ -65,7 +71,8 @@ async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[di
     async with _async_session_factory() as db:
         configs = await get_tool_configurations(db, tenant_id)
         api_tools = await get_api_tool_definitions(db, tenant_id, user_id=user_id) if user_id else []
-    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + api_tools + [CODE_AS_ACTION_TOOL]
+        browser_tools = await get_browser_tool_definitions(db, tenant_id, user_id=user_id) if user_id else []
+    tools = ALL_TOOLS + mcp_manager.get_all_tools(tenant_id) + api_tools + browser_tools + [CODE_AS_ACTION_TOOL]
     return filter_enabled_tools(
         [apply_tool_configuration(tool, configs.get(_tool_name(tool))) for tool in tools]
     )
@@ -73,6 +80,75 @@ async def get_agent_tools(tenant_id: str, user_id: str | None = None) -> list[di
 
 def _tool_name(tool: dict) -> str:
     return tool.get("function", {}).get("name", "")
+
+
+def _public_confirmation_args(args: dict | None, *, tool_name: str | None = None) -> dict:
+    """Return confirmation args safe for public SSE payloads and message metadata."""
+
+    safe_args = dict(args or {})
+    public_args = safe_args.pop(PUBLIC_CONFIRMATION_ARGS_ARG, None)
+    if isinstance(public_args, dict):
+        safe_args = dict(public_args)
+    if tool_name and tool_name.startswith("browser__"):
+        safe_args = _redact_browser_public_args(safe_args)
+    safe_args.pop(WORKSPACE_CONNECTOR_CONTEXT_ARG, None)
+    safe_args.pop(API_ACQUISITION_CONFIRMATION_CONTEXT_ARG, None)
+    safe_args.pop("__worker_policy_context", None)
+    return safe_args
+
+
+def _persisted_confirmation_args(args: dict | None) -> dict:
+    """Return backend-only confirmation args that remain executable on approve."""
+
+    persisted_args = dict(args or {})
+    persisted_args.pop(PUBLIC_CONFIRMATION_ARGS_ARG, None)
+    persisted_args.pop(PERSISTED_CONFIRMATION_ARGS_ARG, None)
+    persisted_args.pop(WORKSPACE_CONNECTOR_CONTEXT_ARG, None)
+    return persisted_args
+
+
+def _redact_browser_public_args(args: dict) -> dict:
+    redacted_keys = {
+        "authorization",
+        "api_key",
+        "cookie",
+        "cookies",
+        "password",
+        "screenshot",
+        "secret",
+        "text",
+        "token",
+        "value",
+    }
+
+    def redact(value: Any, *, key: str = "") -> Any:
+        key_lower = key.lower()
+        if key_lower in redacted_keys:
+            return "[REDACTED]"
+        if key_lower == "url" and isinstance(value, str):
+            return _sanitize_public_browser_url(value)
+        if isinstance(value, dict):
+            return {
+                str(child_key): redact(child_value, key=str(child_key))
+                for child_key, child_value in value.items()
+                if not str(child_key).startswith("__")
+            }
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    safe_value = redact(args)
+    return safe_value if isinstance(safe_value, dict) else {}
+
+
+def _sanitize_public_browser_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "[REDACTED]"
+    if parsed.username or parsed.password:
+        return "[REDACTED]"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 def build_confirmation_message(
@@ -96,7 +172,7 @@ def build_confirmation_message(
     if tool_name:
         meta_data["tool_name"] = tool_name
     if args is not None:
-        meta_data["args"] = args
+        meta_data["args"] = _public_confirmation_args(args, tool_name=tool_name)
 
     if content is None:
         if confirmation == "pending":
@@ -134,7 +210,7 @@ async def persist_confirmation_required(
     timeout_s: int,
     worker_policy_context: dict | None = None,
 ) -> None:
-    persisted_args = dict(args or {})
+    persisted_args = _persisted_confirmation_args(args)
     if worker_policy_context:
         persisted_args["__worker_policy_context"] = worker_policy_context
     db.add(
@@ -154,7 +230,7 @@ async def persist_confirmation_required(
             confirmation="pending",
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            args=persisted_args,
+            args=args,
             risk=risk,
             timeout_s=timeout_s,
         )
@@ -242,10 +318,11 @@ def public_agent_event(event: dict) -> tuple[str, dict] | None:
     if event_type == "text":
         return "text", {"delta": event.get("content", "")}
     if event_type == "tool_call_start":
+        tool_name = event.get("name", "")
         return "tool_call", {
             "id": event.get("tool_call_id", ""),
-            "name": event.get("name", ""),
-            "args": event.get("args") or {},
+            "name": tool_name,
+            "args": _public_confirmation_args(event.get("args"), tool_name=tool_name),
             "risk": event.get("risk", "risky"),
             "status": "started",
         }
@@ -279,10 +356,13 @@ def public_agent_event(event: dict) -> tuple[str, dict] | None:
             "container_id": event.get("container_id", ""),
         }
     if event_type == "confirmation_required":
+        tool_name = event.get("tool_name", "")
+        raw_args = dict(event.get("args") or {})
         return "confirmation_required", {
             "tool_call_id": event.get("tool_call_id", ""),
-            "tool_name": event.get("tool_name", ""),
-            "args": event.get("args") or {},
+            "tool_name": tool_name,
+            "args": _public_confirmation_args(raw_args, tool_name=tool_name),
+            PERSISTED_CONFIRMATION_ARGS_ARG: _persisted_confirmation_args(raw_args),
             "risk": event.get("risk", "destructive"),
             "timeout_s": event.get("timeout_s", DEFAULT_CONFIRMATION_TIMEOUT_S),
             "worker_policy_context": event.get("worker_policy_context"),
@@ -303,6 +383,12 @@ def public_agent_event(event: dict) -> tuple[str, dict] | None:
     return None
 
 
+def _public_event_data(data: dict) -> dict:
+    """Drop backend-only fields before sending SSE payloads."""
+
+    return {key: value for key, value in data.items() if not str(key).startswith("__")}
+
+
 async def build_chat_stream_response(
     gateway: LLMGateway,
     sandbox_manager: SandboxManager,
@@ -316,6 +402,7 @@ async def build_chat_stream_response(
     provider: str = "default",
     context_summary: dict | None = None,
     attachments: list[Artifact] | None = None,
+    connector_mount_context: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     queue: asyncio.Queue = asyncio.Queue()
     run_id = str(uuid.uuid4())
@@ -371,6 +458,7 @@ async def build_chat_stream_response(
             user_id=user_id,
             run_id=run_id,
             workspace_base=workspace_base,
+            connector_mount_context=connector_mount_context,
         )
     )
     heartbeat_task = asyncio.create_task(heartbeat_loop(queue))
@@ -426,13 +514,13 @@ async def build_chat_stream_response(
                         conv_id,
                         tool_call_id=data.get("tool_call_id", ""),
                         tool_name=data["tool_name"],
-                        args=data["args"],
+                        args=data.get(PERSISTED_CONFIRMATION_ARGS_ARG) or data["args"],
                         risk=data["risk"],
                         timeout_s=data["timeout_s"],
                         worker_policy_context=data.get("worker_policy_context"),
                     )
 
-                yield sse_event(event_type, data, event_id=str(event_index))
+                yield sse_event(event_type, _public_event_data(data), event_id=str(event_index))
 
         except asyncio.CancelledError:
             cancelled = True
@@ -527,6 +615,7 @@ async def run_agent_stream(
     user_id: str | None = None,
     run_id: str | None = None,
     workspace_base: str | None = None,
+    connector_mount_context: dict[str, Any] | None = None,
 ) -> None:
     try:
         tools = await get_agent_tools(tenant_id, user_id)
@@ -581,6 +670,7 @@ async def run_agent_stream(
             conversation_id=conversation_id,
             run_id=run_id,
             workspace_base=workspace_base,
+            connector_mount_context=connector_mount_context,
         ):
             mapped = public_agent_event(event)
             if mapped is not None:
@@ -648,11 +738,14 @@ async def execute_confirmed_tool(
     run_id: str | None = None,
     worker_context: dict | None = None,
     risk: str | None = None,
+    connector_mount_context: dict[str, Any] | None = None,
 ) -> str | ToolExecutionResult:
     args, persisted_worker_context = unpack_confirmed_tool_args(args)
     acquisition_confirmation_context = args.pop(API_ACQUISITION_CONFIRMATION_CONTEXT_ARG, None)
+    args.pop(WORKSPACE_CONNECTOR_CONTEXT_ARG, None)
     args.pop("__confirmed", None)
     effective_worker_context = worker_context or persisted_worker_context
+    effective_connector_context = connector_mount_context
     require_confirmed_worker_tool_policy(tool_name, effective_worker_context, risk=risk)
     if tool_name == WORKER_DELETE_TOOL_NAME:
         return await execute_confirmed_worker_delete(
@@ -667,6 +760,7 @@ async def execute_confirmed_tool(
             gateway=gateway,
             tenant_id=tenant_id,
             parent_budget=100_000,
+            mount_bundle=sandbox_mount_payload_from_context(effective_connector_context),
         )
     if tool_name == "shell_exec":
         return await execute_shell_exec(tool_name, args, sandbox)
@@ -680,6 +774,8 @@ async def execute_confirmed_tool(
     }
     if isinstance(acquisition_confirmation_context, dict):
         tool_context["confirmation_context"] = {**acquisition_confirmation_context, "confirmed": True}
+    if effective_connector_context:
+        tool_context.update(effective_connector_context)
 
     result = await execute_tool(
         tool_name,
@@ -700,6 +796,7 @@ async def build_confirmation_stream_response(
     sandbox: SandboxManager,
     provider: str = "default",
     system_prompt: str = "You are a helpful AI assistant.",
+    connector_mount_context: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     from app.api.deps import _async_session_factory
 
@@ -771,6 +868,7 @@ async def build_confirmation_stream_response(
                     run_id=str(uuid.uuid4()),
                     worker_context=resolved_worker_context,
                     risk=risk,
+                    connector_mount_context=connector_mount_context,
                 )
                 confirmed_artifacts: list[dict] = []
                 if isinstance(confirmed_execution, ToolExecutionResult):
@@ -822,6 +920,7 @@ async def build_confirmation_stream_response(
                 user_id=user["user_id"],
                 conversation_id=str(conv_uuid),
                 worker_context=resolved_worker_context,
+                connector_mount_context=connector_mount_context,
             ):
                 mapped = public_agent_event(event)
                 if mapped is None:
@@ -839,7 +938,7 @@ async def build_confirmation_stream_response(
                             conv_uuid,
                             tool_call_id=data.get("tool_call_id", ""),
                             tool_name=data["tool_name"],
-                            args=data["args"],
+                            args=data.get(PERSISTED_CONFIRMATION_ARGS_ARG) or data["args"],
                             risk=data["risk"],
                             timeout_s=data["timeout_s"],
                             worker_policy_context=data.get("worker_policy_context"),
@@ -853,7 +952,7 @@ async def build_confirmation_stream_response(
                     )
                     return
 
-                yield sse_event(event_name, data, event_id=str(event_index))
+                yield sse_event(event_name, _public_event_data(data), event_id=str(event_index))
         except Exception as exc:
             event_index += 1
             increment_runtime_metric("sse_errors")

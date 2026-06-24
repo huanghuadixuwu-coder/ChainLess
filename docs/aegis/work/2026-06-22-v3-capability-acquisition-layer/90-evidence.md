@@ -449,9 +449,214 @@
   frontend` returned no frontend changes during W4.4 closure.
 - 2026-06-23: W4 subagents used for spec/code-quality review were closed after
   completion.
+- 2026-06-23: W5.1 implementation added Workspace Connector owner files
+  `backend/app/core/workspace_connectors/service.py`,
+  `backend/app/core/workspace_connectors/mounts.py`, and tests, plus
+  `sandbox-proxy/main.py` mount-bundle validation.
+- 2026-06-23: W5.1 spec review initially failed on non-authoritative approval
+  validation and missing trusted source-of-truth for real host paths. Fixes
+  added tenant/user-owned approved `ToolConfirmation` validation and encrypted
+  `host_path_secret_ref` via migration `0015_workspace_connector_host_path_secret.py`.
+- 2026-06-23: W5.1 spec review later failed because public
+  `WorkspaceConnectorContract` exposed `host_realpath_hash`. Fix removed the
+  hash from the public contract and added a contract test rejecting the field.
+- 2026-06-23: W5.1 code-quality review found approval replay, unsafe
+  `allowlist_rule`, trusted-source race, and loose sandbox mount schema
+  blockers. Fixes bound approval to action/purpose/mode/host identity and
+  one-time use, sanitized allowlist metadata, converted trusted source races to
+  `WorkspaceConnectorMountError`, and tightened sandbox schema/path checks.
+- 2026-06-23: W5.1 final quality review initially caught a stale ORM
+  identity-map risk in trusted-source lookup. Fix added
+  `.with_for_update().execution_options(populate_existing=True)` and
+  external-session disable regression coverage.
+- 2026-06-23: Controller reran W5.1 targeted verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_workspace_connectors.py tests/test_acquisition_api_contracts.py"` ->
+  `31 passed, 2 warnings`.
+- 2026-06-23: Controller reran W5.1 migration/API/model verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && alembic
+  downgrade 0014 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_workspace_connectors.py"` -> `44 passed, 2 warnings`.
+- 2026-06-23: W5.1 final spec compliance review and final code-quality review
+  passed with no Critical/Important findings. All W5.1 subagents/reviewers
+  were closed after completion.
+- 2026-06-23: Confirmed `git status --short -- frontend` returned no output
+  during W5.1 closure.
+- 2026-06-23: W5.2 implementation made file tools, production chat routes,
+  confirmation resume, sandbox-proxy, and code-as-action connector-aware.
+  Review loops fixed missing plan test coverage, skipped live Docker closure,
+  route-level connector context, untrusted args-carried connector context,
+  approved-source materialization, hot-path query/lock pressure, and
+  `read_write` snapshot semantics.
+- 2026-06-23: Controller reran W5.2 focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_file_tools.py tests/test_workspace_connectors.py
+  tests/test_file_task_closure.py"` -> `42 passed, 1 skipped, 2 warnings`.
+- 2026-06-23: Controller reran W5.2 route-context verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_contracts.py -k connector"` -> `1 passed, 21 deselected,
+  2 warnings`.
+- 2026-06-23: Controller reran W5.2 live Docker verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml --profile
+  live-docker run --rm -e PYTHONPATH=/repo/backend backend-test-live sh -lc
+  "cd /repo/backend && pytest -q tests/test_workspace_connectors.py -m
+  live_docker"` -> `1 passed, 30 deselected, 2 warnings`. The live test now
+  proves approved-source materialization into `/workspace/connectors/<id>`
+  before sandbox/code-as-action reads.
+- 2026-06-23: W5.2 final spec compliance review passed with no
+  Critical/Important findings after production routes built server-side
+  connector context and embedded `__workspace_connector_context` was ignored.
+- 2026-06-23: W5.2 final code-quality review passed with no
+  Critical/Important findings after runtime materialized connectors were made
+  snapshot-only/read-only and live materialization replaced target
+  pre-population.
+- 2026-06-23: Confirmed `git diff --check` had no whitespace errors, only CRLF
+  warnings. Confirmed `git status --short -- frontend` returned no frontend
+  changes during W5.2 closure.
+- 2026-06-23: W5.3 implementation added runtime acquisition evidence capture
+  for code-as-action through `backend/app/core/acquisition/facade.py` and the
+  bridge seam. Evidence stores script digest, bounded stdout/stderr excerpts,
+  sandbox event summaries, tool call metadata, risk classification, connector
+  summaries, and redacted paths; raw scripts are not durable keys.
+- 2026-06-23: W5.3 initial spec review failed on live sandbox nonzero exit
+  classification: `execute_disposable_parent` returns HTTP 200 with
+  `exit_code`, so failed Python scripts could be recorded as successful
+  exploration evidence. Fix added nonzero-exit detection after stdout/stderr
+  streaming and before completion, causing the engine to record failed
+  acquisition gap/exploration evidence.
+- 2026-06-23: W5.3 code-quality review failed on inline acquisition recording,
+  POSIX host-path leakage, and engine-side full-output accumulation before
+  truncation. Fixes made success/failure recording non-blocking best-effort
+  tasks with timeout/logging, added capped engine-side evidence buffers, and
+  expanded redaction for Windows, POSIX, workspace, and connector paths.
+- 2026-06-23: Controller reran W5.3 focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_acquisition_agent_integration.py"` -> `9 passed, 2 warnings`.
+- 2026-06-23: W5.3 final spec compliance review passed with no
+  Critical/Important findings after nonzero-exit coverage was added.
+- 2026-06-23: W5.3 final code-quality review passed with no
+  Critical/Important findings after slow-recorder success/failure coverage,
+  bounded evidence capture, and POSIX path redaction were added.
+- 2026-06-23: Controller reran W5 closure regression verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_file_tools.py tests/test_workspace_connectors.py
+  tests/test_file_task_closure.py"` -> `42 passed, 1 skipped, 2 warnings`.
+- 2026-06-23: Controller reran W5 route-context regression verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_contracts.py -k connector"` -> `1 passed, 21 deselected,
+  2 warnings`.
+- 2026-06-23: Controller reran W5 live Docker connector verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml --profile
+  live-docker run --rm -e PYTHONPATH=/repo/backend backend-test-live sh -lc
+  "cd /repo/backend && pytest -q tests/test_workspace_connectors.py -m
+  live_docker"` -> `1 passed, 30 deselected, 2 warnings`.
+- 2026-06-23: Confirmed `git diff --check` had no whitespace errors, only CRLF
+  warnings. Confirmed `git status --short -- frontend` returned no frontend
+  changes during W5 closure.
+- 2026-06-23: W6.1 implementation added Browser Automation Runtime owner files
+  under `backend/app/core/browser_automation/`, the compose-managed
+  `browser-runtime` image/service, runtime policy/trace/client owners, and
+  `backend/tests/test_browser_automation_runtime.py`.
+- 2026-06-23: W6.1 spec review initially failed on runtime egress gaps
+  (service worker/WebSocket bypass risk) and implicit `allowed_hosts`. Fixes
+  added explicit runtime `allowed_hosts`, service worker blocking,
+  fail-closed WebSocket routing, per-action write confirmation, runtime
+  deadline payloads, and sanitized runtime results.
+- 2026-06-23: W6.1 code-quality review found Important issues in sensitive
+  input traces, runtime URL/proxy trust, Dockerfile inline service
+  maintainability, missing real runtime smoke evidence, missing final fatal
+  network check, and disabled policy handling. Fixes split
+  `browser-runtime/runtime_service.py`, pinned internal runtime URL validation,
+  set `httpx.AsyncClient(trust_env=False)`, rejected disabled policies,
+  redacted `fill/type` `value/text` without opt-out, handled `type.text`, and
+  added final `guard.raise_if_violations()`.
+- 2026-06-23: Controller reran W6.1 focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_browser_automation_runtime.py"` -> `20 passed, 2 warnings`.
+- 2026-06-23: Controller built the real browser runtime image:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml build
+  browser-runtime` -> succeeded with `chainless-browser-runtime:w6-1`.
+- 2026-06-23: Controller verified real compose browser-runtime behavior:
+  `/health` returned `{"ok": true, "runtime_kind": "isolated_browser"}`;
+  `route_web_socket` existed in the container; `/run` navigating to
+  `https://example.com` with allowlist `example.com` returned HTTP 200 and
+  title `Example Domain`; `/run` navigating to `https://www.iana.org` with
+  allowlist `example.com` returned HTTP 400 `host is not allowlisted`.
+- 2026-06-23: W6.1 final spec compliance review passed with no
+  Critical/Important findings and confirmed Docker/firewall per-domain egress
+  is not required by written W6.1.
+- 2026-06-23: W6.1 final targeted code-quality re-review passed with no
+  Critical/Important findings after sensitive input opt-out removal and
+  runtime `type.text` handling were verified.
+- 2026-06-23: Confirmed `git diff --check` had no whitespace errors, only CRLF
+  warnings. Confirmed `git status --short -- frontend` returned no frontend
+  changes during W6.1 closure.
+- 2026-06-23: W6.2 implementation registered Browser Automation as an
+  activation target. New runtime owners added activation materialization,
+  active-tool registry exposure, browser tool execution, acquisition policy
+  checks, manifest version evidence, rollback hiding, and confirmation replay
+  support. Agent/tool APIs now expose active verified `browser__*` tools.
+- 2026-06-23: W6.2 spec review initially found Important gaps in acquisition
+  egress authority and live compose-runtime proof. Fixes required activation
+  `allowed_hosts` to stay within `permission_bundle.egress_policy.allow_hosts`,
+  evaluated explicit action URLs through acquisition egress policy with DNS
+  evidence before runtime execution, added `browser-runtime` as a
+  `backend-test` health dependency, and added a live activated browser runtime
+  test.
+- 2026-06-23: Controller reran W6.2 focused verification after spec fixes:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_browser_automation_runtime.py tests/test_acquisition_policy.py"`
+  -> `97 passed, 2 warnings`; Docker output showed
+  `chainless-browser-runtime-test` running and healthy.
+- 2026-06-23: W6.2 spec re-review passed with no Critical/Important findings.
+  It confirmed acquisition egress checks and live compose runtime proof were
+  closed.
+- 2026-06-23: W6.2 code-quality review found Important issues in raw browser
+  args leaking through public SSE and approved confirmations replaying
+  redacted values instead of executable original args. Fixes separated
+  backend-only persisted args from public redacted args, stripped internal
+  double-underscore fields before SSE, and preserved original executable args
+  for approved browser replay.
+- 2026-06-23: Targeted quality re-review then found browser URL query/fragment
+  and URL userinfo redaction gaps. Fixes made browser public serialization
+  strip query/fragment, redact URL userinfo as `[REDACTED]`, and always pass
+  browser `__public_args` through the same browser public redactor.
+- 2026-06-23: Controller reran browser runtime tests after public/persisted
+  argument fixes:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_browser_automation_runtime.py"` -> `31 passed, 2 warnings`.
+- 2026-06-23: Controller reran W6.2 final focused verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_browser_automation_runtime.py tests/test_acquisition_policy.py"`
+  -> `100 passed, 2 warnings`; Docker output showed
+  `chainless-browser-runtime-test` running and healthy.
+- 2026-06-23: Controller reran API/SSE regression verification:
+  `docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_api_contracts.py
+  tests/test_file_upload_security.py::test_available_tools_endpoint_is_user_readable_for_chat_picker
+  tests/test_sse_contract.py"` -> `42 passed, 2 warnings`.
+- 2026-06-23: W6.2 final targeted code-quality re-review passed with no
+  Critical/Important findings. It confirmed prior quality findings were closed:
+  public `__public_args` are re-redacted for browser tools, URL userinfo is
+  redacted, query/fragment are stripped, and original backend replay args are
+  preserved internally.
+- 2026-06-23: Confirmed `git diff --check` had no whitespace errors, only CRLF
+  warnings. Confirmed `git status --short -- frontend` returned no frontend
+  changes during W6.2 closure.
 
 ## Pending Evidence
 
-- W5 RED/GREEN evidence.
-- W5 spec compliance review.
-- W5 code quality review.
+- None for Workstream 6.

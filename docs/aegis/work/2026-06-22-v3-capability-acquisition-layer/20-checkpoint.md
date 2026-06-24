@@ -2,7 +2,7 @@
 
 ## TodoCheckpointDraft
 
-Current todo: Workstream 4 complete; ready for Workstream 5.
+Current todo: Workstream 6 complete; ready for Workstream 7.
 
 Completed todos:
 - Plan engineering review completed and patched.
@@ -335,15 +335,169 @@ Completed todos:
   safe false-positive risk for W4.
 - Confirmed `git status --short -- frontend` returned no frontend changes
   during W4.4 closure.
+- W5.1 implementation added Workspace Connector owner files,
+  encrypted trusted host-path source storage, sanitized mount bundle contracts,
+  sandbox-proxy mount-bundle validation, approval binding, revocation handling,
+  and migration `0015_workspace_connector_host_path_secret.py`.
+- W5.1 initial spec review failed on non-authoritative approval validation and
+  missing trusted source-of-truth for real host paths. Fixes bound connector
+  creation to approved tenant/user `ToolConfirmation` records and added
+  encrypted-at-rest `host_path_secret_ref` for trusted mount orchestration only.
+- W5.1 second spec review failed because public `WorkspaceConnectorContract`
+  exposed `host_realpath_hash`. Fix removed the hash from the public contract
+  while keeping internal DB-only hash and encrypted path source.
+- W5.1 code-quality review found approval replay/argument binding gaps,
+  unsafe `allowlist_rule` merging, trusted-source race error handling gaps, and
+  loose sandbox-proxy mount schema. Fixes bound approval to action, purpose,
+  mode, host identity, tenant/user, and one-time use; sanitized caller
+  allowlist metadata; converted trusted-source races to
+  `WorkspaceConnectorMountError`; and required explicit v1 schema plus
+  connector-id-matching paths in sandbox-proxy.
+- W5.1 final code-quality re-review found no Critical/Important findings after
+  adding forced fresh ORM refresh/row lock on trusted-source lookup and
+  external-session disable regression coverage.
+- Controller final W5.1 verification passed:
+  `pytest -q tests/test_workspace_connectors.py tests/test_acquisition_api_contracts.py`
+  -> `31 passed, 2 warnings`.
+- Controller final W5.1 migration/API/model verification passed:
+  `alembic downgrade 0014 && alembic upgrade head && pytest -q
+  tests/test_acquisition_models.py tests/test_acquisition_api_contracts.py
+  tests/test_workspace_connectors.py` -> `44 passed, 2 warnings`.
+- Confirmed `git status --short -- frontend` returned no frontend changes
+  during W5.1 closure.
+- W5.2 implementation made file tools connector-aware, blocked raw
+  `workspace_base` host overrides, kept run workspaces scoped under the
+  configured workspace root, propagated connector mount bundles to
+  sandbox/code-as-action, and wired production chat/confirmation routes to
+  build server-side connector runtime context.
+- W5.2 review found and fixed multiple closure gaps: missing plan test file,
+  skipped live Docker connector reads, missing production route context,
+  untrusted connector context embedded in tool args, lack of approved-source
+  materialization into the shared Docker volume, hot-path per-connector row
+  locking, and misleading `read_write` snapshot semantics.
+- W5.2 now materializes approved connector sources into
+  `/workspace/connectors/<connector_id>` before runtime use. Runtime
+  materialized connectors are intentionally snapshot-only and exposed as
+  `read_only`; durable explicit owner resolvers still preserve connector mode.
+- Controller final W5.2 verification passed:
+  `pytest -q tests/test_file_tools.py tests/test_workspace_connectors.py
+  tests/test_file_task_closure.py` -> `42 passed, 1 skipped, 2 warnings`.
+- Controller final W5.2 API route verification passed:
+  `pytest -q tests/test_api_contracts.py -k connector` -> `1 passed,
+  21 deselected, 2 warnings`.
+- Controller final W5.2 live Docker verification passed:
+  `pytest -q tests/test_workspace_connectors.py -m live_docker` -> `1 passed,
+  30 deselected, 2 warnings`; the live test proves approved-source
+  materialization before sandbox/code-as-action reads.
+- W5.2 final spec compliance review and final code-quality review passed with
+  no Critical/Important findings. All W5.2 subagents/reviewers were closed
+  after completion.
+- Confirmed `git diff --check` passed with CRLF warnings only and
+  `git status --short -- frontend` returned no frontend changes during W5.2
+  closure.
+- W5.3 implementation added runtime-facing acquisition facade
+  `backend/app/core/acquisition/facade.py`, bridge export wiring, and
+  code-as-action engine integration. Code-as-action success/failure now emits
+  structured evidence with script digest, bounded outputs, tool call metadata,
+  risk classification, connector summaries, and redacted paths.
+- W5.3 review found and fixed a live-runtime failure classification gap:
+  sandbox runs with nonzero `exit_code` previously completed the stream and
+  could be recorded as successful exploration evidence. `stream_code_as_action`
+  now yields captured stdout/stderr, emits an error event, and raises so the
+  engine records a failed acquisition gap/exploration.
+- W5.3 code-quality review found and fixed hot-path and privacy issues:
+  acquisition recording no longer blocks success or failure tool completion,
+  engine-side evidence capture uses capped buffers before recorder handoff, and
+  facade redaction covers Windows and POSIX host paths plus connector/workspace
+  paths.
+- Controller final W5.3 verification passed:
+  `pytest -q tests/test_acquisition_agent_integration.py` -> `9 passed,
+  2 warnings`.
+- Controller W5 closure regression verification passed:
+  `pytest -q tests/test_file_tools.py tests/test_workspace_connectors.py
+  tests/test_file_task_closure.py` -> `42 passed, 1 skipped, 2 warnings`;
+  `pytest -q tests/test_api_contracts.py -k connector` -> `1 passed,
+  21 deselected, 2 warnings`; live Docker
+  `pytest -q tests/test_workspace_connectors.py -m live_docker` -> `1 passed,
+  30 deselected, 2 warnings`.
+- W5.3 final spec compliance review and final code-quality review passed with
+  no Critical/Important findings. The remaining quality Minor was fixed before
+  closure so both success and failure acquisition recording are scheduled as
+  non-blocking best-effort tasks with bounded timeout and logging.
+- Confirmed `git diff --check` passed with CRLF warnings only and
+  `git status --short -- frontend` returned no frontend changes during W5
+  closure.
+- W6.1 implementation added the compose-managed Browser Automation Runtime
+  owner/service/client: `backend/app/core/browser_automation/`,
+  `browser-runtime/Dockerfile`, `browser-runtime/runtime_service.py`, compose
+  wiring, and `backend/tests/test_browser_automation_runtime.py`.
+- W6.1 initial spec review failed on incomplete browser egress coverage and
+  implicit `allowed_hosts`. Fixes made runtime allowed hosts explicit,
+  blocked service workers, added fail-closed WebSocket routing, sanitized
+  runtime results, and bound per-action write confirmations.
+- W6.1 code-quality review failed on sensitive input trace leakage, unpinned
+  runtime URL/proxy trust, inline runtime service maintainability, missing real
+  runtime smoke evidence, missing final fatal network check, and disabled
+  policy handling. Fixes split `runtime_service.py`, pinned
+  `http://browser-runtime:9222`, set `httpx` `trust_env=False`, rejected
+  disabled policies, removed sensitive input redaction opt-outs, fixed
+  `type` action text handling, added final `guard.raise_if_violations()`,
+  and switched to a buildable Playwright image plus pinned Python package.
+- Controller final W6.1 verification passed:
+  `pytest -q tests/test_browser_automation_runtime.py` -> `20 passed,
+  2 warnings`; `docker-compose ... build browser-runtime` succeeded;
+  real compose runtime `/health` returned ok; real `/run` to
+  `https://example.com` returned HTTP 200 with `Example Domain`; real `/run`
+  to `https://www.iana.org` with allowlist `example.com` returned HTTP 400
+  `host is not allowlisted`.
+- W6.1 final spec compliance review and targeted code-quality re-review passed
+  with no Critical/Important findings. All W6.1 subagents/reviewers were
+  closed after completion.
+- Confirmed `git diff --check` had no whitespace errors, only CRLF warnings.
+  Confirmed `git status --short -- frontend` returned no frontend changes
+  during W6.1 closure.
+- W6.2 implementation registered Browser Automation as a real activation
+  target: activation hooks materialize durable
+  `BrowserAutomationConfiguration` records, active verified browser tools are
+  exposed in Agent/tool APIs, tool-router execution dispatches `browser__*`
+  tools, manifest evidence is versioned, rollback hides/disables target
+  manifest refs, and confirmation resume passes through the same acquisition
+  runtime policy gate.
+- W6.2 spec review initially found Important gaps in acquisition egress
+  authority and live compose-runtime proof. Fixes bound browser activation
+  hosts to `permission_bundle.egress_policy.allow_hosts`, preflight every
+  explicit browser action URL through acquisition egress policy with DNS
+  evidence, made `backend-test` depend on the compose `browser-runtime`
+  healthcheck, and added a live activated browser target runtime test.
+- W6.2 code-quality review found Important gaps in public browser argument
+  leakage and confirmation replay of redacted values. Fixes separated public
+  redacted args from backend persisted executable args, stripped internal
+  `__*` fields before SSE, redacted browser `value/text`, URL query/fragment,
+  and URL userinfo, and added regressions proving public redaction plus
+  original-arg replay on approval.
+- W6.2 final targeted spec and code-quality re-reviews passed with no
+  Critical/Important findings. All W6.2 subagents/reviewers were closed after
+  completion.
+- Controller final W6.2 verification passed:
+  `pytest -q tests/test_browser_automation_runtime.py tests/test_acquisition_policy.py`
+  -> `100 passed, 2 warnings`; the Docker output showed
+  `chainless-browser-runtime-test` running and healthy.
+- Controller W6.2 API/SSE regression verification passed:
+  `pytest -q tests/test_api_contracts.py
+  tests/test_file_upload_security.py::test_available_tools_endpoint_is_user_readable_for_chat_picker
+  tests/test_sse_contract.py` -> `42 passed, 2 warnings`.
+- Confirmed `git diff --check` had no whitespace errors, only CRLF warnings.
+  Confirmed `git status --short -- frontend` returned no frontend changes
+  during W6.2 closure.
 
 Active slice:
-- Workstream 4 complete.
+- Workstream 7 next.
 
 Next step:
-- Enter Workstream 5 when the user asks to proceed.
+- Enter Workstream 7 only after user approval or next instruction.
 
 Blocked-on:
-- None at start.
+- None.
 
 ## ResumeStateHint
 
@@ -361,6 +515,7 @@ Current decision: continue.
 
 Scope alignment:
 - Inside V3 execution plan.
+- W6 is now authorized by the user after W5 closure.
 
 Compatibility boundary:
 - No frontend style edits.
@@ -394,6 +549,21 @@ Retirement track:
   verification/approval/snapshot/audit/rollback state; Worker, Skill, and
   Memory persistence/runtime effects remain in their V2 owners. Candidate
   metadata remains inert and is not used as V3 activation state.
+- W5.1 completed the Workspace Connector ownership boundary. Acquisition
+  stores internal hashes and encrypted host path source only for trusted mount
+  orchestration; public contracts, agent context, sandbox payloads, and audit
+  records remain sanitized.
+- W5.2 completed the connector runtime propagation boundary. Production chat
+  and confirmation routes build server-side connector context, file tools and
+  code-as-action receive sanitized mount bundles, approved sources are
+  materialized into the shared workspace volume for sandbox visibility, and
+  materialized runtime connectors are snapshot-only/read-only until a future
+  sync-back owner is explicitly designed.
+- W5.3 completed the code-as-action acquisition evidence boundary. The engine
+  emits bounded evidence through the acquisition facade/bridge seam, while
+  acquisition lifecycle remains the durable owner for gaps, explorations, and
+  recommendations. Runtime recording is best-effort and cannot block user task
+  completion.
 
 Evidence state:
 - W1 accepted for next phase by Docker verification plus final spec/code-quality
@@ -425,3 +595,29 @@ Evidence state:
   spec/code-quality review.
 - W4 accepted for W5 by W4 runtime-target regression verification and drift
   check.
+- W5.1 accepted for W5.2 by Docker verification plus final spec/code-quality
+  review. Residual risk: W5.2 must still wire connector bundles into file tools
+  and code-as-action; W5.1 only establishes the owner and mount contract.
+- W5.2 accepted for W5.3 by Docker verification plus final spec/code-quality
+  review. Residual risk: W5.3 must still record code-as-action exploration
+  evidence into acquisition outcomes; W5.2 only makes connector-backed runtime
+  access real and sanitized.
+- W5.3 accepted for W5 closure by Docker verification plus final
+  spec/code-quality review. The initial spec review failure on nonzero sandbox
+  exit classification was fixed and re-reviewed. The quality review failures
+  on inline recording, POSIX host-path redaction, and uncapped engine evidence
+  capture were fixed and re-reviewed. A later Minor on failure-path blocking
+  was fixed before closure.
+- W5 accepted for next phase by W5.1, W5.2, and W5.3 Docker verification,
+  final review loops, live Docker connector verification, and drift check.
+- W6.1 accepted for W6.2 by Docker verification, real compose runtime smoke,
+  final spec review, and final code-quality review. Residual risk: browser
+  egress allowlisting is enforced at runtime/Playwright policy plus Docker
+  service isolation; kernel/firewall per-domain egress remains defense-in-depth
+  and is not required by W6.1.
+- W6 accepted for W7 by W6.1 and W6.2 Docker verification, live compose
+  Browser Runtime execution, final spec/code-quality review loops, API/SSE
+  regression coverage, frontend no-change check, and drift check. Residual
+  risk: `__persisted_args` intentionally carries backend-only raw replay args
+  internally; current SSE paths strip double-underscore fields, and future
+  direct serializers must preserve that boundary.

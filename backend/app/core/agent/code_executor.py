@@ -16,6 +16,7 @@ from app.core.observability import increment_runtime_metric
 
 MAX_SUB_AGENTS = 5
 SUB_AGENT_TIMEOUT = 15
+MAX_EXIT_FAILURE_DETAIL_CHARS = 1000
 logger = logging.getLogger(__name__)
 
 # Tool definition for the LLM function-calling API.
@@ -51,6 +52,7 @@ async def stream_code_as_action(
     tenant_id: str,
     provider: str = "default",
     parent_budget: Any,
+    mount_bundle: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Execute one disposable parent with a genuine backend child runtime."""
     if not tenant_id:
@@ -203,12 +205,15 @@ async def stream_code_as_action(
             "container_id": parent_run_id,
         }
         async with authority.serve_run(tenant_id, parent_run_id):
+            parent_kwargs = {
+                "run_id": parent_run_id,
+                "capability": capability,
+                "script": script,
+            }
+            if mount_bundle is not None:
+                parent_kwargs["mount_bundle"] = mount_bundle
             parent_task = asyncio.create_task(
-                sandbox_manager.execute_disposable_parent(
-                    run_id=parent_run_id,
-                    capability=capability,
-                    script=script,
-                )
+                sandbox_manager.execute_disposable_parent(**parent_kwargs)
             )
             while not parent_task.done():
                 try:
@@ -276,6 +281,22 @@ async def stream_code_as_action(
                     "data": result[stream],
                     "container_id": container_id,
                 }
+        exit_code = _nonzero_exit_code(result)
+        if exit_code is not None:
+            failure_message = _format_nonzero_exit_failure(result, exit_code)
+            parent_error = RuntimeError(failure_message)
+            yield {
+                "type": "sandbox_output",
+                "stream": "error",
+                "data": failure_message,
+                "container_id": container_id,
+            }
+            yield {
+                "type": "sandbox",
+                "phase": "deleted",
+                "container_id": parent_run_id,
+            }
+            raise parent_error
         yield {
             "type": "sandbox",
             "phase": "completed",
@@ -347,6 +368,7 @@ async def execute_code_as_action(
     tenant_id: str,
     provider: str = "default",
     parent_budget: Any,
+    mount_bundle: dict | None = None,
 ) -> str:
     """Execute a Python *script* inside a sandbox container.
 
@@ -368,6 +390,7 @@ async def execute_code_as_action(
         tenant_id=tenant_id,
         provider=provider,
         parent_budget=parent_budget,
+        mount_bundle=mount_bundle,
     ):
         if event.get("type") == "sandbox_output":
             data = event.get("data", "")
@@ -386,6 +409,26 @@ async def _cancel_parent(runtime: SubAgentRuntime, parent_run_id: str) -> None:
         except asyncio.CancelledError:
             continue
     await cleanup
+
+
+def _nonzero_exit_code(result: dict[str, Any]) -> int | None:
+    exit_code = result.get("exit_code")
+    if exit_code is None:
+        return None
+    try:
+        code = int(exit_code)
+    except (TypeError, ValueError):
+        return None
+    return code if code != 0 else None
+
+
+def _format_nonzero_exit_failure(result: dict[str, Any], exit_code: int) -> str:
+    detail = str(result.get("stderr") or result.get("stdout") or "").strip()
+    if len(detail) > MAX_EXIT_FAILURE_DETAIL_CHARS:
+        detail = f"{detail[:MAX_EXIT_FAILURE_DETAIL_CHARS]}...[truncated]"
+    if detail:
+        return f"Code-as-action exited with exit code {exit_code}: {detail}"
+    return f"Code-as-action exited with exit code {exit_code}"
 
 
 async def _finalize_artifact_events(

@@ -13,7 +13,9 @@ Guards
 """
 
 import asyncio
+import inspect
 import json
+import logging
 import uuid
 from typing import AsyncIterator, Any
 
@@ -26,6 +28,8 @@ from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.builtin.sandbox import execute as execute_shell_exec
 from app.core.tools.classifier import RiskLevel, classify_tool
 from app.core.tools.api_runtime import APIToolConfirmationRequired
+from app.core.browser_automation import BrowserAutomationConfirmationRequired
+from app.core.workspace_connectors.mounts import sandbox_mount_payload_from_context
 
 # ---------------------------------------------------------------------------
 # Constants — guardrails
@@ -34,6 +38,12 @@ from app.core.tools.api_runtime import APIToolConfirmationRequired
 MAX_ITERATIONS = 10
 MAX_TOKENS_PER_TURN = 100_000
 MAX_CONSECUTIVE_ERRORS = 3
+ACQUISITION_RECORD_TIMEOUT_SECONDS = 5.0
+_ACQUISITION_CAPTURE_TEXT_CHARS = 1001
+_ACQUISITION_CAPTURE_EVENT_DATA_CHARS = 401
+_ACQUISITION_MAX_SANDBOX_EVENTS = 24
+logger = logging.getLogger(__name__)
+_ACQUISITION_RECORDING_TASKS: set[asyncio.Task[None]] = set()
 
 
 def select_execution_route(prompt: str, tools: list[dict] | None = None) -> str:
@@ -101,6 +111,8 @@ async def run_agent(
     authorized_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
     worker_context: dict[str, Any] | None = None,
     workspace_base: str | None = None,
+    connector_mount_context: dict[str, Any] | None = None,
+    acquisition_recorder: Any | None = None,
 ) -> AsyncIterator[dict]:
     """Run the ReAct loop with token budget + circuit breaker.
 
@@ -121,6 +133,9 @@ async def run_agent(
         conversation_id: Trusted conversation scope for persisted artifacts.
         run_id: Optional parent run id. Generated per engine run when omitted.
         sub_agent_execution: Backend-owned child budget/partial-result context.
+        acquisition_recorder: Optional best-effort callback for runtime
+            acquisition evidence. When omitted, code-as-action uses the
+            acquisition facade if trusted tenant/user scope is present.
 
     Yields:
         Event dicts with the following ``type`` values:
@@ -374,6 +389,8 @@ async def run_agent(
                 break
 
             try:
+                code_action_trace: dict[str, Any] | None = None
+                code_action_mount_bundle: dict[str, Any] | None = None
                 tool_context = {
                     "tenant_id": tenant_id,
                     "user_id": user_id,
@@ -383,28 +400,53 @@ async def run_agent(
                     "workspace_base": workspace_base,
                     "worker_context": worker_context,
                 }
+                if connector_mount_context:
+                    tool_context.update(connector_mount_context)
                 if tc["name"] == "code_as_action":
                     if is_sub_agent:
                         raise RuntimeError("sub-agents cannot execute Code-as-Action")
                     if not tenant_id:
                         raise RuntimeError("Code-as-Action requires a trusted tenant scope")
+                    script = str(args.get("script", ""))
+                    mount_bundle = sandbox_mount_payload_from_context(connector_mount_context)
+                    code_action_mount_bundle = mount_bundle
+                    code_action_trace = _new_code_action_trace(script)
                     output_parts: list[str] = []
                     async for sandbox_event in stream_code_as_action(
-                        args.get("script", ""),
+                        script,
                         sandbox_manager,
                         gateway=gateway,
                         tenant_id=tenant_id,
                         provider=provider,
                         parent_budget=turn_budget,
+                        mount_bundle=mount_bundle,
                     ):
+                        _capture_code_action_event(code_action_trace, sandbox_event)
                         if sandbox_event["type"] == "sandbox_output":
                             data = sandbox_event.get("data", "")
                             if sandbox_event.get("stream") == "error":
                                 output_parts.append(f"[ERROR] {data}")
+                            elif sandbox_event.get("stream") == "stderr":
+                                output_parts.append(data)
+                            elif sandbox_event.get("stream") == "stdout":
+                                output_parts.append(data)
                             elif sandbox_event.get("stream") != "artifact":
                                 output_parts.append(data)
                         yield sandbox_event
                     result = "\n".join(output_parts)
+                    _schedule_code_as_action_acquisition(
+                        acquisition_recorder=acquisition_recorder,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        source_run_id=run_id,
+                        tool_call_id=tc["id"],
+                        trace=code_action_trace,
+                        status="succeeded",
+                        risk_level=risk.value,
+                        failure_reason=None,
+                        mount_bundle=code_action_mount_bundle,
+                    )
                 elif tc["name"] == "shell_exec":
                     result = await execute_shell_exec(tc["name"], args, sandbox_manager)
                 else:
@@ -435,9 +477,11 @@ async def run_agent(
                 consecutive_errors = 0
 
             except Exception as e:
-                if isinstance(e, APIToolConfirmationRequired):
+                if isinstance(e, (APIToolConfirmationRequired, BrowserAutomationConfirmationRequired)):
                     destructive_hit = True
-                    confirmation_args = dict(e.sanitized_args)
+                    confirmation_args = dict(getattr(e, "original_args", None) or e.sanitized_args)
+                    if isinstance(e, BrowserAutomationConfirmationRequired):
+                        confirmation_args["__public_args"] = dict(e.sanitized_args)
                     confirmation_args["__acquisition_confirmation_context"] = e.confirmation_context
                     yield {
                         "type": "confirmation_required",
@@ -460,6 +504,21 @@ async def run_agent(
                     )
                     break
                 consecutive_errors += 1
+                if tc["name"] == "code_as_action":
+                    _schedule_code_as_action_acquisition(
+                        acquisition_recorder=acquisition_recorder,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        source_run_id=run_id,
+                        tool_call_id=tc["id"],
+                        trace=code_action_trace
+                        or _new_code_action_trace(str(args.get("script", ""))),
+                        status="failed",
+                        risk_level=risk.value,
+                        failure_reason=str(e),
+                        mount_bundle=code_action_mount_bundle,
+                    )
                 await emit_capability_hook(
                     "after_tool_call",
                     {
@@ -516,3 +575,164 @@ async def run_agent(
     if turn_budget is not None:
         tokens_used = turn_budget.consumed
     yield {"type": "done", "tokens_used": tokens_used}
+
+
+class _CappedTextBuffer:
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._parts: list[str] = []
+        self._length = 0
+
+    def append(self, value: Any) -> None:
+        text = str(value or "")
+        if not text or self._length >= self._limit:
+            return
+        remaining = self._limit - self._length
+        chunk = text[:remaining]
+        self._parts.append(chunk)
+        self._length += len(chunk)
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+class _CappedSandboxEvents:
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._events: list[dict[str, Any]] = []
+
+    def append(self, event: dict[str, Any]) -> None:
+        if len(self._events) >= self._limit:
+            self._events.pop(0)
+        self._events.append(_sandbox_event_for_acquisition(event))
+
+    def items(self) -> list[dict[str, Any]]:
+        return list(self._events)
+
+
+def _new_code_action_trace(script: str) -> dict[str, Any]:
+    return {
+        "script": script,
+        "stdout": _CappedTextBuffer(_ACQUISITION_CAPTURE_TEXT_CHARS),
+        "stderr": _CappedTextBuffer(_ACQUISITION_CAPTURE_TEXT_CHARS),
+        "error": _CappedTextBuffer(_ACQUISITION_CAPTURE_TEXT_CHARS),
+        "sandbox_events": _CappedSandboxEvents(_ACQUISITION_MAX_SANDBOX_EVENTS),
+    }
+
+
+def _capture_code_action_event(trace: dict[str, Any], event: dict[str, Any]) -> None:
+    events = trace.get("sandbox_events")
+    if isinstance(events, _CappedSandboxEvents):
+        events.append(event)
+
+    if event.get("type") != "sandbox_output":
+        return
+    stream = event.get("stream")
+    if stream not in {"stdout", "stderr", "error"}:
+        return
+    buffer = trace.get(stream)
+    if isinstance(buffer, _CappedTextBuffer):
+        buffer.append(event.get("data", ""))
+
+
+def _trace_text(trace: dict[str, Any], key: str, legacy_key: str) -> str:
+    value = trace.get(key)
+    if isinstance(value, _CappedTextBuffer):
+        return value.text()
+    if value is not None:
+        return str(value)
+    return "".join(str(part) for part in trace.get(legacy_key, []))
+
+
+def _trace_sandbox_events(trace: dict[str, Any]) -> list[dict[str, Any]]:
+    events = trace.get("sandbox_events", [])
+    if isinstance(events, _CappedSandboxEvents):
+        return events.items()
+    return list(events)
+
+
+def _capped_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit]
+
+
+def _capped_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _capped_text(value, _ACQUISITION_CAPTURE_TEXT_CHARS)
+
+
+def _sandbox_event_for_acquisition(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep acquisition evidence bounded before the facade redacts it."""
+
+    summary = {
+        "type": event.get("type"),
+        "phase": event.get("phase"),
+        "stream": event.get("stream"),
+    }
+    if event.get("data") is not None:
+        summary["data"] = _capped_text(
+            event.get("data", ""),
+            _ACQUISITION_CAPTURE_EVENT_DATA_CHARS,
+        )
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def _schedule_code_as_action_acquisition(**kwargs: Any) -> None:
+    """Start best-effort recording without delaying tool completion."""
+
+    if not kwargs.get("tenant_id") or not kwargs.get("user_id"):
+        return
+    task = asyncio.create_task(_record_code_as_action_acquisition(**kwargs))
+    _ACQUISITION_RECORDING_TASKS.add(task)
+    task.add_done_callback(_ACQUISITION_RECORDING_TASKS.discard)
+
+
+async def _record_code_as_action_acquisition(
+    *,
+    acquisition_recorder: Any | None,
+    tenant_id: str | None,
+    user_id: str | None,
+    conversation_id: str | None,
+    source_run_id: str | None,
+    tool_call_id: str | None,
+    trace: dict[str, Any],
+    status: str,
+    risk_level: str,
+    failure_reason: str | None,
+    mount_bundle: dict[str, Any] | None,
+) -> None:
+    """Best-effort acquisition recording must never block tool completion."""
+
+    if not tenant_id or not user_id:
+        return
+    try:
+        recorder = acquisition_recorder
+        if recorder is None:
+            from app.core.acquisition.bridge import record_code_as_action_exploration
+
+            recorder = record_code_as_action_exploration
+        result = recorder(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            source_run_id=source_run_id,
+            tool_call_id=tool_call_id,
+            script=str(trace.get("script", "")),
+            status=status,
+            risk_level=risk_level,
+            stdout=_trace_text(trace, "stdout", "stdout_parts"),
+            stderr=(
+                _trace_text(trace, "stderr", "stderr_parts")
+                + _trace_text(trace, "error", "error_parts")
+            ),
+            sandbox_events=_trace_sandbox_events(trace),
+            failure_reason=_capped_optional_text(failure_reason),
+            mount_bundle=mount_bundle,
+        )
+        if inspect.isawaitable(result):
+            await asyncio.wait_for(result, timeout=ACQUISITION_RECORD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.exception("code-as-action acquisition recording timed out")
+    except Exception:
+        logger.exception("code-as-action acquisition recording failed")

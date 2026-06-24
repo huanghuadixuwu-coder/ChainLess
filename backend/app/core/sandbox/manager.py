@@ -169,18 +169,22 @@ class SandboxManager:
         capability: str,
         script: str,
         timeout: int = 30,
+        mount_bundle: dict | None = None,
     ) -> dict:
         """Execute once in a run-bound parent sandbox that the proxy must delete."""
+        payload = {
+            "run_id": run_id,
+            "capability": capability,
+            "script": script,
+            "timeout": timeout,
+        }
+        if mount_bundle is not None:
+            payload["mount_bundle"] = mount_bundle
         try:
             response = await self._request(
                 "POST",
                 "/parent-runs/execute",
-                json={
-                    "run_id": run_id,
-                    "capability": capability,
-                    "script": script,
-                    "timeout": timeout,
-                },
+                json=payload,
             )
         except asyncio.CancelledError as cancellation:
             await self._cancel_disposable_parent_authoritatively(run_id, capability)

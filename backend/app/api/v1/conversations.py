@@ -26,6 +26,7 @@ from app.core.memory.layered import load_layered_instructions
 from app.core.memory.persistent import build_memory_context, get_memories_for_session
 from app.core.memory.short_term import append_short_term_context, cleanup_short_term_context
 from app.core.sandbox.manager import get_sandbox_manager
+from app.core.workspace_connectors.mounts import build_workspace_connector_runtime_context
 from app.models.agent import Agent
 from app.models.artifact import Artifact
 from app.models.conversation import Conversation, Message
@@ -270,6 +271,11 @@ async def chat(
         system_prompt = system_prompt + "\n\n" + session_context
 
     context_messages = build_context(system_prompt, raw_messages)
+    connector_mount_context = await build_workspace_connector_runtime_context(
+        db,
+        tenant_id=uuid.UUID(current_user["tenant_id"]),
+        user_id=uuid.UUID(current_user["user_id"]),
+    )
     return await build_chat_stream_response(
         llm_gateway,
         sandbox_manager,
@@ -289,6 +295,7 @@ async def chat(
             },
         },
         attachments=attachments,
+        connector_mount_context=connector_mount_context,
     )
 
 
@@ -345,6 +352,11 @@ async def confirm_tool(
         user["tenant_id"],
         agent,
     )
+    connector_mount_context = await build_workspace_connector_runtime_context(
+        db,
+        tenant_id=uuid.UUID(user["tenant_id"]),
+        user_id=uuid.UUID(user["user_id"]),
+    )
 
     return await build_confirmation_stream_response(
         conv_id,
@@ -357,6 +369,7 @@ async def confirm_tool(
         sandbox,
         provider=provider,
         system_prompt=system_prompt,
+        connector_mount_context=connector_mount_context,
     )
 
 

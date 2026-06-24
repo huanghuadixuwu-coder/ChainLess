@@ -111,6 +111,16 @@ class ProductionActivationHooks:
                 approved_hash=approved_hash,
                 idempotency_key=idempotency_key,
             )
+        if target.target_type == "browser_automation":
+            from app.core.browser_automation.activation import BrowserAutomationActivationHooks
+
+            return await BrowserAutomationActivationHooks().activate_target(
+                db,
+                proposal=proposal,
+                target=target,
+                approved_hash=approved_hash,
+                idempotency_key=idempotency_key,
+            )
         if target.target_type in {"worker", "skill", "memory"}:
             from app.core.acquisition.v2_targets import V2CapabilityActivationHooks
 
@@ -858,6 +868,9 @@ async def _record_target_activation(
         "evidence": result.evidence,
         "runtime_session_ref": result.runtime_session_ref,
     }
+    tool_manifest = result.evidence.get("tool_manifest") if isinstance(result.evidence, dict) else None
+    if isinstance(tool_manifest, dict):
+        base["tool_manifest"] = tool_manifest
     if result.success:
         target.activation_status = "active"
         resource_ref = dict(result.activated_resource_ref or {})

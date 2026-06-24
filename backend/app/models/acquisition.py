@@ -605,6 +605,7 @@ class WorkspaceConnector(Base, TimestampMixin):
     connector_id: Mapped[str] = mapped_column(String(160), nullable=False)
     display_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     host_realpath_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    host_path_secret_ref: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     container_mount_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     backend_mount_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     sandbox_mount_path: Mapped[str] = mapped_column(String(1000), nullable=False)

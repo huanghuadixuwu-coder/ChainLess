@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
+from fastapi.responses import StreamingResponse
 from httpx import AsyncClient
 from sqlalchemy import select, update
 
 from app.api.deps import _async_session_factory
 from app.main import app_state
+from app.core.workspace_connectors.service import _host_realpath_hash, create_workspace_connector
+from app.models.conversation import Conversation
+from app.models.tool_confirmation import ToolConfirmation
 from app.models.user import User
 from app.services.auth_service import decode_token
 
@@ -133,6 +138,117 @@ async def test_archived_conversation_can_be_explicitly_purged(
     assert archived.status_code == 204
     assert purged.status_code == 204
     assert purged_again.status_code == 404
+
+
+async def test_conversation_routes_pass_server_connector_context(
+    client: AsyncClient,
+    tenant_a_headers: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.v1.conversations as conversations
+
+    payload = decode_token(tenant_a_headers["Authorization"].split(" ", 1)[1])
+    tenant_id = uuid.UUID(payload["tenant_id"])
+    user_id = uuid.UUID(payload["user_id"])
+    host_path = tmp_path / "route-owned-connector"
+    host_path.mkdir()
+    async with _async_session_factory() as db:
+        approval_conversation = Conversation(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            title="route connector approval",
+        )
+        db.add(approval_conversation)
+        await db.flush()
+        approval = ToolConfirmation(
+            conversation_id=approval_conversation.id,
+            tool_call_id=f"route-connector-{uuid.uuid4().hex}",
+            tool_name="workspace_connector.create",
+            args={
+                "purpose": "workspace_connector",
+                "mode": "read_only",
+                "host_realpath_hash": _host_realpath_hash(host_path),
+            },
+            status="approved",
+        )
+        db.add(approval)
+        await db.flush()
+        connector = await create_workspace_connector(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Route connector",
+            host_path=host_path,
+            mode="read_only",
+            approval_id=approval.id,
+        )
+        await db.commit()
+
+    captured: dict[str, dict | None] = {"chat": None, "confirm": None}
+
+    async def fake_get_llm_gateway():
+        return object()
+
+    async def fake_get_sandbox_manager():
+        return object()
+
+    async def fake_chat_stream_response(*args, connector_mount_context=None, **kwargs):
+        captured["chat"] = connector_mount_context
+
+        async def stream():
+            yield 'event: done\ndata: {"tokens_used": 0}\n\n'
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    async def fake_confirmation_stream_response(*args, connector_mount_context=None, **kwargs):
+        captured["confirm"] = connector_mount_context
+
+        async def stream():
+            yield 'event: done\ndata: {"tokens_used": 0}\n\n'
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    monkeypatch.setattr(conversations, "get_llm_gateway", fake_get_llm_gateway)
+    monkeypatch.setattr(conversations, "get_sandbox_manager", fake_get_sandbox_manager)
+    monkeypatch.setattr(app_state, "llm_gateway", object())
+    monkeypatch.setattr(app_state, "sandbox_manager", object())
+    monkeypatch.setattr(conversations, "build_chat_stream_response", fake_chat_stream_response)
+    monkeypatch.setattr(
+        conversations,
+        "build_confirmation_stream_response",
+        fake_confirmation_stream_response,
+    )
+
+    created = await client.post(
+        "/api/v1/conversations/",
+        headers=tenant_a_headers,
+        json={"title": "route connector context"},
+    )
+    assert created.status_code == 200, created.text
+    conversation_id = created.json()["id"]
+
+    chat = await client.post(
+        f"/api/v1/conversations/{conversation_id}/chat",
+        headers=tenant_a_headers,
+        json={"content": "read my connector"},
+    )
+    confirm = await client.post(
+        f"/api/v1/conversations/{conversation_id}/confirm",
+        headers=tenant_a_headers,
+        json={"tool_call_id": "route-context", "decision": "approve"},
+    )
+
+    assert chat.status_code == 200, chat.text
+    assert confirm.status_code == 200, confirm.text
+    for key in ("chat", "confirm"):
+        context = captured[key]
+        assert context is not None
+        payload = context["workspace_connector_sandbox_mount_payload"]
+        assert payload["mounts"][0]["connector_id"] == connector.connector_id
+        assert str(host_path) not in repr(payload)
+    assert str(host_path) not in chat.text
+    assert str(host_path) not in confirm.text
 
 
 async def test_unexpected_errors_use_stable_error_envelope(client: AsyncClient) -> None:

@@ -67,6 +67,37 @@ def _hidden_ref_evidence(resource_ref: dict[str, Any], *, hidden_at: str) -> dic
     }
 
 
+def _manifest_version(now: datetime | None = None) -> str:
+    return (now or _now()).isoformat()
+
+
+def active_target_manifest_evidence(
+    *,
+    resource_ref: dict[str, Any],
+    target: ActivationTarget,
+    idempotency_key: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return user-scoped manifest evidence for a newly active target."""
+
+    version = _manifest_version(now)
+    return {
+        "status": "active",
+        "version": version,
+        "manifest_version": version,
+        "activated_at": version,
+        "tenant_id": str(target.tenant_id),
+        "user_id": str(target.user_id),
+        "target_id": str(target.id),
+        "target_type": target.target_type,
+        "manifest_ref": resource_ref.get("manifest_ref"),
+        "tool_name": resource_ref.get("tool_name") or resource_ref.get("manifest_ref"),
+        "configuration_id": resource_ref.get("configuration_id") or resource_ref.get("config_id"),
+        "exposed_to_runtime": bool(resource_ref.get("exposed_to_runtime")),
+        "idempotency_key": idempotency_key,
+    }
+
+
 async def hide_target_manifest_refs(
     db: AsyncSession,
     *,
@@ -117,6 +148,8 @@ async def hide_target_manifest_refs(
     manifest_evidence = {
         "status": "hidden",
         "hidden_at": now.isoformat(),
+        "version": now.isoformat(),
+        "manifest_version": now.isoformat(),
         "hidden_refs": hidden_refs,
         "disabled_config_ids": disabled_config_ids,
         "idempotency_key": idempotency_key,

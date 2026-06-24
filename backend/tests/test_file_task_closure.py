@@ -197,6 +197,7 @@ async def test_run_workspace_materializes_upload_and_file_tools_are_run_scoped(
     client: AsyncClient,
     tenant_a_headers: dict[str, str],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.artifacts.workspace import prepare_run_workspace
 
@@ -219,6 +220,7 @@ async def test_run_workspace_materializes_upload_and_file_tools_are_run_scoped(
             artifacts=[artifact],
             root=tmp_path / "workspace",
         )
+    monkeypatch.setattr(file_ops, "_ALLOWED_BASE", str(tmp_path / "workspace"))
 
     input_path = run_workspace.input_paths[str(artifact.id)]
     result = await file_ops.execute(
@@ -231,7 +233,7 @@ async def test_run_workspace_materializes_upload_and_file_tools_are_run_scoped(
     assert input_path.startswith("input/")
 
 
-async def test_file_list_does_not_expose_stale_global_workspace_files(
+async def test_file_list_omits_unrelated_stale_workspace_files_when_attachment_context_is_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -250,6 +252,25 @@ async def test_file_list_does_not_expose_stale_global_workspace_files(
 
     assert "current.txt" in result
     assert "stale-w6-output.txt" not in result
+
+
+async def test_raw_workspace_base_override_is_rejected_for_host_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    host_secret = tmp_path / "host-secret"
+    host_secret.mkdir()
+    (host_secret / "private.txt").write_text("must not be readable\n", encoding="utf-8")
+    monkeypatch.setattr(file_ops, "_ALLOWED_BASE", str(workspace_root))
+
+    with pytest.raises(ValueError, match="Workspace Connector"):
+        await file_ops.execute(
+            "file_read",
+            {"path": "private.txt"},
+            context={"workspace_base": str(host_secret)},
+        )
 
 
 async def test_chat_attachment_is_readable_through_file_read_tool(

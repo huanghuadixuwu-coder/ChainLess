@@ -524,7 +524,6 @@ class WorkspaceConnectorContract(AcquisitionContract):
     name: str
     connector_id: str
     display_path: str
-    host_realpath_hash: str
     container_mount_path: str
     backend_mount_path: str
     sandbox_mount_path: str

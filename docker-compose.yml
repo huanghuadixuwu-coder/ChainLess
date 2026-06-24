@@ -76,6 +76,8 @@ services:
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-chainless-sandbox:latest}
       SUBAGENT_CONTROL_VOLUME: chainless_subagent_control
       SUBAGENT_CONTROL_GID: ${SUBAGENT_CONTROL_GID:-10001}
+      WORKSPACE_CONNECTOR_VOLUME: chainless_workspace_data
+      WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX: connectors
       DISPOSABLE_PARENT_MAX_CONCURRENCY: ${DISPOSABLE_PARENT_MAX_CONCURRENCY:-5}
       DISPOSABLE_PARENT_MAX_STDOUT_BYTES: ${DISPOSABLE_PARENT_MAX_STDOUT_BYTES:-262144}
       DISPOSABLE_PARENT_MAX_STDERR_BYTES: ${DISPOSABLE_PARENT_MAX_STDERR_BYTES:-262144}
@@ -133,6 +135,8 @@ services:
       SUBAGENT_CANCELLATION_GRACE_SECONDS: ${SUBAGENT_CANCELLATION_GRACE_SECONDS:-1}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
       MCP_RUNTIME_URL: http://mcp-runtime:9101
+      BROWSER_AUTOMATION_RUNTIME_URL: http://browser-runtime:9222
+      BROWSER_AUTOMATION_SYSTEM_CONCURRENCY: ${BROWSER_AUTOMATION_SYSTEM_CONCURRENCY:-8}
     volumes:
       - workspace_data:/workspace
       - memory_data:/data/memory
@@ -145,6 +149,7 @@ services:
       - sandbox_net
       - egress
       - mcp_runtime
+      - browser_runtime
     depends_on:
       db:
         condition: service_healthy
@@ -153,6 +158,8 @@ services:
       sandbox-proxy:
         condition: service_healthy
       mcp-runtime:
+        condition: service_healthy
+      browser-runtime:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()\""]
@@ -191,6 +198,43 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  browser-runtime:
+    build:
+      context: ./browser-runtime
+      dockerfile: Dockerfile
+    image: chainless-browser-runtime:w6-1
+    container_name: chainless-browser-runtime
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,nosuid,nodev
+    networks:
+      - browser_runtime
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    environment:
+      BROWSER_RUNTIME_KIND: isolated_browser
+      BROWSER_RUNTIME_APPROVED_IMAGE: chainless-browser-runtime:w6-1
+      BROWSER_RUNTIME_NETWORK_MODE: allowlist
+      BROWSER_RUNTIME_NETWORK_ENFORCEMENT: playwright_request_interception_fail_closed
+      BROWSER_RUNTIME_DENY_PRIVATE_NETWORKS: "1"
+      BROWSER_RUNTIME_PROFILE_ROOT: /tmp/browser-profiles
+      BROWSER_RUNTIME_TRACE_RETENTION_DAYS: ${BROWSER_RUNTIME_TRACE_RETENTION_DAYS:-7}
+      BROWSER_RUNTIME_MAX_SESSION_SECONDS: ${BROWSER_RUNTIME_MAX_SESSION_SECONDS:-60}
+      BROWSER_RUNTIME_MAX_ACTIONS_PER_RUN: ${BROWSER_RUNTIME_MAX_ACTIONS_PER_RUN:-20}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9222/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
   worker:
     build:
@@ -266,6 +310,7 @@ services:
 volumes:
   pgdata:
   workspace_data:
+    name: chainless_workspace_data
   memory_data:
   artifact_data:
   backup_data:
@@ -283,3 +328,4 @@ networks:
   egress:
   mcp_runtime:
     internal: true
+  browser_runtime:

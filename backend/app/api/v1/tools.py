@@ -25,6 +25,7 @@ from app.core.tools.configuration import (
     get_tool_configurations,
     tool_name,
 )
+from app.core.browser_automation import get_browser_tool_definitions
 from app.core.tools.builtin import ALL_TOOLS
 from app.core.tools.api_runtime import get_api_tool_definitions
 from app.core.tools.mcp.manager import mcp_manager
@@ -87,10 +88,11 @@ async def _configured_tools(db: AsyncSession, tenant_id: str, user_id: str) -> l
     builtin_tools = list(ALL_TOOLS) + [CODE_AS_ACTION_TOOL]
     mcp_tools = mcp_manager.get_all_tools(tenant_id)
     api_tools = await get_api_tool_definitions(db, tenant_id, user_id=user_id)
+    browser_tools = await get_browser_tool_definitions(db, tenant_id, user_id=user_id)
     configs = await get_tool_configurations(db, tenant_id)
     return [
         apply_tool_configuration(tool, configs.get(tool_name(tool)))
-        for tool in builtin_tools + mcp_tools + api_tools
+        for tool in builtin_tools + mcp_tools + api_tools + browser_tools
     ]
 
 
@@ -114,6 +116,7 @@ async def list_tools(
     builtin_tools = list(ALL_TOOLS) + [CODE_AS_ACTION_TOOL]
     mcp_tools = mcp_manager.get_all_tools(user["tenant_id"])
     api_tools = await get_api_tool_definitions(db, user["tenant_id"], user_id=user["user_id"])
+    browser_tools = await get_browser_tool_definitions(db, user["tenant_id"], user_id=user["user_id"])
     all_tools = await _configured_tools(db, user["tenant_id"], user["user_id"])
     total = len(all_tools)
     page = all_tools[offset:offset + limit]
@@ -122,6 +125,7 @@ async def list_tools(
         "builtin_count": len(builtin_tools),
         "mcp_count": len(mcp_tools),
         "api_count": len(api_tools),
+        "browser_count": len(browser_tools),
     })
     return envelope
 
@@ -256,11 +260,13 @@ async def configure_tool(
 ):
     """Configure tenant-local activation and risk override for a tool."""
     api_tools = await get_api_tool_definitions(db, user["tenant_id"], user_id=user["user_id"])
+    browser_tools = await get_browser_tool_definitions(db, user["tenant_id"], user_id=user["user_id"])
     known_tools = (
         list(ALL_TOOLS)
         + [CODE_AS_ACTION_TOOL]
         + mcp_manager.get_all_tools(user["tenant_id"])
         + api_tools
+        + browser_tools
     )
     known = {tool_name(tool): tool for tool in known_tools}
     if name not in known:
@@ -276,7 +282,15 @@ async def configure_tool(
         )
     ).scalar_one_or_none()
     if config is None:
-        tool_type = "mcp" if name.startswith("mcp__") else "api" if name.startswith("api__") else "builtin"
+        tool_type = (
+            "mcp"
+            if name.startswith("mcp__")
+            else "api"
+            if name.startswith("api__")
+            else "browser"
+            if name.startswith("browser__")
+            else "builtin"
+        )
         config = ToolConfiguration(
             tenant_id=tenant_id,
             name=name,

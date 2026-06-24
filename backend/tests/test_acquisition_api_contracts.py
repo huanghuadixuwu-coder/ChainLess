@@ -529,12 +529,27 @@ def test_runtime_configuration_contracts_reject_non_positive_limits() -> None:
             name="workspace",
             connector_id="workspace-1",
             display_path="E:/Chainless",
-            host_realpath_hash="hash",
             container_mount_path="/workspace",
             backend_mount_path="/repo",
             sandbox_mount_path="/sandbox",
             connector_root="/repo",
             mount_generation=0,
+            mount_health_status="healthy",
+            mode="read_only",
+            allowlist_rule={},
+        )
+
+    with pytest.raises(ValidationError):
+        WorkspaceConnectorContract(
+            name="workspace",
+            connector_id="workspace-1",
+            display_path="approved://workspace",
+            host_realpath_hash="hash",
+            container_mount_path="/workspace",
+            backend_mount_path="/repo",
+            sandbox_mount_path="/sandbox",
+            connector_root="/repo",
+            mount_generation=1,
             mount_health_status="healthy",
             mode="read_only",
             allowlist_rule={},

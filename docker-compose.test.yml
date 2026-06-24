@@ -34,6 +34,18 @@ services:
     networks:
       - mcp_runtime
 
+  browser-runtime:
+    container_name: chainless-browser-runtime-test
+    restart: "no"
+    networks:
+      - browser_runtime
+    environment:
+      BROWSER_RUNTIME_KIND: isolated_browser
+      BROWSER_RUNTIME_APPROVED_IMAGE: chainless-browser-runtime:w6-1
+      BROWSER_RUNTIME_NETWORK_MODE: allowlist
+      BROWSER_RUNTIME_NETWORK_ENFORCEMENT: playwright_request_interception_fail_closed
+      BROWSER_RUNTIME_DENY_PRIVATE_NETWORKS: "1"
+
   backend-test:
     build:
       context: ./backend
@@ -78,6 +90,8 @@ services:
       SUBAGENT_READ_TIMEOUT_SECONDS: 2
       SUBAGENT_HANDLER_TIMEOUT_SECONDS: 30
       SUBAGENT_CANCELLATION_GRACE_SECONDS: 1
+      BROWSER_AUTOMATION_RUNTIME_URL: http://browser-runtime:9222
+      BROWSER_AUTOMATION_SYSTEM_CONCURRENCY: 8
     volumes:
       - test_workspace:/workspace
       - .:/repo:ro
@@ -85,12 +99,15 @@ services:
     networks:
       - data
       - mcp_runtime
+      - browser_runtime
     depends_on:
       db-test:
         condition: service_healthy
       redis-test:
         condition: service_healthy
       mcp-runtime:
+        condition: service_healthy
+      browser-runtime:
         condition: service_healthy
     command: ["pytest", "-q"]
 
@@ -111,6 +128,8 @@ services:
       SANDBOX_IMAGE: chainless-sandbox:latest
       SUBAGENT_CONTROL_VOLUME: chainless_subagent_control
       SUBAGENT_CONTROL_GID: 10001
+      WORKSPACE_CONNECTOR_VOLUME: chainless_test_workspace
+      WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX: connectors
       DISPOSABLE_PARENT_MAX_CONCURRENCY: 5
       DISPOSABLE_PARENT_MAX_STDOUT_BYTES: 262144
       DISPOSABLE_PARENT_MAX_STDERR_BYTES: 262144
@@ -120,6 +139,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - subagent_control:/run/chainless-control
+    networks:
+      - data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=3).read()"]
       interval: 2s
@@ -135,6 +156,7 @@ services:
     container_name: chainless-backend-test-live
     environment:
       CHAINLESS_LIVE_DOCKER: "1"
+      CHAINLESS_LIVE_CONNECTOR_MOUNT_ROOT_READY: "1"
       SANDBOX_PROXY_URL: http://sandbox-proxy-test:9001
       SUBAGENT_MAX_CONNECTIONS_PER_RUN: 8
       SUBAGENT_MAX_CONNECTIONS_GLOBAL: 32
@@ -217,6 +239,7 @@ services:
 
 volumes:
   test_workspace:
+    name: chainless_test_workspace
   subagent_control:
     name: chainless_subagent_control
 
@@ -225,3 +248,4 @@ networks:
     internal: true
   mcp_runtime:
     internal: true
+  browser_runtime:

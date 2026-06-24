@@ -11,14 +11,14 @@ import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Literal, Optional
 
 import docker
 from docker.models.containers import Container
 from docker.types import Mount
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from policy import configured_network_mode, configured_security_options
 
@@ -102,7 +102,13 @@ SUBAGENT_CONTROL_VOLUME = os.environ.get(
     "chainless_subagent_control",
 )
 SUBAGENT_CONTROL_GID = int(os.environ.get("SUBAGENT_CONTROL_GID", "10001"))
+WORKSPACE_CONNECTOR_VOLUME = os.environ.get("WORKSPACE_CONNECTOR_VOLUME", "").strip()
+WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX = os.environ.get(
+    "WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX",
+    "connectors",
+).strip()
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_VOLUME_SUBPATH_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _is_safe_run_id(run_id: object) -> bool:
@@ -152,9 +158,68 @@ app = FastAPI(title="Chainless Sandbox Proxy", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+_RAW_HOST_MOUNT_KEYS = {
+    "host_path",
+    "host_paths",
+    "host_realpath",
+    "host_realpath_hash",
+    "raw_host_path",
+    "source",
+    "src",
+    "bind",
+}
+
+
+def _reject_raw_host_path_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in _RAW_HOST_MOUNT_KEYS:
+                raise ValueError("workspace connector mount bundles cannot include raw host paths")
+            _reject_raw_host_path_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_raw_host_path_keys(item)
+    return value
+
+
+class ConnectorMountContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connector_id: str = Field(pattern=r"^wsc_[0-9a-f]{32}$")
+    generation: int = Field(ge=1)
+    container_mount_path: str = Field(pattern=r"^/workspace/connectors/wsc_[0-9a-f]{32}$")
+    backend_mount_path: str = Field(pattern=r"^/workspace/connectors/wsc_[0-9a-f]{32}$")
+    sandbox_mount_path: str = Field(pattern=r"^/workspace/connectors/wsc_[0-9a-f]{32}$")
+    mode: str = Field(pattern=r"^read_(only|write)$")
+
+    @model_validator(mode="after")
+    def mount_paths_match_connector_id(self) -> "ConnectorMountContract":
+        expected_path = f"/workspace/connectors/{self.connector_id}"
+        if (
+            self.container_mount_path != expected_path
+            or self.backend_mount_path != expected_path
+            or self.sandbox_mount_path != expected_path
+        ):
+            raise ValueError("workspace connector mount paths must match connector_id")
+        return self
+
+
+class ConnectorMountBundleContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["workspace_connector_mounts.v1"]
+    mounts: list[ConnectorMountContract] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_raw_host_paths(cls, value: Any) -> Any:
+        return _reject_raw_host_path_keys(value)
+
+
 class ExecuteRequest(BaseModel):
     script: str
     timeout: int = Field(default=30, ge=1, le=MAX_EXECUTION_TIMEOUT)
+    mount_bundle: ConnectorMountBundleContract | None = None
 
 
 class ParentExecuteRequest(ExecuteRequest):
@@ -182,6 +247,51 @@ class ParentRunState:
 
 class DisposableParentOutputLimitError(RuntimeError):
     """Raised when a disposable parent exceeds its bounded output budget."""
+
+
+def _connector_docker_mounts(
+    mount_bundle: ConnectorMountBundleContract | None,
+) -> list[Mount]:
+    """Translate sanitized connector contracts into Docker mounts."""
+    if mount_bundle is None:
+        return []
+    if mount_bundle.mounts and not WORKSPACE_CONNECTOR_VOLUME:
+        raise ValueError(
+            "WORKSPACE_CONNECTOR_VOLUME must be configured before Workspace Connector "
+            "mount bundles can be executed"
+        )
+    mounts: list[Mount] = []
+    seen_targets: set[str] = set()
+    for connector_mount in mount_bundle.mounts:
+        if connector_mount.sandbox_mount_path in seen_targets:
+            raise ValueError("duplicate workspace connector mount target")
+        seen_targets.add(connector_mount.sandbox_mount_path)
+        mount = Mount(
+            target=connector_mount.sandbox_mount_path,
+            source=WORKSPACE_CONNECTOR_VOLUME,
+            type="volume",
+            read_only=connector_mount.mode == "read_only",
+        )
+        mount.setdefault("VolumeOptions", {})["Subpath"] = _connector_volume_subpath(
+            connector_mount.connector_id
+        )
+        mounts.append(mount)
+    return mounts
+
+
+def _connector_volume_subpath(connector_id: str) -> str:
+    """Return the connector's subpath within the shared workspace Docker volume."""
+    prefix_parts = [
+        part
+        for part in WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX.replace("\\", "/").split("/")
+        if part
+    ]
+    if not prefix_parts:
+        raise ValueError("WORKSPACE_CONNECTOR_VOLUME_SUBPATH_PREFIX must not be empty")
+    for part in [*prefix_parts, connector_id]:
+        if part in {".", ".."} or _SAFE_VOLUME_SUBPATH_PART.fullmatch(part) is None:
+            raise ValueError("Workspace Connector volume subpath configuration is invalid")
+    return "/".join([*prefix_parts, connector_id])
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +364,11 @@ def _create_container() -> str:
     return cid
 
 
-def _create_disposable_parent(run_id: str, capability: str) -> Container:
+def _create_disposable_parent(
+    run_id: str,
+    capability: str,
+    mount_bundle: ConnectorMountBundleContract | None = None,
+) -> Container:
     """Create a run-bound parent sandbox without granting any permission."""
     if not _is_safe_run_id(run_id):
         raise ValueError("invalid parent run id")
@@ -265,6 +379,7 @@ def _create_disposable_parent(run_id: str, capability: str) -> Container:
         read_only=False,
     )
     mount.setdefault("VolumeOptions", {})["Subpath"] = run_id
+    connector_mounts = _connector_docker_mounts(mount_bundle)
     return _get_docker_client().containers.run(
         SANDBOX_IMAGE,
         "sleep infinity",
@@ -285,7 +400,7 @@ def _create_disposable_parent(run_id: str, capability: str) -> Container:
             OWNER_LABEL: PROXY_OWNER,
         },
         environment={"CHAINLESS_SUBAGENT_CAPABILITY": capability},
-        mounts=[mount],
+        mounts=[mount, *connector_mounts],
         detach=True,
     )
 
@@ -599,6 +714,11 @@ async def allocate_container(token: str = Depends(verify_token)):
 @app.post("/containers/{cid}/execute")
 async def execute_script(cid: str, body: ExecuteRequest, token: str = Depends(verify_token)):
     """Write a script to the container and execute it, streaming output as SSE."""
+    if body.mount_bundle is not None and body.mount_bundle.mounts:
+        raise HTTPException(
+            status_code=400,
+            detail="Workspace Connector mounts require disposable parent execution",
+        )
     if cid not in _container_objects:
         raise HTTPException(status_code=404, detail="Container not found")
 
@@ -915,7 +1035,11 @@ async def _execute_disposable_parent_bounded(
     try:
         container = await loop.run_in_executor(
             _parent_executor,
-            lambda: _create_disposable_parent(body.run_id, body.capability),
+            lambda: _create_disposable_parent(
+                body.run_id,
+                body.capability,
+                body.mount_bundle,
+            ),
         )
         if state is not None:
             state.container = container

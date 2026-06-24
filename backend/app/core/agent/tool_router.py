@@ -8,6 +8,7 @@ the Agent Engine resolves those separately.
 
 from app.core.tools.builtin import TOOL_EXECUTORS
 from app.core.capabilities.policy import require_worker_tool_policy
+from app.core.browser_automation import execute_browser_tool
 from app.core.tools.api_runtime import execute_api_tool
 from app.core.tools.mcp.manager import mcp_manager
 
@@ -40,5 +41,8 @@ async def execute_tool(tool_name: str, args: dict, context: dict | None = None):
 
     if tool_name.startswith("api__"):
         return await execute_api_tool(tool_name, args, context=context)
+
+    if tool_name.startswith("browser__"):
+        return await execute_browser_tool(tool_name, args, context=context)
 
     raise ValueError(f"Tool not found: {tool_name}")

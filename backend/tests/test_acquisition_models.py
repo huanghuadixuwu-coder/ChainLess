@@ -332,6 +332,7 @@ def test_acquisition_models_have_required_columns() -> None:
             "connector_id",
             "display_path",
             "host_realpath_hash",
+            "host_path_secret_ref",
             "container_mount_path",
             "backend_mount_path",
             "sandbox_mount_path",
