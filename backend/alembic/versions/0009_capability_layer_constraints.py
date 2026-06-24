@@ -93,7 +93,24 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
     for table, name, condition in CHECKS:
+        exists = bind.execute(
+            sa.text(
+                """
+                SELECT 1
+                FROM pg_constraint constraint_row
+                JOIN pg_class table_row
+                  ON table_row.oid = constraint_row.conrelid
+                WHERE table_row.relname = :table_name
+                  AND constraint_row.conname = :constraint_name
+                LIMIT 1
+                """
+            ),
+            {"table_name": table, "constraint_name": name},
+        ).scalar()
+        if exists:
+            continue
         op.execute(sa.text(f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({condition}) NOT VALID"))
 
 

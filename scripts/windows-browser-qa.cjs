@@ -12,6 +12,7 @@ const { createFileTaskClosureSuite } = require("./qa/file-task-closure-suite.cjs
 const { createRichInputSuite } = require("./qa/rich-input-suite.cjs");
 const { createSpecCompleteSuite } = require("./qa/spec-complete.cjs");
 const { createCapabilityLayerSuite } = require("./qa/capability-layer-suite.cjs");
+const { createCapabilityAcquisitionSuite } = require("./qa/acquisition-suite.cjs");
 
 function parseArgs(argv) {
   const args = {
@@ -1104,6 +1105,17 @@ registerSuite(
     screenshot,
     applyBootstrapAdminCredentials,
     readRequestBody,
+  })
+);
+registerSuite(
+  "capability-acquisition",
+  createCapabilityAcquisitionSuite({
+    apiBaseFor,
+    apiRequest,
+    cleanupConversations,
+    loginViaUi,
+    screenshot,
+    applyBootstrapAdminCredentials,
   })
 );
 

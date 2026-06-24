@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api } from "@/lib/api";
 import type {
+  AcquisitionNotice,
   CapabilityCandidateHint,
   MessageAttachment,
   StreamArtifact,
@@ -58,6 +59,7 @@ interface ChatState {
   contextSummaries: Record<string, StreamContext | null>;
   capabilityCandidates: Record<string, CapabilityCandidateHint[]>;
   workerNotices: Record<string, WorkerNotice[]>;
+  acquisitionNotices: Record<string, AcquisitionNotice[]>;
   isStreaming: boolean;
   streamingContent: string;
   isLoadingConversations: boolean;
@@ -166,6 +168,11 @@ const upsertCapabilityHint = (
 const appendWorkerNotice = (notices: WorkerNotice[], notice: WorkerNotice) =>
   [notice, ...notices].slice(0, 20);
 
+const appendAcquisitionNotice = (
+  notices: AcquisitionNotice[],
+  notice: AcquisitionNotice
+) => [notice, ...notices].slice(0, 20);
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
@@ -175,6 +182,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   contextSummaries: {},
   capabilityCandidates: {},
   workerNotices: {},
+  acquisitionNotices: {},
   isStreaming: false,
   streamingContent: "",
   isLoadingConversations: false,
@@ -248,6 +256,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             [restoredConversationId]:
               state.workerNotices[restoredConversationId] || [],
           },
+          acquisitionNotices: {
+            ...state.acquisitionNotices,
+            [restoredConversationId]:
+              state.acquisitionNotices[restoredConversationId] || [],
+          },
         }));
       } catch {
         set((state) => ({
@@ -280,6 +293,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             [restoredConversationId]:
               state.workerNotices[restoredConversationId] || [],
           },
+          acquisitionNotices: {
+            ...state.acquisitionNotices,
+            [restoredConversationId]:
+              state.acquisitionNotices[restoredConversationId] || [],
+          },
         }));
       }
 
@@ -306,6 +324,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         contextSummaries: { ...state.contextSummaries, [conv.id]: null },
         capabilityCandidates: { ...state.capabilityCandidates, [conv.id]: [] },
         workerNotices: { ...state.workerNotices, [conv.id]: [] },
+        acquisitionNotices: { ...state.acquisitionNotices, [conv.id]: [] },
       }));
       storeConversationId(conv.id);
       return conv.id;
@@ -350,6 +369,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...state.workerNotices,
             [id]: state.workerNotices[id] || [],
           },
+          acquisitionNotices: {
+            ...state.acquisitionNotices,
+            [id]: state.acquisitionNotices[id] || [],
+          },
         }));
       } catch (err: unknown) {
         const errorMessage =
@@ -372,6 +395,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workerNotices: {
             ...state.workerNotices,
             [id]: state.workerNotices[id] || [],
+          },
+          acquisitionNotices: {
+            ...state.acquisitionNotices,
+            [id]: state.acquisitionNotices[id] || [],
           },
           error: errorMessage,
         }));
@@ -407,12 +434,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextContext = { ...state.contextSummaries };
       const nextCandidates = { ...state.capabilityCandidates };
       const nextWorkerNotices = { ...state.workerNotices };
+      const nextAcquisitionNotices = { ...state.acquisitionNotices };
       delete nextMessages[id];
       delete nextToolEvents[id];
       delete nextPending[id];
       delete nextContext[id];
       delete nextCandidates[id];
       delete nextWorkerNotices[id];
+      delete nextAcquisitionNotices[id];
 
       return {
         conversations: state.conversations.filter((conv) => conv.id !== id),
@@ -424,6 +453,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         contextSummaries: nextContext,
         capabilityCandidates: nextCandidates,
         workerNotices: nextWorkerNotices,
+        acquisitionNotices: nextAcquisitionNotices,
         streamingContent:
           state.currentConversationId === id ? "" : state.streamingContent,
         isStreaming:
@@ -482,6 +512,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       workerNotices: {
         ...state.workerNotices,
         [targetConversationId]: state.workerNotices[targetConversationId] || [],
+      },
+      acquisitionNotices: {
+        ...state.acquisitionNotices,
+        [targetConversationId]:
+          state.acquisitionNotices[targetConversationId] || [],
       },
       isStreaming: true,
       streamingContent: "",
@@ -624,6 +659,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...state.workerNotices,
                 [targetConversationId]: appendWorkerNotice(
                   state.workerNotices[targetConversationId] || [],
+                  notice
+                ),
+              },
+            }));
+          },
+          onAcquisitionNotice: (notice) => {
+            set((state) => ({
+              acquisitionNotices: {
+                ...state.acquisitionNotices,
+                [targetConversationId]: appendAcquisitionNotice(
+                  state.acquisitionNotices[targetConversationId] || [],
                   notice
                 ),
               },
@@ -890,6 +936,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...state.workerNotices,
                 [currentConversationId]: appendWorkerNotice(
                   state.workerNotices[currentConversationId] || [],
+                  notice
+                ),
+              },
+            }));
+          },
+          onAcquisitionNotice: (notice) => {
+            set((state) => ({
+              acquisitionNotices: {
+                ...state.acquisitionNotices,
+                [currentConversationId]: appendAcquisitionNotice(
+                  state.acquisitionNotices[currentConversationId] || [],
                   notice
                 ),
               },

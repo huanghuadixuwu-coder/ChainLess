@@ -741,6 +741,64 @@
   `runtime_planning_issue`, and acquired API/MCP/browser manifest checks cover
   execution plus confirmation resume. The reviewer was closed after completion.
 
+## Workstream 8 Evidence
+
+- 2026-06-24: W8 implementation added the `/api/v1/acquisition/*` public route
+  surface, including gap, exploration, recommendation, proposal, permission,
+  credential, browser session/trace, runtime planning issue, workspace
+  connector, and journal routes through `backend/app/api/v1/acquisition.py` and
+  `backend/app/core/acquisition/api_service.py`.
+- 2026-06-24: W8 backend route contract verification passed:
+  `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm -e
+  PYTHONPATH=/repo/backend backend-test sh -lc "cd /repo/backend && pytest -q
+  tests/test_acquisition_api_contracts.py"` -> `18 passed, 2 warnings`.
+- 2026-06-24: Local Docker runtime drift was diagnosed and repaired without
+  deleting persistent volumes. The main DB had already-created 0008-0011
+  objects while Alembic was behind; the repair updated the local
+  `alembic_version` from `0007` to `0008` only after confirming 0008 objects
+  existed, then made 0009/0010/0011 migrations skip existing constraints,
+  columns, and indexes. `docker compose logs backend` showed migrations running
+  through `0016`, and `select version_num from alembic_version;` returned
+  `0016`.
+- 2026-06-24: W8 frontend acquisition API/store/UI verification passed:
+  `docker compose run --rm --no-deps frontend sh -lc "npm run lint && npm run
+  build"` -> eslint passed with no warnings; Next build compiled, typechecked,
+  and prerendered `/`, `/_not-found`, `/chat`, `/login`, and `/settings`.
+- 2026-06-24: W8 QA script syntax verification passed using Docker Node rather
+  than host Node:
+  `docker run --rm -v "${repo}:/repo:ro" -w /repo node:22-alpine sh -lc "node
+  --check scripts/qa/acquisition-suite.cjs && node --check
+  scripts/windows-browser-qa.cjs"`.
+- 2026-06-24: W8 browser QA initially failed only at
+  `acquisition-copy-or-empty-state` because the QA script recognized legacy V2
+  empty-state phrases but not V3 acquisition empty-state phrases. UI evidence
+  already contained `Problem`, `Cause`, `Risk`, `Next step`, `Recovery`,
+  `No capability gaps recorded.`, `No acquisition proposals recorded.`, and
+  `No active runtime acquisition controls.` The QA repair centralized V3
+  empty/disabled text recognition without changing product UI.
+- 2026-06-24: W8 read-only review found two Important QA contract weaknesses:
+  `acquisition-api-overview` passed if any acquisition route worked, and
+  Settings Acquisition could be misdetected through Capabilities/Workers fallback
+  text. Fixes made API overview require zero unavailable acquisition routes and
+  made Settings detection require the real `settings-acquisition-section`
+  component after opening the `Acquisition` tab. A focused re-review confirmed
+  the API route weakness was fixed, then found one remaining step-level bypass;
+  the final fix made `settings-acquisition-section` require
+  `settingsSurface.present` instead of accepting empty-state copy as a
+  substitute for the component.
+- 2026-06-24: Final W8 browser QA passed after the stricter QA contract:
+  `powershell -ExecutionPolicy Bypass -File scripts\windows-browser-qa.ps1 -Url
+  http://localhost -Browser chrome -Headless -Suite capability-acquisition
+  -TimeoutMs 240000` -> `ok: true`. Covered login, acquisition API overview,
+  conversation creation, sidebar rename/delete visibility, chat right-panel
+  acquisition presence, chat scroll movement, Settings Acquisition section,
+  problem/cause/risk/next/recovery copy, empty-state handling, Settings
+  conversation click routing back to `/chat`, and QA conversation cleanup.
+  Report:
+  `.gstack/qa-reports/local/capability-acquisition-2026-06-24T06-26-00-565Z`.
+  Screenshots:
+  `01-chat-acquisition-panel.png` and `02-settings-acquisition.png`.
+
 ## Pending Evidence
 
-- None for Workstream 7.
+- None for Workstream 8.

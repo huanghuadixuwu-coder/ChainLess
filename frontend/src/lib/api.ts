@@ -38,6 +38,7 @@ interface StreamHandlers {
   onConfirmationRequired?: (confirmation: StreamConfirmation) => void;
   onCapabilityCandidate?: (candidate: CapabilityCandidateHint) => void;
   onWorkerNotice?: (notice: WorkerNotice) => void;
+  onAcquisitionNotice?: (notice: AcquisitionNotice) => void;
   onError: (message: string) => void;
   onDone: () => void;
 }
@@ -231,6 +232,25 @@ interface WorkerNotice {
   reason?: string | null;
   code?: string | null;
   reasons?: string[];
+}
+
+interface AcquisitionNotice {
+  type: string;
+  title?: string;
+  message?: string;
+  status?: string;
+  severity?: string;
+  risk_level?: string;
+  problem?: string;
+  cause?: string;
+  next_step?: string;
+  recovery?: string;
+  gap_id?: string;
+  proposal_id?: string;
+  permission_id?: string;
+  trace_id?: string;
+  payload?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export const TOKEN_CHANGE_EVENT = "chainless-token-change";
@@ -683,6 +703,11 @@ class ApiClient {
             handlers.onCapabilityCandidate?.(data as CapabilityCandidateHint);
           } else if (eventType === "worker_notice") {
             handlers.onWorkerNotice?.(data as WorkerNotice);
+          } else if (eventType.startsWith("acquisition_")) {
+            handlers.onAcquisitionNotice?.({
+              type: eventType,
+              ...(data as Record<string, unknown>),
+            });
           } else if (eventType === "error") {
             handlers.onError(data.error?.message || "Stream error");
           } else if (eventType === "done") {
@@ -718,4 +743,5 @@ export type {
   WorkerVersion,
   WorkerRun,
   WorkerNotice,
+  AcquisitionNotice,
 };

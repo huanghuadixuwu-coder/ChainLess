@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePlatformStore } from "@/stores/platform-store";
+import { AcquisitionSection } from "@/components/settings/acquisition-section";
 import { AgentsSection } from "@/components/settings/agents-section";
 import { CapabilitiesSection } from "@/components/settings/capabilities-section";
 import { ChannelsSection } from "@/components/settings/channels-section";
@@ -26,6 +27,7 @@ type SectionKey =
   | "proactive"
   | "skills"
   | "capabilities"
+  | "acquisition"
   | "workers"
   | "eval"
   | "system";
@@ -39,6 +41,7 @@ const readySections: Array<{ key: SectionKey; label: string }> = [
   { key: "proactive", label: "Proactive" },
   { key: "skills", label: "Skills" },
   { key: "capabilities", label: "Capabilities" },
+  { key: "acquisition", label: "Acquisition" },
   { key: "workers", label: "Workers" },
   { key: "eval", label: "Eval" },
   { key: "system", label: "System" },
@@ -57,6 +60,7 @@ export function SettingsShell() {
     if (activeSection === "proactive") return <ProactiveSection />;
     if (activeSection === "skills") return <SkillsSection />;
     if (activeSection === "capabilities") return <CapabilitiesSection />;
+    if (activeSection === "acquisition") return <AcquisitionSection />;
     if (activeSection === "workers") return <WorkersSection />;
     if (activeSection === "eval") return <EvalSection />;
     return <SystemSection />;

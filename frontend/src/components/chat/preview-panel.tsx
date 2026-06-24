@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import Markdown from "react-markdown";
 
+import { AcquisitionPanel } from "@/components/chat/acquisition-panel";
 import { CapabilityInboxPanel } from "@/components/chat/capability-inbox-panel";
 import { DiffView } from "@/components/chat/diff-view";
 import { FileArtifactList } from "@/components/chat/file-artifact-list";
@@ -150,7 +151,10 @@ export function PreviewPanel({
         {activeTab === "diff" && <DiffView conversationId={conversationId} />}
 
         {activeTab === "inbox" && (
-          <CapabilityInboxPanel conversationId={conversationId} />
+          <div className="space-y-6">
+            <AcquisitionPanel conversationId={conversationId} />
+            <CapabilityInboxPanel conversationId={conversationId} />
+          </div>
         )}
       </div>
     </aside>

@@ -18,6 +18,7 @@ from app.api.v1.artifacts import router as artifacts_router
 from app.api.v1.uploads import router as uploads_router
 from app.api.v1.capabilities import router as capabilities_router
 from app.api.v1.workers import router as workers_router
+from app.api.v1.acquisition import router as acquisition_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -36,3 +37,4 @@ api_router.include_router(artifacts_router)
 api_router.include_router(uploads_router)
 api_router.include_router(capabilities_router)
 api_router.include_router(workers_router)
+api_router.include_router(acquisition_router)

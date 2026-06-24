@@ -637,3 +637,28 @@ Evidence state:
   the legacy admin MCP test route still directly calls the MCP manager for
   administrative smoke testing; this is outside the acquired Agent runtime and
   confirmation path reviewed for W7.
+- W8 implementation added the public acquisition API route surface, dedicated
+  frontend acquisition API/store owner, chat right-panel and Settings
+  acquisition surfaces, acquisition SSE notice handling, and the
+  `capability-acquisition` Windows browser QA suite. UI changes reused existing
+  zinc/card/button/settings patterns and did not change global styles or layout
+  primitives.
+- W8 local Docker drift was resolved without deleting volumes: main DB schema
+  had already received parts of 0008-0011 while `alembic_version` lagged. The
+  repair made 0009, 0010, and 0011 migrations idempotent for already-existing
+  constraints, columns, and indexes, then verified the running backend reached
+  Alembic `0016`.
+- W8 browser QA initially failed only because the QA script did not recognize
+  V3 acquisition empty-state copy. Product UI already rendered explicit empty
+  states such as `No capability gaps recorded.` and `No acquisition proposals
+  recorded.` The fix centralized empty/disabled text recognition. Final review
+  then found two weak QA assertions: acquisition API overview passed if only
+  one route worked, and Settings could be misdetected through Capabilities or
+  Workers fallback text. Both were tightened before closure, including a final
+  step-level guard requiring `settingsSurface.present`.
+- W8 accepted for next phase by Docker backend API contract tests, Docker
+  frontend lint/build, Docker Node syntax checks for QA scripts, local compose
+  health, and real Windows browser QA against `http://localhost`. Residual
+  risk: browser QA currently covered empty acquisition data plus runtime controls
+  absence; seeded activated-target rollback/control interaction remains a W9
+  full-QA/eval candidate if fixture data is added.
